@@ -1,4 +1,4 @@
-# DAG-to-Dagu Workflow Generator
+# Agent Arborist Workflow Generator
 
 **Version:** 1.0
 **Status:** Draft
@@ -44,10 +44,10 @@ A command-line tool and agent framework that transforms directed acyclic graph (
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                        CLI Interface                            │
-│  - dagctl init                                                 │
-│  - dagctl generate                                             │
-│  - dagctl execute                                              │
-│  - dagctl monitor                                              │
+│  - arborist init                                                 │
+│  - arborist generate                                             │
+│  - arborist execute                                              │
+│  - arborist monitor                                              │
 └────────────────────────┬──────────────────────────────────────┘
                          │
         ┌────────────────┴────────────────┐
@@ -101,7 +101,7 @@ A command-line tool and agent framework that transforms directed acyclic graph (
 2.  **Dagu-Native**: Compilation targets standard Dagu YAML files, allowing use of standard Dagu tooling and UI.
 3.  **Agent-as-CLI**: Agents are packaged as CLI commands that Dagu steps execute.
 4.  **Git-Native**: Every task operates in its own branch/worktree context.
-5.  **Observable**: Leverages Dagu's built-in UI for operational monitoring, augmented by `dagctl` for logical project tracking.
+5.  **Observable**: Leverages Dagu's built-in UI for operational monitoring, augmented by `arborist` for logical project tracking.
 
 ---
 
@@ -691,11 +691,11 @@ class Agent(ABC):
 
 ### 4.2 Agent CLI Wrapper (Dagu Integration)
 
-Since Dagu executes shell commands, the Agent System is exposed via a CLI entrypoint `dagctl run-agent`.
+Since Dagu executes shell commands, the Agent System is exposed via a CLI entrypoint `arborist run-agent`.
 
 ```bash
 # Example Dagu Command
-dagctl run-agent \
+arborist run-agent \
   --task T001 \
   --step implement \
   --agent builder \
@@ -743,7 +743,7 @@ class AgentCLIWrapper:
 
     def _save_artifacts(self, task_id: str, step_name: str, result: Dict[str, Any]):
         """Save artifacts for subsequent steps"""
-        artifact_path = Path(f".dagctl/artifacts/{task_id}/{step_name}.json")
+        artifact_path = Path(f".arborist/artifacts/{task_id}/{step_name}.json")
         artifact_path.parent.mkdir(parents=True, exist_ok=True)
         artifact_path.write_text(json.dumps(result, default=str))
 ```
@@ -1391,13 +1391,13 @@ class DaguGenerator:
         # 2. Add notification handlers
         dagu_dag["handlerOn"] = {
             "success": {
-                "command": "dagctl notify --event success --dag $DAG_NAME"
+                "command": "arborist notify --event success --dag $DAG_NAME"
             },
             "failure": {
-                "command": "dagctl notify --event failure --dag $DAG_NAME"
+                "command": "arborist notify --event failure --dag $DAG_NAME"
             },
             "cancel": {
-                "command": "dagctl notify --event cancel --dag $DAG_NAME"
+                "command": "arborist notify --event cancel --dag $DAG_NAME"
             }
         }
 
@@ -1465,7 +1465,7 @@ class DaguGenerator:
 
     def _build_command(self, task: Task, step: TaskStep) -> str:
         return (
-            f"dagctl run-agent "
+            f"arborist run-agent "
             f"--task {task.id} "
             f"--step {step.name} "
             f"--agent {step.agent} "
@@ -1487,21 +1487,21 @@ params: "EXECUTION_ID"
 steps:
   # --- Phase 1: T001 ---
   - name: T001_implement
-    command: "dagctl run-agent --task T001 --step implement --agent builder --runtime claude-code --execution-id $EXECUTION_ID"
+    command: "arborist run-agent --task T001 --step implement --agent builder --runtime claude-code --execution-id $EXECUTION_ID"
     dir: "."
     depends: []
     output: RESULT_T001_implement
 
   # --- Phase 1: T002 ---
   - name: T002_implement
-    command: "dagctl run-agent --task T002 --step implement --agent builder --runtime claude-code --execution-id $EXECUTION_ID"
+    command: "arborist run-agent --task T002 --step implement --agent builder --runtime claude-code --execution-id $EXECUTION_ID"
     dir: "."
     depends: ["T001_implement"]
     output: RESULT_T002_implement
 
   # --- Phase 2: T009 ---
   - name: T009_implement
-    command: "dagctl run-agent --task T009 --step implement --agent builder --runtime claude-code --execution-id $EXECUTION_ID"
+    command: "arborist run-agent --task T009 --step implement --agent builder --runtime claude-code --execution-id $EXECUTION_ID"
     dir: "."
     depends:
       - "T001_implement"
@@ -1509,14 +1509,14 @@ steps:
     output: RESULT_T009_implement
 
   - name: T009_review
-    command: "dagctl run-agent --task T009 --step review --agent reviewer --runtime claude-code --execution-id $EXECUTION_ID"
+    command: "arborist run-agent --task T009 --step review --agent reviewer --runtime claude-code --execution-id $EXECUTION_ID"
     dir: "."
     depends: ["T009_implement"]
     output: RESULT_T009_review
 
   # --- Task with retry policy ---
   - name: T112_implement
-    command: "dagctl run-agent --task T112 --step implement ..."
+    command: "arborist run-agent --task T112 --step implement ..."
     depends: ["..."]
     retryPolicy:
       limit: 3
@@ -1524,18 +1524,18 @@ steps:
 
   # --- Task with skip on failure ---
   - name: T112_security_check
-    command: "dagctl run-agent --task T112 --step security_check --agent sherlock ..."
+    command: "arborist run-agent --task T112 --step security_check --agent sherlock ..."
     depends: ["T112_review"]
     continueOn:
       failure: true
 
 handlerOn:
   success:
-    command: "dagctl notify --event success --dag calculator_project"
+    command: "arborist notify --event success --dag calculator_project"
   failure:
-    command: "dagctl notify --event failure --dag calculator_project"
+    command: "arborist notify --event failure --dag calculator_project"
   cancel:
-    command: "dagctl notify --event cancel --dag calculator_project"
+    command: "arborist notify --event cancel --dag calculator_project"
 ```
 
 ### 6.4 Artifact Passing Between Steps
@@ -1545,7 +1545,7 @@ Dagu supports output variables that can be passed between steps:
 ```python
 def _build_command_with_artifacts(self, task: Task, step: TaskStep, prev_step: Optional[str]) -> str:
     cmd = (
-        f"dagctl run-agent "
+        f"arborist run-agent "
         f"--task {task.id} "
         f"--step {step.name} "
         f"--agent {step.agent} "
@@ -1567,46 +1567,46 @@ def _build_command_with_artifacts(self, task: Task, step: TaskStep, prev_step: O
 
 ```bash
 # Initialize new DAG project
-dagctl init my-project --template calculator
+arborist init my-project --template calculator
 
 # Generate Dagu configuration
-dagctl generate dag.yaml --output ~/.dagu/dags/my_project.yaml
+arborist generate dag.yaml --output ~/.dagu/dags/my_project.yaml
 
 # Validate DAG specification
-dagctl validate dag.yaml
+arborist validate dag.yaml
 
 # Execute entire DAG
-dagctl execute dag.yaml
+arborist execute dag.yaml
 
 # Execute specific phase
-dagctl execute dag.yaml --phase phase2
+arborist execute dag.yaml --phase phase2
 
 # Execute specific task
-dagctl execute dag.yaml --task T001
+arborist execute dag.yaml --task T001
 
 # Execute with dry-run (show what would happen)
-dagctl execute dag.yaml --dry-run
+arborist execute dag.yaml --dry-run
 
 # Monitor execution
-dagctl monitor dag.yaml
+arborist monitor dag.yaml
 
 # Query state
-dagctl state dag.yaml
+arborist state dag.yaml
 
 # Visualize DAG
-dagctl visualize dag.yaml --format mermaid
+arborist visualize dag.yaml --format mermaid
 
 # Add task to DAG
-dagctl add dag.yaml --task my-task --description "..." --phase phase1
+arborist add dag.yaml --task my-task --description "..." --phase phase1
 
 # Generate documentation
-dagctl docs dag.yaml --output README.md
+arborist docs dag.yaml --output README.md
 
 # Run a single agent step (used by Dagu)
-dagctl run-agent --task T001 --step implement --agent builder --runtime claude-code
+arborist run-agent --task T001 --step implement --agent builder --runtime claude-code
 
 # Send notifications (used by Dagu handlers)
-dagctl notify --event success --dag my_project
+arborist notify --event success --dag my_project
 ```
 
 ### 7.2 CLI Implementation
@@ -1620,7 +1620,7 @@ import json
 @click.group()
 @click.version_option(version="1.0.0")
 def cli():
-    """DAG-to-Dagu workflow generator"""
+    """Agent Arborist workflow generator"""
     pass
 
 @cli.command()
@@ -2252,10 +2252,10 @@ class Dashboard:
 
 ## 9. Configuration System
 
-### 9.1 Full Configuration (`dagctl.yaml`)
+### 9.1 Full Configuration (`arborist.yaml`)
 
 ```yaml
-# dagctl.yaml
+# arborist.yaml
 project:
   name: "My Project"
   version: "1.0.0"
@@ -2344,7 +2344,7 @@ dashboard:
 logging:
   level: INFO
   format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-  file: dagctl.log
+  file: arborist.log
 
 # Execution settings
 execution:
@@ -2373,7 +2373,7 @@ notifications:
     enabled: false
     smtp_host: smtp.example.com
     smtp_port: 587
-    from_address: dagctl@example.com
+    from_address: arborist@example.com
     to_addresses: ["team@example.com"]
     events: ["failure"]
 ```
@@ -2442,7 +2442,7 @@ class Notifier:
 
 ```python
 # my_agents.py
-from dagctl.agents import Agent
+from arborist.agents import Agent
 
 class DomainExpertAgent(Agent):
     """Custom agent for domain-specific review"""
@@ -2495,7 +2495,7 @@ Respond with JSON:
             errors.append("guidelines file path required")
         return errors
 
-# Register in dagctl.yaml:
+# Register in arborist.yaml:
 # custom_agents:
 #   domain_expert:
 #     class: DomainExpertAgent
@@ -2509,7 +2509,7 @@ Respond with JSON:
 
 ```python
 # my_runtimes.py
-from dagctl.runtimes import Runtime, RuntimeResult
+from arborist.runtimes import Runtime, RuntimeResult
 import aiohttp
 
 class CustomLLMRuntime(Runtime):
@@ -2543,7 +2543,7 @@ class CustomLLMRuntime(Runtime):
     def get_worktree_context(self, worktree_path):
         pass
 
-# Register in dagctl.yaml:
+# Register in arborist.yaml:
 # runtimes:
 #   custom-llm:
 #     type: custom
@@ -2559,7 +2559,7 @@ class CustomLLMRuntime(Runtime):
 Users can provide a Jinja2 template for the `dagu.yaml` generation:
 
 ```yaml
-# dagctl.yaml
+# arborist.yaml
 engine:
   type: dagu
   template: ./custom_dagu_template.yaml.j2
@@ -2580,7 +2580,7 @@ params: "EXECUTION_ID"
 {% for task_id, task in spec.tasks.items() %}
 {% for step in task.steps %}
   - name: {{ task_id }}_{{ step.name }}
-    command: "dagctl run-agent --task {{ task_id }} --step {{ step.name }} --agent {{ step.agent }} --runtime {{ step.runtime }} --execution-id $EXECUTION_ID"
+    command: "arborist run-agent --task {{ task_id }} --step {{ step.name }} --agent {{ step.agent }} --runtime {{ step.runtime }} --execution-id $EXECUTION_ID"
     dir: {{ spec.repo_root }}
     depends: {{ depends_list | tojson }}
     {% if step.on_failure == "skip" %}
@@ -2671,7 +2671,7 @@ checkpoint_ref ::= 'checkpoint:' [a-z0-9_]+
 ### B. File Structure
 
 ```
-dagctl/
+arborist/
 ├── __init__.py
 ├── cli.py                  # CLI commands
 ├── parser.py               # DAG parser
