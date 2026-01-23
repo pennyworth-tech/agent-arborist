@@ -168,9 +168,11 @@ def init_arborist_home(home: Path | None = None) -> Path:
 
     target.mkdir(parents=True)
 
-    # Create dagu subdirectory
+    # Create dagu subdirectory structure
+    # $DAGU_HOME/dags/ is where dagu looks for DAG definitions
     dagu_dir = target / DAGU_DIR_NAME
     dagu_dir.mkdir()
+    (dagu_dir / "dags").mkdir()
 
     # Add to .gitignore if we're in a git repo
     if git_root:

@@ -1,6 +1,10 @@
 """Agent Arborist CLI - Automated Task Tree Executor."""
 
 import os
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
 
 import click
 from rich.console import Console
@@ -113,6 +117,124 @@ def doctor_check_runner(runner: RunnerType) -> None:
         if result.output:
             console.print(f"[dim]Output:[/dim] {result.output}")
         raise SystemExit(result.exit_code if result.exit_code != 0 else 1)
+
+
+@doctor.command("check-dagu")
+@click.pass_context
+def doctor_check_dagu(ctx: click.Context) -> None:
+    """Test that dagu is installed and working correctly."""
+    console.print("[cyan]Checking dagu installation...[/cyan]")
+
+    # Check if dagu is installed
+    dagu_path = shutil.which("dagu")
+    if not dagu_path:
+        console.print("[red]FAIL:[/red] dagu not found in PATH")
+        console.print("[dim]Install dagu: https://dagu.readthedocs.io/[/dim]")
+        raise SystemExit(1)
+
+    console.print(f"[green]OK:[/green] Found dagu at {dagu_path}")
+
+    # Check version
+    try:
+        result = subprocess.run(
+            [dagu_path, "version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            # dagu outputs version to stderr
+            dagu_version = (result.stdout or result.stderr).strip()
+            console.print(f"[green]OK:[/green] dagu version {dagu_version}")
+        else:
+            console.print("[red]FAIL:[/red] Could not get dagu version")
+            raise SystemExit(1)
+    except subprocess.TimeoutExpired:
+        console.print("[red]FAIL:[/red] dagu version timed out")
+        raise SystemExit(1)
+
+    # Check DAGU_HOME
+    dagu_home = os.environ.get(DAGU_HOME_ENV_VAR)
+    if dagu_home:
+        console.print(f"[green]OK:[/green] DAGU_HOME={dagu_home}")
+        dagu_home_path = Path(dagu_home)
+        if dagu_home_path.is_dir():
+            console.print(f"[green]OK:[/green] DAGU_HOME directory exists")
+        else:
+            console.print(f"[yellow]WARN:[/yellow] DAGU_HOME directory does not exist (will be created on first use)")
+    else:
+        console.print(f"[yellow]WARN:[/yellow] DAGU_HOME not set (using default: ~/.config/dagu)")
+        console.print("[dim]Run 'arborist init' to set up DAGU_HOME in your project[/dim]")
+
+    # Test with a simple dry run
+    console.print("\n[cyan]Testing dagu with dry run...[/cyan]")
+
+    # Create a test DAG
+    hello_dag = """name: arborist-test
+steps:
+  - name: hello
+    command: echo "Hello from arborist!"
+"""
+
+    # If DAGU_HOME is set, place DAG in $DAGU_HOME/dags/ to verify the path works
+    env = os.environ.copy()
+    test_dag_path: Path | None = None
+
+    if dagu_home:
+        dagu_home_path = Path(dagu_home)
+        dags_dir = dagu_home_path / "dags"
+        if dags_dir.is_dir():
+            test_dag_path = dags_dir / "arborist-test.yaml"
+            test_dag_path.write_text(hello_dag)
+            console.print(f"[dim]Placed test DAG in {test_dag_path}[/dim]")
+            dag_ref = "arborist-test"  # Use name, dagu should find it via DAGU_HOME
+        else:
+            # dags dir doesn't exist, use temp file
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+                f.write(hello_dag)
+                dag_ref = f.name
+        env[DAGU_HOME_ENV_VAR] = dagu_home
+    else:
+        # No DAGU_HOME, use temp file
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(hello_dag)
+            dag_ref = f.name
+
+    try:
+        result = subprocess.run(
+            [dagu_path, "dry", "--quiet", dag_ref],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=env,
+        )
+
+        if result.returncode == 0:
+            console.print("[green]OK:[/green] dagu dry run succeeded")
+            if "Succeeded" in result.stdout:
+                console.print("[green]OK:[/green] Test DAG executed successfully")
+                if test_dag_path:
+                    console.print("[green]OK:[/green] DAGU_HOME is working correctly")
+            else:
+                console.print(f"[dim]Output:[/dim]\n{result.stdout}")
+        else:
+            console.print("[red]FAIL:[/red] dagu dry run failed")
+            if result.stderr:
+                console.print(f"[dim]Error:[/dim] {result.stderr}")
+            raise SystemExit(1)
+
+    except subprocess.TimeoutExpired:
+        console.print("[red]FAIL:[/red] dagu dry run timed out")
+        raise SystemExit(1)
+    finally:
+        # Clean up test DAG
+        if test_dag_path and test_dag_path.exists():
+            test_dag_path.unlink()
+        elif not test_dag_path and dag_ref and Path(dag_ref).exists():
+            # Was a temp file
+            Path(dag_ref).unlink(missing_ok=True)
+
+    console.print("\n[green]All dagu checks passed![/green]")
 
 
 # -----------------------------------------------------------------------------

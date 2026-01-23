@@ -35,4 +35,5 @@ markers = [
     "claude: marks tests that require claude CLI",
     "opencode: marks tests that require opencode CLI",
     "gemini: marks tests that require gemini CLI",
+    "dagu: marks tests that require dagu CLI",
 ]

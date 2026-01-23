@@ -282,6 +282,80 @@ class TestCheckRunnerCommand:
         assert result.exit_code != 0
 
 
+class TestCheckDaguCommand:
+    @patch("shutil.which")
+    def test_check_dagu_not_found(self, mock_which):
+        mock_which.return_value = None
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["doctor", "check-dagu"])
+        assert result.exit_code == 1
+        assert "not found" in result.output
+
+    @patch("subprocess.run")
+    @patch("shutil.which")
+    def test_check_dagu_version_fails(self, mock_which, mock_run):
+        mock_which.return_value = "/usr/bin/dagu"
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["dagu", "version"],
+            returncode=1,
+            stdout="",
+            stderr="error",
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["doctor", "check-dagu"])
+        assert result.exit_code == 1
+        assert "Could not get dagu version" in result.output
+
+    @patch("subprocess.run")
+    @patch("shutil.which")
+    def test_check_dagu_success(self, mock_which, mock_run):
+        mock_which.return_value = "/usr/bin/dagu"
+
+        def run_side_effect(args, **kwargs):
+            if "version" in args:
+                return subprocess.CompletedProcess(
+                    args=args, returncode=0, stdout="", stderr="1.30.3"
+                )
+            elif "dry" in args:
+                return subprocess.CompletedProcess(
+                    args=args, returncode=0, stdout="Succeeded", stderr=""
+                )
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+        mock_run.side_effect = run_side_effect
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["doctor", "check-dagu"])
+        assert result.exit_code == 0
+        assert "1.30.3" in result.output
+        assert "All dagu checks passed" in result.output
+
+    @patch("subprocess.run")
+    @patch("shutil.which")
+    def test_check_dagu_dry_run_fails(self, mock_which, mock_run):
+        mock_which.return_value = "/usr/bin/dagu"
+
+        def run_side_effect(args, **kwargs):
+            if "version" in args:
+                return subprocess.CompletedProcess(
+                    args=args, returncode=0, stdout="", stderr="1.30.3"
+                )
+            elif "dry" in args:
+                return subprocess.CompletedProcess(
+                    args=args, returncode=1, stdout="", stderr="DAG execution failed"
+                )
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+        mock_run.side_effect = run_side_effect
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["doctor", "check-dagu"])
+        assert result.exit_code == 1
+        assert "dry run failed" in result.output
+
+
 @pytest.fixture
 def git_repo(tmp_path):
     """Create a temporary git repository."""
@@ -369,6 +443,14 @@ class TestInitCommand:
 
         dagu_dir = git_repo / ARBORIST_DIR_NAME / DAGU_DIR_NAME
         assert dagu_dir.is_dir()
+
+    def test_init_creates_dagu_dags_subdirectory(self, git_repo):
+        runner = CliRunner()
+        result = runner.invoke(main, ["init"])
+        assert result.exit_code == 0
+
+        dags_dir = git_repo / ARBORIST_DIR_NAME / DAGU_DIR_NAME / "dags"
+        assert dags_dir.is_dir()
 
 
 class TestDaguHomeEnvVar:
