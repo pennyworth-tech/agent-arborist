@@ -1289,31 +1289,41 @@ def spec_dag_build(
     if "env" not in root_dag:
         root_dag["env"] = []
 
-    # Add manifest path - use relative filename (DAGU's workingDir defaults to DAG file location)
+    # TODO: We must use absolute paths AND add env to ALL documents because:
+    # 1. Dagu filters inherited env vars - only PATH, HOME, DAGU_*, etc. pass through
+    # 2. ARBORIST_MANIFEST set in process env when calling `dagu start` is NOT inherited
+    # 3. Sub-DAGs (via `call:`) don't inherit env from parent DAG document
+    # 4. Sub-DAGs also don't inherit workingDir, so relative paths break
+    # See: https://docs.dagu.cloud/writing-workflows/environment-variables
     # NOTE: DAGU requires KEY=value format, not KEY: value
-    # Check if ARBORIST_MANIFEST already exists (AI may have added it)
-    manifest_env = f"ARBORIST_MANIFEST={manifest_path.name}"
-    has_manifest = any(
-        isinstance(e, str) and e.startswith("ARBORIST_MANIFEST=")
-        for e in root_dag["env"]
-    )
-    if has_manifest:
-        # Replace existing manifest with correct path
-        root_dag["env"] = [
-            manifest_env if (isinstance(e, str) and e.startswith("ARBORIST_MANIFEST=")) else e
-            for e in root_dag["env"]
-        ]
-        # Remove duplicates (keep first)
-        seen = set()
-        unique_env = []
-        for e in root_dag["env"]:
-            key = e.split("=")[0] if isinstance(e, str) and "=" in e else e
-            if key not in seen:
-                seen.add(key)
-                unique_env.append(e)
-        root_dag["env"] = unique_env
-    else:
-        root_dag["env"].append(manifest_env)
+    manifest_env = f"ARBORIST_MANIFEST={manifest_path.resolve()}"
+
+    # Add manifest env to ALL documents (root and sub-DAGs)
+    for doc in documents:
+        if "env" not in doc:
+            doc["env"] = []
+
+        has_manifest = any(
+            isinstance(e, str) and e.startswith("ARBORIST_MANIFEST=")
+            for e in doc["env"]
+        )
+        if has_manifest:
+            # Replace existing manifest with correct path
+            doc["env"] = [
+                manifest_env if (isinstance(e, str) and e.startswith("ARBORIST_MANIFEST=")) else e
+                for e in doc["env"]
+            ]
+            # Remove duplicates (keep first)
+            seen = set()
+            unique_env = []
+            for e in doc["env"]:
+                key = e.split("=")[0] if isinstance(e, str) and "=" in e else e
+                if key not in seen:
+                    seen.add(key)
+                    unique_env.append(e)
+            doc["env"] = unique_env
+        else:
+            doc["env"].append(manifest_env)
 
     # If echo_only, inject --echo-for-testing into all arborist commands (in all documents)
     if echo_only:

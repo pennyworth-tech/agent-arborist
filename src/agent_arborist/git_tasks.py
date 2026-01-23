@@ -153,18 +153,29 @@ def merge_to_parent(
     parent_branch: str,
     cwd: Path | None = None,
 ) -> MergeResult:
-    """Merge task branch into parent with --no-ff."""
+    """Merge task branch into parent with --no-ff.
+
+    Uses a temporary worktree for the parent branch to avoid changing
+    the main directory's checked-out branch.
+    """
+    import tempfile
+    import shutil
+
     git_root = cwd or get_git_root()
 
-    try:
-        # Checkout parent branch
-        _run_git("checkout", parent_branch, cwd=git_root)
+    # Create a temporary worktree for the parent branch
+    temp_dir = tempfile.mkdtemp(prefix="arborist_merge_")
+    parent_worktree = Path(temp_dir) / "parent"
 
-        # Attempt merge
+    try:
+        # Create worktree for parent branch
+        _run_git("worktree", "add", str(parent_worktree), parent_branch, cwd=git_root)
+
+        # Attempt merge in the worktree
         result = _run_git(
             "merge", "--no-ff", task_branch,
             "-m", f"Merge {task_branch} into {parent_branch}",
-            cwd=git_root,
+            cwd=parent_worktree,
             check=False,
         )
 
@@ -172,10 +183,12 @@ def merge_to_parent(
             return MergeResult(success=True, message=f"Merged {task_branch} into {parent_branch}")
 
         # Check for conflicts
-        conflict_result = _run_git("diff", "--name-only", "--diff-filter=U", cwd=git_root, check=False)
+        conflict_result = _run_git("diff", "--name-only", "--diff-filter=U", cwd=parent_worktree, check=False)
         conflicts = [f.strip() for f in conflict_result.stdout.strip().split("\n") if f.strip()]
 
         if conflicts:
+            # Abort the merge before cleanup
+            _run_git("merge", "--abort", cwd=parent_worktree, check=False)
             return MergeResult(
                 success=False,
                 message="Merge conflicts detected",
@@ -186,6 +199,16 @@ def merge_to_parent(
         return MergeResult(success=False, message="Merge failed", error=result.stderr)
     except subprocess.CalledProcessError as e:
         return MergeResult(success=False, message="Merge failed", error=e.stderr)
+    finally:
+        # Clean up the temporary worktree
+        try:
+            _run_git("worktree", "remove", str(parent_worktree), "--force", cwd=git_root, check=False)
+        except Exception:
+            pass
+        try:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        except Exception:
+            pass
 
 
 def get_conflict_files(cwd: Path | None = None) -> list[str]:
