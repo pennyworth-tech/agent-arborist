@@ -42,7 +42,7 @@ class TestSubDag:
     def test_root_dag(self):
         subdag = SubDag(
             name="my-dag",
-            env=["ARBORIST_MANIFEST=${DAG_DIR}/spec.json"],
+            env=["ARBORIST_MANIFEST=spec.json"],
             is_root=True,
         )
         assert subdag.is_root is True
@@ -219,7 +219,7 @@ class TestSubDagBuilder:
 
         assert root.name == "test_dag"
         assert root.is_root is True
-        assert "ARBORIST_MANIFEST=${DAG_DIR}/test-spec.json" in root.env
+        assert "ARBORIST_MANIFEST=test-spec.json" in root.env
 
         # Should have: branches-setup, call-T001
         assert len(root.steps) == 2

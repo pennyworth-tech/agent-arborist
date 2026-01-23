@@ -43,7 +43,7 @@ ROOT DAG STRUCTURE:
 name: "{dag_name}"
 description: Brief project description
 env:
-  - ARBORIST_MANIFEST=${{DAG_DIR}}/{dag_name}.json
+  - ARBORIST_MANIFEST={dag_name}.json
 steps:
   - name: branches-setup
     command: arborist spec branch-create-all
@@ -513,7 +513,7 @@ def build_simple_dag(
     root = SubDag(
         name=dag_name,
         description=description or f"DAG for {spec_id}",
-        env=[f"ARBORIST_MANIFEST=${{DAG_DIR}}/{spec_id}.json"],
+        env=[f"ARBORIST_MANIFEST={spec_id}.json"],
         steps=root_steps,
         is_root=True,
     )

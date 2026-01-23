@@ -1069,7 +1069,7 @@ def spec_branch_cleanup_all(ctx: click.Context, force: bool) -> None:
     "-m",
     type=str,
     default=None,
-    help=f"Model to use (default: ${ARBORIST_DEFAULT_MODEL_ENV_VAR} or cerebras/zai-glm-4.7)",
+    help=f"Model to use (default: ${ARBORIST_DEFAULT_MODEL_ENV_VAR} or sonnet)",
 )
 @click.option(
     "--output",
@@ -1289,10 +1289,10 @@ def spec_dag_build(
     if "env" not in root_dag:
         root_dag["env"] = []
 
-    # Add manifest path - use DAG_DIR variable that DAGU provides
+    # Add manifest path - use relative filename (DAGU's workingDir defaults to DAG file location)
     # NOTE: DAGU requires KEY=value format, not KEY: value
     # Check if ARBORIST_MANIFEST already exists (AI may have added it)
-    manifest_env = f"ARBORIST_MANIFEST=${{DAG_DIR}}/{manifest_path.name}"
+    manifest_env = f"ARBORIST_MANIFEST={manifest_path.name}"
     has_manifest = any(
         isinstance(e, str) and e.startswith("ARBORIST_MANIFEST=")
         for e in root_dag["env"]

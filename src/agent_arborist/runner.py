@@ -20,12 +20,12 @@ def _get_default_runner() -> RunnerType:
     env_runner = os.environ.get(ARBORIST_DEFAULT_RUNNER_ENV_VAR, "").lower()
     if env_runner in ("claude", "opencode", "gemini"):
         return env_runner  # type: ignore
-    return "opencode"  # Default to opencode
+    return "claude"  # Default to claude
 
 
 def _get_default_model() -> str | None:
     """Get default model from environment."""
-    return os.environ.get(ARBORIST_DEFAULT_MODEL_ENV_VAR) or "cerebras/zai-glm-4.7"
+    return os.environ.get(ARBORIST_DEFAULT_MODEL_ENV_VAR) or "sonnet"
 
 
 # These are functions to allow dynamic resolution from env

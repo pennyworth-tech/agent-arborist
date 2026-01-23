@@ -42,7 +42,7 @@ class MockRunner(Runner):
 VALID_MULTI_DOC_RESPONSE = """name: test_dag
 description: Test DAG
 env:
-  - ARBORIST_MANIFEST=${DAG_DIR}/test_dag.json
+  - ARBORIST_MANIFEST=test_dag.json
 steps:
   - name: branches-setup
     command: arborist spec branch-create-all
@@ -85,7 +85,7 @@ steps:
 # Response with env in wrong format (dict instead of KEY=value)
 RESPONSE_WITH_DICT_ENV = """name: test_dag
 env:
-  - ARBORIST_MANIFEST: ${DAG_DIR}/test.json
+  - ARBORIST_MANIFEST: test.json
 steps:
   - name: branches-setup
     command: echo setup
@@ -99,7 +99,7 @@ steps:
 # Response with steps in wrong order
 RESPONSE_WITH_WRONG_ORDER = """name: test_dag
 env:
-  - ARBORIST_MANIFEST=${DAG_DIR}/test.json
+  - ARBORIST_MANIFEST=test.json
 steps:
   - name: step3
     command: echo 3
@@ -128,7 +128,7 @@ RESPONSE_IN_CODE_BLOCK = """Here's the generated DAG:
 ```yaml
 name: test_dag
 env:
-  - ARBORIST_MANIFEST=${DAG_DIR}/test.json
+  - ARBORIST_MANIFEST=test.json
 steps:
   - name: branches-setup
     command: echo setup

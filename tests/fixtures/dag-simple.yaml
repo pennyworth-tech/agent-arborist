@@ -1,7 +1,7 @@
 name: simple_test_dag
 description: Simple test DAG with linear task chain
 env:
-  - ARBORIST_MANIFEST=${DAG_DIR}/dag-simple.json
+  - ARBORIST_MANIFEST=dag-simple.json
 steps:
   - name: branches-setup
     command: arborist spec branch-create-all

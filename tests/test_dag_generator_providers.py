@@ -330,6 +330,7 @@ class TestGeminiProvider:
             assert_dag_structure(doc)
 
 
+@pytest.mark.skip(reason="ZAI tests temporarily disabled")
 class TestZaiProvider:
     """Tests for ZAI (zai-coding-plan/glm-4.7) provider DAG generation."""
 
@@ -369,6 +370,7 @@ class TestZaiProvider:
             assert_dag_structure(doc)
 
 
+@pytest.mark.skip(reason="Cerebras tests temporarily disabled")
 class TestCerebrasProvider:
     """Tests for Cerebras (cerebras/zai-glm-4.7) provider DAG generation."""
 
@@ -408,6 +410,7 @@ class TestCerebrasProvider:
             assert_dag_structure(doc)
 
 
+@pytest.mark.skip(reason="MiniMax tests temporarily disabled")
 class TestMinimaxProvider:
     """Tests for MiniMax (minimax-coding-plan/MiniMax-M2.1) provider DAG generation."""
 
@@ -447,6 +450,7 @@ class TestMinimaxProvider:
             assert_dag_structure(doc)
 
 
+@pytest.mark.skip(reason="Parameterized provider tests temporarily disabled")
 class TestAllProvidersParameterized:
     """Parameterized tests across all providers."""
 

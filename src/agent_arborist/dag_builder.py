@@ -109,7 +109,7 @@ class SubDagBuilder:
         return SubDag(
             name=self.config.name,
             description=self.config.description,
-            env=[f"ARBORIST_MANIFEST=${{DAG_DIR}}/{spec_id}.json"],
+            env=[f"ARBORIST_MANIFEST={spec_id}.json"],
             steps=steps,
             is_root=True,
         )
