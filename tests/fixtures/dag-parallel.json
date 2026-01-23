@@ -1,0 +1,44 @@
+{
+  "spec_id": "002-parallel-test",
+  "source_branch": "main",
+  "base_branch": "002-parallel-test",
+  "created_at": "2025-01-23T00:00:00Z",
+  "tasks": [
+    {
+      "task_id": "T001",
+      "branch": "002-parallel-test/T001",
+      "parent_branch": "002-parallel-test",
+      "children": ["T002", "T003", "T004"]
+    },
+    {
+      "task_id": "T002",
+      "branch": "002-parallel-test/T002",
+      "parent_branch": "002-parallel-test/T001",
+      "children": []
+    },
+    {
+      "task_id": "T003",
+      "branch": "002-parallel-test/T003",
+      "parent_branch": "002-parallel-test/T001",
+      "children": []
+    },
+    {
+      "task_id": "T004",
+      "branch": "002-parallel-test/T004",
+      "parent_branch": "002-parallel-test/T001",
+      "children": []
+    },
+    {
+      "task_id": "T005",
+      "branch": "002-parallel-test/T005",
+      "parent_branch": "002-parallel-test",
+      "children": []
+    },
+    {
+      "task_id": "T006",
+      "branch": "002-parallel-test/T006",
+      "parent_branch": "002-parallel-test/T005",
+      "children": []
+    }
+  ]
+}

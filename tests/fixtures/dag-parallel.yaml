@@ -1,0 +1,31 @@
+name: parallel_test_dag
+description: Test DAG with parallel tasks
+env:
+  - ARBORIST_MANIFEST: ${DAG_DIR}/dag-parallel.json
+steps:
+  - name: T001-init
+    command: echo "Initializing"
+  - name: T002-module-a
+    command: echo "Building module A"
+    depends: [T001-init]
+  - name: T003-module-b
+    command: echo "Building module B"
+    depends: [T001-init]
+  - name: T004-module-c
+    command: echo "Building module C"
+    depends: [T001-init]
+  - name: phase-1-complete
+    command: echo "Phase 1 complete"
+    depends: [T001-init]
+  - name: T005-integrate
+    command: echo "Integrating modules"
+    depends: [T002-module-a, T003-module-b, T004-module-c]
+  - name: T006-test
+    command: echo "Running tests"
+    depends: [T005-integrate]
+  - name: phase-2-complete
+    command: echo "Phase 2 complete"
+    depends: [T005-integrate, T006-test]
+  - name: all-complete
+    command: echo "All tasks complete"
+    depends: [phase-1-complete, phase-2-complete]

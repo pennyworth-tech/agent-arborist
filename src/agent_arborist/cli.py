@@ -1439,6 +1439,407 @@ def spec_dag_show(
         console.print()
 
 
+# -----------------------------------------------------------------------------
+# DAG commands
+# -----------------------------------------------------------------------------
+
+
+@main.group()
+def dag() -> None:
+    """DAG execution and monitoring."""
+    pass
+
+
+@dag.command("run")
+@click.argument("dag_name", required=False)
+@click.option("--dry-run", is_flag=True, help="Simulate execution without running commands")
+@click.option("--params", "-p", help="Parameters to pass to the DAG (key=value pairs)")
+@click.option("--run-id", "-r", help="Specify a run ID (auto-generated if not set)")
+@click.pass_context
+def dag_run(
+    ctx: click.Context,
+    dag_name: str | None,
+    dry_run: bool,
+    params: str | None,
+    run_id: str | None,
+) -> None:
+    """Execute a DAG.
+
+    DAG_NAME is the name of the DAG (default: current spec-id).
+    Looks for <dag-name>.yaml in $DAGU_HOME/dags/.
+
+    Sets ARBORIST_MANIFEST environment variable from the companion .json file.
+    """
+    spec_id = ctx.obj.get("spec_id")
+    dagu_home = ctx.obj.get("dagu_home")
+
+    # Resolve DAG name
+    resolved_dag_name = dag_name or spec_id
+
+    if ctx.obj.get("echo_for_testing"):
+        echo_command(
+            "dag run",
+            spec_id=spec_id or "none",
+            dag_name=resolved_dag_name or "none",
+            dry_run=str(dry_run),
+            params=params or "none",
+            run_id=run_id or "auto",
+            dagu_home=str(dagu_home) if dagu_home else "none",
+        )
+        return
+
+    # Check DAGU_HOME is set
+    if not dagu_home:
+        console.print("[red]Error:[/red] DAGU_HOME not set")
+        console.print("Run 'arborist init' first to initialize the project")
+        raise SystemExit(1)
+
+    # Resolve DAG name
+    if not resolved_dag_name:
+        console.print("[red]Error:[/red] No DAG name specified and no spec available")
+        console.print("Provide a DAG name or use --spec option")
+        raise SystemExit(1)
+
+    # Find DAG file
+    dag_path = Path(dagu_home) / "dags" / f"{resolved_dag_name}.yaml"
+    if not dag_path.exists():
+        console.print(f"[red]Error:[/red] DAG file not found: {dag_path}")
+        raise SystemExit(1)
+
+    # Find manifest file (companion .json)
+    manifest_path = dag_path.with_suffix(".json")
+
+    # Check dagu is installed
+    dagu_path = shutil.which("dagu")
+    if not dagu_path:
+        console.print("[red]Error:[/red] dagu not found in PATH")
+        console.print("Install dagu: https://dagu.readthedocs.io/")
+        raise SystemExit(1)
+
+    # Build environment with ARBORIST_MANIFEST
+    env = os.environ.copy()
+    env[DAGU_HOME_ENV_VAR] = str(dagu_home)
+    if manifest_path.exists():
+        env["ARBORIST_MANIFEST"] = str(manifest_path)
+
+    # Build dagu command
+    dagu_cmd = "dry" if dry_run else "start"
+    cmd = [dagu_path, dagu_cmd]
+
+    # --run-id is only valid for start, not dry
+    if run_id and not dry_run:
+        cmd.extend(["--run-id", run_id])
+
+    cmd.append(str(dag_path))
+
+    # Add params after -- separator
+    if params:
+        cmd.append("--")
+        cmd.append(params)
+
+    if not ctx.obj.get("quiet"):
+        action = "Dry running" if dry_run else "Starting"
+        console.print(f"[cyan]{action} DAG {resolved_dag_name}...[/cyan]")
+        console.print(f"[dim]DAG file: {dag_path}[/dim]")
+        if manifest_path.exists():
+            console.print(f"[dim]Manifest: {manifest_path}[/dim]")
+
+    try:
+        result = subprocess.run(
+            cmd,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=600,  # 10 minute timeout
+        )
+
+        if result.returncode == 0:
+            console.print(f"[green]OK:[/green] DAG {dagu_cmd} completed")
+            if result.stdout and not ctx.obj.get("quiet"):
+                console.print(result.stdout)
+        else:
+            console.print(f"[red]Error:[/red] DAG {dagu_cmd} failed")
+            if result.stderr:
+                console.print(f"[dim]{result.stderr}[/dim]")
+            if result.stdout:
+                console.print(f"[dim]{result.stdout}[/dim]")
+            raise SystemExit(1)
+
+    except subprocess.TimeoutExpired:
+        console.print("[red]Error:[/red] DAG execution timed out")
+        raise SystemExit(1)
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise SystemExit(1)
+
+
+@dag.command("run-status")
+@click.argument("dag_name", required=False)
+@click.option("--run-id", "-r", help="Specific run ID (default: most recent)")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+@click.option("--watch", "-w", is_flag=True, help="Continuously watch status updates")
+@click.pass_context
+def dag_run_status(
+    ctx: click.Context,
+    dag_name: str | None,
+    run_id: str | None,
+    as_json: bool,
+    watch: bool,
+) -> None:
+    """Get status of a DAG run.
+
+    DAG_NAME is the name of the DAG (default: current spec-id).
+
+    Without --run-id, shows the status of the most recent run.
+    """
+    spec_id = ctx.obj.get("spec_id")
+    dagu_home = ctx.obj.get("dagu_home")
+
+    # Resolve DAG name
+    resolved_dag_name = dag_name or spec_id
+
+    if ctx.obj.get("echo_for_testing"):
+        echo_command(
+            "dag run-status",
+            spec_id=spec_id or "none",
+            dag_name=resolved_dag_name or "none",
+            run_id=run_id or "latest",
+            json=str(as_json),
+            watch=str(watch),
+            dagu_home=str(dagu_home) if dagu_home else "none",
+        )
+        return
+
+    # Check DAGU_HOME is set
+    if not dagu_home:
+        console.print("[red]Error:[/red] DAGU_HOME not set")
+        console.print("Run 'arborist init' first to initialize the project")
+        raise SystemExit(1)
+
+    # Resolve DAG name
+    if not resolved_dag_name:
+        console.print("[red]Error:[/red] No DAG name specified and no spec available")
+        console.print("Provide a DAG name or use --spec option")
+        raise SystemExit(1)
+
+    # Find DAG file
+    dag_path = Path(dagu_home) / "dags" / f"{resolved_dag_name}.yaml"
+    if not dag_path.exists():
+        console.print(f"[red]Error:[/red] DAG file not found: {dag_path}")
+        raise SystemExit(1)
+
+    # Check dagu is installed
+    dagu_path = shutil.which("dagu")
+    if not dagu_path:
+        console.print("[red]Error:[/red] dagu not found in PATH")
+        raise SystemExit(1)
+
+    # Build environment
+    env = os.environ.copy()
+    env[DAGU_HOME_ENV_VAR] = str(dagu_home)
+
+    # Build dagu status command
+    cmd = [dagu_path, "status"]
+
+    if run_id:
+        cmd.extend(["--run-id", run_id])
+
+    cmd.append(str(dag_path))
+
+    if not ctx.obj.get("quiet") and not as_json:
+        console.print(f"[cyan]Checking status of {resolved_dag_name}...[/cyan]")
+
+    try:
+        result = subprocess.run(
+            cmd,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+        if result.returncode == 0:
+            output = result.stdout.strip()
+            if as_json:
+                # Try to parse and pretty-print JSON, or just output raw
+                try:
+                    import json
+                    data = json.loads(output)
+                    console.print(json.dumps(data, indent=2))
+                except json.JSONDecodeError:
+                    # Not JSON, just output as-is
+                    console.print(output)
+            else:
+                if output:
+                    console.print(output)
+                else:
+                    console.print("[dim]No status information available[/dim]")
+        else:
+            # dagu status may return non-zero for "no runs" case
+            if "no" in result.stderr.lower() or "not found" in result.stderr.lower():
+                console.print("[dim]No runs found for this DAG[/dim]")
+            else:
+                console.print(f"[red]Error:[/red] Status check failed")
+                if result.stderr:
+                    console.print(f"[dim]{result.stderr}[/dim]")
+                raise SystemExit(1)
+
+    except subprocess.TimeoutExpired:
+        console.print("[red]Error:[/red] Status check timed out")
+        raise SystemExit(1)
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise SystemExit(1)
+
+
+@dag.command("run-show")
+@click.argument("dag_name", required=False)
+@click.option("--run-id", "-r", help="Specific run ID (default: most recent)")
+@click.option("--logs", is_flag=True, help="Include step logs in output")
+@click.option("--step", "-s", help="Show details for a specific step")
+@click.pass_context
+def dag_run_show(
+    ctx: click.Context,
+    dag_name: str | None,
+    run_id: str | None,
+    logs: bool,
+    step: str | None,
+) -> None:
+    """Show details of a DAG run.
+
+    DAG_NAME is the name of the DAG (default: current spec-id).
+
+    Displays step-by-step execution details, timing, and optionally logs.
+    """
+    spec_id = ctx.obj.get("spec_id")
+    dagu_home = ctx.obj.get("dagu_home")
+
+    # Resolve DAG name
+    resolved_dag_name = dag_name or spec_id
+
+    if ctx.obj.get("echo_for_testing"):
+        echo_command(
+            "dag run-show",
+            spec_id=spec_id or "none",
+            dag_name=resolved_dag_name or "none",
+            run_id=run_id or "latest",
+            logs=str(logs),
+            step=step or "all",
+            dagu_home=str(dagu_home) if dagu_home else "none",
+        )
+        return
+
+    # Check DAGU_HOME is set
+    if not dagu_home:
+        console.print("[red]Error:[/red] DAGU_HOME not set")
+        console.print("Run 'arborist init' first to initialize the project")
+        raise SystemExit(1)
+
+    # Resolve DAG name
+    if not resolved_dag_name:
+        console.print("[red]Error:[/red] No DAG name specified and no spec available")
+        console.print("Provide a DAG name or use --spec option")
+        raise SystemExit(1)
+
+    # Find DAG file
+    dag_path = Path(dagu_home) / "dags" / f"{resolved_dag_name}.yaml"
+    if not dag_path.exists():
+        console.print(f"[red]Error:[/red] DAG file not found: {dag_path}")
+        raise SystemExit(1)
+
+    # Check dagu is installed
+    dagu_path = shutil.which("dagu")
+    if not dagu_path:
+        console.print("[red]Error:[/red] dagu not found in PATH")
+        raise SystemExit(1)
+
+    # Build environment
+    env = os.environ.copy()
+    env[DAGU_HOME_ENV_VAR] = str(dagu_home)
+
+    # Use dagu status to get run details
+    cmd = [dagu_path, "status"]
+
+    if run_id:
+        cmd.extend(["--run-id", run_id])
+
+    cmd.append(str(dag_path))
+
+    if not ctx.obj.get("quiet"):
+        console.print(f"[cyan]Run details for {resolved_dag_name}[/cyan]")
+        if run_id:
+            console.print(f"[dim]Run ID: {run_id}[/dim]")
+
+    try:
+        result = subprocess.run(
+            cmd,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+        if result.returncode == 0:
+            output = result.stdout.strip()
+
+            if not output:
+                console.print("[dim]No run information available[/dim]")
+                return
+
+            # Filter by step if specified
+            if step:
+                lines = output.split("\n")
+                filtered_lines = [l for l in lines if step.lower() in l.lower()]
+                if filtered_lines:
+                    console.print(f"\n[bold]Step: {step}[/bold]")
+                    for line in filtered_lines:
+                        console.print(line)
+                else:
+                    console.print(f"[dim]No information found for step: {step}[/dim]")
+            else:
+                # Show all steps
+                console.print(output)
+
+            # If logs requested, try to find and display log files
+            if logs:
+                console.print("\n[bold]Logs:[/bold]")
+                # Look for log files in dagu's data directory
+                log_dir = Path(dagu_home) / "data" / resolved_dag_name
+                if log_dir.exists():
+                    log_files = list(log_dir.glob("**/*.log"))
+                    if log_files:
+                        for log_file in log_files[:5]:  # Limit to 5 logs
+                            if step and step.lower() not in log_file.name.lower():
+                                continue
+                            console.print(f"\n[dim]--- {log_file.name} ---[/dim]")
+                            try:
+                                log_content = log_file.read_text()
+                                console.print(log_content[:2000])  # Limit output
+                                if len(log_content) > 2000:
+                                    console.print("[dim]... (truncated)[/dim]")
+                            except Exception as e:
+                                console.print(f"[dim]Could not read log: {e}[/dim]")
+                    else:
+                        console.print("[dim]No log files found[/dim]")
+                else:
+                    console.print("[dim]No log directory found[/dim]")
+        else:
+            if "no" in result.stderr.lower() or "not found" in result.stderr.lower():
+                console.print("[dim]No runs found for this DAG[/dim]")
+            else:
+                console.print(f"[red]Error:[/red] Could not get run details")
+                if result.stderr:
+                    console.print(f"[dim]{result.stderr}[/dim]")
+                raise SystemExit(1)
+
+    except subprocess.TimeoutExpired:
+        console.print("[red]Error:[/red] Request timed out")
+        raise SystemExit(1)
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise SystemExit(1)
+
+
 def _check_dependencies() -> None:
     """Check and display dependency status."""
     table = Table(title="Dependency Status")

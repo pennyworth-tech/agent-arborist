@@ -1,0 +1,26 @@
+{
+  "spec_id": "001-simple-test",
+  "source_branch": "main",
+  "base_branch": "001-simple-test",
+  "created_at": "2025-01-23T00:00:00Z",
+  "tasks": [
+    {
+      "task_id": "T001",
+      "branch": "001-simple-test/T001",
+      "parent_branch": "001-simple-test",
+      "children": []
+    },
+    {
+      "task_id": "T002",
+      "branch": "001-simple-test/T002",
+      "parent_branch": "001-simple-test/T001",
+      "children": []
+    },
+    {
+      "task_id": "T003",
+      "branch": "001-simple-test/T003",
+      "parent_branch": "001-simple-test/T002",
+      "children": []
+    }
+  ]
+}

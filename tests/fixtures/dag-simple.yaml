@@ -1,0 +1,19 @@
+name: simple_test_dag
+description: Simple test DAG for unit testing
+env:
+  - ARBORIST_MANIFEST: ${DAG_DIR}/dag-simple.json
+steps:
+  - name: T001-setup
+    command: echo "Setting up"
+  - name: T002-build
+    command: echo "Building"
+    depends: [T001-setup]
+  - name: T003-test
+    command: echo "Testing"
+    depends: [T002-build]
+  - name: phase-1-complete
+    command: echo "Phase 1 complete"
+    depends: [T001-setup, T002-build]
+  - name: all-complete
+    command: echo "All tasks complete"
+    depends: [T003-test, phase-1-complete]
