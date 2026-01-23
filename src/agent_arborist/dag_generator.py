@@ -53,25 +53,25 @@ REQUIREMENTS:
 5. For LEAF tasks (no children depend on them), create a step:
    - name: "TXXX-slug" (max 40 chars, slug from description)
    - command: |
-       arborist task sync TXXX &&
+       arborist task pre-sync TXXX &&
        arborist task run TXXX &&
-       arborist task test TXXX &&
-       arborist task merge TXXX &&
-       arborist task cleanup TXXX
+       arborist task run-test TXXX &&
+       arborist task post-merge TXXX &&
+       arborist task post-cleanup TXXX
    - depends: [parent-task-step-name or branches-setup if root]
 
 6. For PARENT tasks (other tasks depend on them), create TWO steps:
    a) Setup step:
       - name: "TXXX-setup"
-      - command: arborist task sync TXXX
+      - command: arborist task pre-sync TXXX
       - depends: [its-parent-step-name or branches-setup if root]
 
    b) Complete step (runs after all children complete):
       - name: "TXXX-complete"
       - command: |
-          arborist task test TXXX &&
-          arborist task merge TXXX &&
-          arborist task cleanup TXXX
+          arborist task run-test TXXX &&
+          arborist task post-merge TXXX &&
+          arborist task post-cleanup TXXX
       - depends: [all-child-step-names]
 
 7. INFER DEPENDENCIES from:
@@ -280,7 +280,7 @@ def build_simple_dag(
             # Parent task: create setup and complete steps
             setup_step = {
                 "name": f"{task_id}-setup",
-                "command": f"arborist task sync {task_id}",
+                "command": f"arborist task pre-sync {task_id}",
             }
             if parent_id:
                 setup_step["depends"] = [f"{parent_id}-setup"]
@@ -294,11 +294,11 @@ def build_simple_dag(
             # Leaf task: full workflow
             step = {
                 "name": f"{task_id}-{slug}"[:40],
-                "command": f"""arborist task sync {task_id} &&
+                "command": f"""arborist task pre-sync {task_id} &&
 arborist task run {task_id} &&
-arborist task test {task_id} &&
-arborist task merge {task_id} &&
-arborist task cleanup {task_id}""",
+arborist task run-test {task_id} &&
+arborist task post-merge {task_id} &&
+arborist task post-cleanup {task_id}""",
             }
             if parent_id:
                 step["depends"] = [f"{parent_id}-setup"]
@@ -327,9 +327,9 @@ arborist task cleanup {task_id}""",
 
             complete_step = {
                 "name": f"{task_id}-complete",
-                "command": f"""arborist task test {task_id} &&
-arborist task merge {task_id} &&
-arborist task cleanup {task_id}""",
+                "command": f"""arborist task run-test {task_id} &&
+arborist task post-merge {task_id} &&
+arborist task post-cleanup {task_id}""",
                 "depends": child_deps,
             }
             dag["steps"].append(complete_step)

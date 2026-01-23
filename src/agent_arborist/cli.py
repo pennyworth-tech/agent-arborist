@@ -320,10 +320,95 @@ def task() -> None:
     pass
 
 
-@task.command("sync")
+@task.command("status")
+@click.argument("task_id", required=False)
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+@click.pass_context
+def task_status(ctx: click.Context, task_id: str | None, as_json: bool) -> None:
+    """Get task status.
+
+    If TASK_ID is provided, shows that task's status.
+    Otherwise, shows summary of all tasks.
+    """
+    import json
+
+    spec_id = ctx.obj.get("spec_id")
+
+    if ctx.obj.get("echo_for_testing"):
+        echo_command(
+            "task status",
+            task_id=task_id or "all",
+            spec_id=spec_id or "none",
+            json=str(as_json),
+        )
+        return
+
+    if not spec_id:
+        console.print("[red]Error:[/red] No spec available")
+        raise SystemExit(1)
+
+    tree = load_task_tree(spec_id)
+    if not tree:
+        console.print(f"[red]Error:[/red] No task tree found for spec {spec_id}")
+        raise SystemExit(1)
+
+    if task_id:
+        task_node = tree.get_task(task_id)
+        if not task_node:
+            console.print(f"[red]Error:[/red] Task {task_id} not found")
+            raise SystemExit(1)
+
+        if as_json:
+            console.print(json.dumps({
+                "task_id": task_node.task_id,
+                "status": task_node.status,
+                "description": task_node.description,
+                "parent_id": task_node.parent_id,
+                "children": task_node.children,
+                "branch": task_node.branch,
+                "worktree": task_node.worktree,
+                "error": task_node.error,
+            }, indent=2))
+        else:
+            status_color = {
+                "pending": "yellow",
+                "running": "cyan",
+                "complete": "green",
+                "failed": "red",
+            }.get(task_node.status, "white")
+
+            console.print(f"[bold]Task:[/bold] {task_node.task_id}")
+            console.print(f"[bold]Status:[/bold] [{status_color}]{task_node.status}[/{status_color}]")
+            console.print(f"[dim]Description:[/dim] {task_node.description}")
+            if task_node.parent_id:
+                console.print(f"[dim]Parent:[/dim] {task_node.parent_id}")
+            if task_node.children:
+                console.print(f"[dim]Children:[/dim] {', '.join(task_node.children)}")
+            if task_node.branch:
+                console.print(f"[dim]Branch:[/dim] {task_node.branch}")
+            if task_node.worktree:
+                console.print(f"[dim]Worktree:[/dim] {task_node.worktree}")
+            if task_node.error:
+                console.print(f"[red]Error:[/red] {task_node.error}")
+    else:
+        # Show summary
+        summary = get_task_status_summary(tree)
+
+        if as_json:
+            console.print(json.dumps(summary, indent=2))
+        else:
+            console.print(f"[bold]Spec:[/bold] {spec_id}")
+            console.print(f"[bold]Total tasks:[/bold] {summary['total']}")
+            console.print(f"  [yellow]Pending:[/yellow] {summary['pending']}")
+            console.print(f"  [cyan]Running:[/cyan] {summary['running']}")
+            console.print(f"  [green]Complete:[/green] {summary['complete']}")
+            console.print(f"  [red]Failed:[/red] {summary['failed']}")
+
+
+@task.command("pre-sync")
 @click.argument("task_id")
 @click.pass_context
-def task_sync(ctx: click.Context, task_id: str) -> None:
+def task_pre_sync(ctx: click.Context, task_id: str) -> None:
     """Create worktree and sync from parent for a task.
 
     This command reads branch info from the ARBORIST_MANIFEST environment variable.
@@ -356,7 +441,7 @@ def task_sync(ctx: click.Context, task_id: str) -> None:
 
     if ctx.obj.get("echo_for_testing"):
         echo_command(
-            "task sync",
+            "task pre-sync",
             task_id=task_id,
             spec_id=manifest.spec_id,
             branch=task_info.branch,
@@ -443,7 +528,7 @@ def task_run(ctx: click.Context, task_id: str, timeout: int, runner: str | None)
 
     if not worktree_path.exists():
         console.print(f"[red]Error:[/red] Worktree not found at {worktree_path}")
-        console.print("Run 'arborist task sync' first")
+        console.print("Run 'arborist task pre-sync' first")
         raise SystemExit(1)
 
     # Build prompt for AI
@@ -486,11 +571,11 @@ Do NOT commit - that will be handled by the task workflow.
         raise SystemExit(1)
 
 
-@task.command("test")
+@task.command("run-test")
 @click.argument("task_id")
 @click.option("--cmd", help="Override test command (auto-detected if not specified)")
 @click.pass_context
-def task_test(ctx: click.Context, task_id: str, cmd: str | None) -> None:
+def task_run_test(ctx: click.Context, task_id: str, cmd: str | None) -> None:
     """Run tests for a task.
 
     Auto-detects test command based on project files (pytest, npm test, etc.).
@@ -519,7 +604,7 @@ def task_test(ctx: click.Context, task_id: str, cmd: str | None) -> None:
 
     if ctx.obj.get("echo_for_testing"):
         echo_command(
-            "task test",
+            "task run-test",
             task_id=task_id,
             spec_id=manifest.spec_id,
             cmd=cmd or "auto",
@@ -566,11 +651,11 @@ def task_test(ctx: click.Context, task_id: str, cmd: str | None) -> None:
         raise SystemExit(1)
 
 
-@task.command("merge")
+@task.command("post-merge")
 @click.argument("task_id")
 @click.option("--no-resolve", is_flag=True, help="Don't attempt AI conflict resolution")
 @click.pass_context
-def task_merge(ctx: click.Context, task_id: str, no_resolve: bool) -> None:
+def task_post_merge(ctx: click.Context, task_id: str, no_resolve: bool) -> None:
     """Merge task branch to parent branch.
 
     By default, attempts AI-powered conflict resolution if conflicts occur.
@@ -600,7 +685,7 @@ def task_merge(ctx: click.Context, task_id: str, no_resolve: bool) -> None:
 
     if ctx.obj.get("echo_for_testing"):
         echo_command(
-            "task merge",
+            "task post-merge",
             task_id=task_id,
             spec_id=manifest.spec_id,
             branch=task_branch,
@@ -694,11 +779,11 @@ Conflicted file:
         raise SystemExit(1)
 
 
-@task.command("cleanup")
+@task.command("post-cleanup")
 @click.argument("task_id")
 @click.option("--keep-branch", is_flag=True, help="Don't delete the branch")
 @click.pass_context
-def task_cleanup(ctx: click.Context, task_id: str, keep_branch: bool) -> None:
+def task_post_cleanup(ctx: click.Context, task_id: str, keep_branch: bool) -> None:
     """Remove worktree and branch for a completed task."""
     import os
 
@@ -723,7 +808,7 @@ def task_cleanup(ctx: click.Context, task_id: str, keep_branch: bool) -> None:
 
     if ctx.obj.get("echo_for_testing"):
         echo_command(
-            "task cleanup",
+            "task post-cleanup",
             task_id=task_id,
             spec_id=manifest.spec_id,
             branch=task_branch,
@@ -749,91 +834,6 @@ def task_cleanup(ctx: click.Context, task_id: str, keep_branch: bool) -> None:
         console.print(f"[yellow]WARN:[/yellow] {result.message}")
         if result.error:
             console.print(f"[dim]{result.error}[/dim]")
-
-
-@task.command("status")
-@click.argument("task_id", required=False)
-@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
-@click.pass_context
-def task_status(ctx: click.Context, task_id: str | None, as_json: bool) -> None:
-    """Get task status.
-
-    If TASK_ID is provided, shows that task's status.
-    Otherwise, shows summary of all tasks.
-    """
-    import json
-
-    spec_id = ctx.obj.get("spec_id")
-
-    if ctx.obj.get("echo_for_testing"):
-        echo_command(
-            "task status",
-            task_id=task_id or "all",
-            spec_id=spec_id or "none",
-            json=str(as_json),
-        )
-        return
-
-    if not spec_id:
-        console.print("[red]Error:[/red] No spec available")
-        raise SystemExit(1)
-
-    tree = load_task_tree(spec_id)
-    if not tree:
-        console.print(f"[red]Error:[/red] No task tree found for spec {spec_id}")
-        raise SystemExit(1)
-
-    if task_id:
-        task_node = tree.get_task(task_id)
-        if not task_node:
-            console.print(f"[red]Error:[/red] Task {task_id} not found")
-            raise SystemExit(1)
-
-        if as_json:
-            console.print(json.dumps({
-                "task_id": task_node.task_id,
-                "status": task_node.status,
-                "description": task_node.description,
-                "parent_id": task_node.parent_id,
-                "children": task_node.children,
-                "branch": task_node.branch,
-                "worktree": task_node.worktree,
-                "error": task_node.error,
-            }, indent=2))
-        else:
-            status_color = {
-                "pending": "yellow",
-                "running": "cyan",
-                "complete": "green",
-                "failed": "red",
-            }.get(task_node.status, "white")
-
-            console.print(f"[bold]Task:[/bold] {task_node.task_id}")
-            console.print(f"[bold]Status:[/bold] [{status_color}]{task_node.status}[/{status_color}]")
-            console.print(f"[dim]Description:[/dim] {task_node.description}")
-            if task_node.parent_id:
-                console.print(f"[dim]Parent:[/dim] {task_node.parent_id}")
-            if task_node.children:
-                console.print(f"[dim]Children:[/dim] {', '.join(task_node.children)}")
-            if task_node.branch:
-                console.print(f"[dim]Branch:[/dim] {task_node.branch}")
-            if task_node.worktree:
-                console.print(f"[dim]Worktree:[/dim] {task_node.worktree}")
-            if task_node.error:
-                console.print(f"[red]Error:[/red] {task_node.error}")
-    else:
-        # Show summary
-        summary = get_task_status_summary(tree)
-
-        if as_json:
-            console.print(json.dumps(summary, indent=2))
-        else:
-            console.print(f"[bold]Spec:[/bold] {spec_id}")
-            console.print(f"[bold]Total tasks:[/bold] {summary['total']}")
-            console.print(f"  [yellow]Pending:[/yellow] {summary['pending']}")
-            console.print(f"  [cyan]Running:[/cyan] {summary['running']}")
-            console.print(f"  [green]Complete:[/green] {summary['complete']}")
-            console.print(f"  [red]Failed:[/red] {summary['failed']}")
 
 
 # -----------------------------------------------------------------------------

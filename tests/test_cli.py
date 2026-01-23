@@ -194,17 +194,17 @@ class TestTaskCommands:
         runner = CliRunner()
         result = runner.invoke(main, ["task", "--help"])
         assert result.exit_code == 0
-        assert "sync" in result.output
-        assert "run" in result.output
-        assert "test" in result.output
-        assert "merge" in result.output
-        assert "cleanup" in result.output
         assert "status" in result.output
+        assert "pre-sync" in result.output
+        assert "run" in result.output
+        assert "run-test" in result.output
+        assert "post-merge" in result.output
+        assert "post-cleanup" in result.output
 
-    def test_task_sync_requires_manifest(self):
-        """sync requires ARBORIST_MANIFEST env var."""
+    def test_task_pre_sync_requires_manifest(self):
+        """pre-sync requires ARBORIST_MANIFEST env var."""
         runner = CliRunner()
-        result = runner.invoke(main, ["task", "sync", "T001"])
+        result = runner.invoke(main, ["task", "pre-sync", "T001"])
         assert result.exit_code != 0
         assert "ARBORIST_MANIFEST environment variable not set" in result.output
 
@@ -222,24 +222,24 @@ class TestTaskCommands:
         assert result.exit_code != 0
         assert "No spec available" in result.output
 
-    def test_task_test_requires_manifest(self):
-        """test requires ARBORIST_MANIFEST env var."""
+    def test_task_run_test_requires_manifest(self):
+        """run-test requires ARBORIST_MANIFEST env var."""
         runner = CliRunner()
-        result = runner.invoke(main, ["task", "test", "T001"])
+        result = runner.invoke(main, ["task", "run-test", "T001"])
         assert result.exit_code != 0
         assert "ARBORIST_MANIFEST environment variable not set" in result.output
 
-    def test_task_merge_requires_manifest(self):
-        """merge requires ARBORIST_MANIFEST env var."""
+    def test_task_post_merge_requires_manifest(self):
+        """post-merge requires ARBORIST_MANIFEST env var."""
         runner = CliRunner()
-        result = runner.invoke(main, ["task", "merge", "T001"])
+        result = runner.invoke(main, ["task", "post-merge", "T001"])
         assert result.exit_code != 0
         assert "ARBORIST_MANIFEST environment variable not set" in result.output
 
-    def test_task_cleanup_requires_manifest(self):
-        """cleanup requires ARBORIST_MANIFEST env var."""
+    def test_task_post_cleanup_requires_manifest(self):
+        """post-cleanup requires ARBORIST_MANIFEST env var."""
         runner = CliRunner()
-        result = runner.invoke(main, ["task", "cleanup", "T001"])
+        result = runner.invoke(main, ["task", "post-cleanup", "T001"])
         assert result.exit_code != 0
         assert "ARBORIST_MANIFEST environment variable not set" in result.output
 
