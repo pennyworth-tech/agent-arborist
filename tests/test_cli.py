@@ -1,10 +1,16 @@
 """Tests for CLI commands."""
 
+import os
+import subprocess
+from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 from click.testing import CliRunner
 
 from agent_arborist.cli import main
 from agent_arborist.checks import DependencyStatus
+from agent_arborist.home import ARBORIST_DIR_NAME
 
 
 class TestVersionCommand:
@@ -274,3 +280,84 @@ class TestCheckRunnerCommand:
         runner = CliRunner()
         result = runner.invoke(main, ["doctor", "check-runner", "--runner", "invalid"])
         assert result.exit_code != 0
+
+
+@pytest.fixture
+def git_repo(tmp_path):
+    """Create a temporary git repository."""
+    original_cwd = os.getcwd()
+    os.chdir(tmp_path)
+    subprocess.run(["git", "init"], capture_output=True, check=True)
+    readme = tmp_path / "README.md"
+    readme.write_text("# Test\n")
+    subprocess.run(["git", "add", "."], capture_output=True, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "initial"],
+        capture_output=True,
+        check=True,
+        env={
+            **os.environ,
+            "GIT_AUTHOR_NAME": "Test",
+            "GIT_AUTHOR_EMAIL": "test@test.com",
+            "GIT_COMMITTER_NAME": "Test",
+            "GIT_COMMITTER_EMAIL": "test@test.com",
+        },
+    )
+    yield tmp_path
+    os.chdir(original_cwd)
+
+
+@pytest.fixture
+def non_git_dir(tmp_path):
+    """Create a temporary directory that is not a git repo."""
+    original_cwd = os.getcwd()
+    # Create a subdirectory to ensure we're not in a git repo
+    test_dir = tmp_path / "not_git"
+    test_dir.mkdir()
+    os.chdir(test_dir)
+    yield test_dir
+    os.chdir(original_cwd)
+
+
+class TestInitCommand:
+    def test_init_creates_arborist_directory(self, git_repo):
+        runner = CliRunner()
+        result = runner.invoke(main, ["init"])
+        assert result.exit_code == 0
+        assert "Initialized" in result.output
+
+        arborist_dir = git_repo / ARBORIST_DIR_NAME
+        assert arborist_dir.is_dir()
+
+    def test_init_adds_to_gitignore(self, git_repo):
+        runner = CliRunner()
+        result = runner.invoke(main, ["init"])
+        assert result.exit_code == 0
+
+        gitignore = git_repo / ".gitignore"
+        assert gitignore.exists()
+        content = gitignore.read_text()
+        assert f"{ARBORIST_DIR_NAME}/" in content
+
+    def test_init_fails_outside_git_repo(self, non_git_dir):
+        runner = CliRunner()
+        result = runner.invoke(main, ["init"])
+        assert result.exit_code == 1
+        assert "git repository" in result.output.lower()
+
+    def test_init_fails_if_already_initialized(self, git_repo):
+        # First init
+        runner = CliRunner()
+        result = runner.invoke(main, ["init"])
+        assert result.exit_code == 0
+
+        # Second init should fail
+        result = runner.invoke(main, ["init"])
+        assert result.exit_code == 1
+        assert "already initialized" in result.output.lower()
+
+    def test_init_shows_path_in_output(self, git_repo):
+        runner = CliRunner()
+        result = runner.invoke(main, ["init"])
+        assert result.exit_code == 0
+        assert ARBORIST_DIR_NAME in result.output

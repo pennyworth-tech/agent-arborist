@@ -8,6 +8,12 @@ from agent_arborist import __version__
 from agent_arborist.checks import check_dagu, check_runtimes
 from agent_arborist.spec import detect_spec_from_git
 from agent_arborist.runner import get_runner, RunnerType, DEFAULT_RUNNER
+from agent_arborist.home import (
+    get_arborist_home,
+    init_arborist_home,
+    is_initialized,
+    ArboristHomeError,
+)
 
 console = Console()
 
@@ -33,6 +39,21 @@ def version(check: bool) -> None:
     if check:
         console.print()
         _check_dependencies()
+
+
+@main.command()
+def init() -> None:
+    """Initialize arborist in the current git repository.
+
+    Creates a .arborist/ directory in the git root.
+    Must be run from within a git repository.
+    """
+    try:
+        home = init_arborist_home()
+        console.print(f"[green]Initialized arborist at[/green] {home}")
+    except ArboristHomeError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise SystemExit(1)
 
 
 @main.group(invoke_without_command=True)
