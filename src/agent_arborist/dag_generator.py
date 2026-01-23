@@ -1,4 +1,10 @@
-"""AI-powered DAG generator using LLM runners."""
+"""AI-powered DAG generator using LLM runners.
+
+This module generates multi-document YAML with subdags:
+- Root DAG: branches-setup + linear calls to root tasks
+- Parent subdags: pre-sync + parallel child calls + complete
+- Leaf subdags: 5 sequential command nodes
+"""
 
 import re
 import yaml
@@ -19,78 +25,87 @@ class GenerationResult:
     raw_output: str | None = None
 
 
-# Prompt for git-worktree-based task execution with deterministic branch manifest
-DAG_GENERATION_PROMPT = '''You are a workflow automation expert. Analyze the task specification and output a DAGU DAG as YAML.
+# Prompt for subdag-based task execution with deterministic branch manifest
+DAG_GENERATION_PROMPT = '''You are a workflow automation expert. Analyze the task specification and output a DAGU DAG with subdags as multi-document YAML.
 
 TASK SPECIFICATION:
 ---
 {spec_content}
 ---
 
-REQUIREMENTS:
-1. Output valid DAGU YAML with:
-   - name: "{dag_name}" (underscores, no dashes)
-   - description: Brief project description
-   - env: Single ARBORIST_MANIFEST entry (see below)
-   - steps: List of workflow steps IN TOPOLOGICAL ORDER
+OUTPUT FORMAT:
+Generate a multi-document YAML (separated by ---) with:
+1. Root DAG (first document)
+2. One subdag per task (subsequent documents)
 
-2. Add env section with EXACTLY ONE entry (DAGU requires KEY=value format):
-   env:
-     - ARBORIST_MANIFEST=${{DAG_DIR}}/{dag_name}.json
+ROOT DAG STRUCTURE:
+```yaml
+name: "{dag_name}"
+description: Brief project description
+env:
+  - ARBORIST_MANIFEST=${{DAG_DIR}}/{dag_name}.json
+steps:
+  - name: branches-setup
+    command: arborist spec branch-create-all
+  - name: call-T001
+    call: T001
+    depends: [branches-setup]
+  - name: call-T005  # Next root task (if exists)
+    call: T005
+    depends: [call-T001]  # Linear chain at root level
+```
 
-3. Analyze the task hierarchy:
-   - Identify all tasks (T001, T002, etc.)
-   - Determine parent-child relationships from dependencies
-   - A task's "parent" is typically its first dependency
-   - Tasks with no dependencies that others depend on are "parent" tasks
-   - Tasks at the end of dependency chains are "leaf" tasks
+LEAF SUBDAG (tasks with no children):
+```yaml
+---
+name: T002
+steps:
+  - name: pre-sync
+    command: arborist task pre-sync T002
+  - name: run
+    command: arborist task run T002
+    depends: [pre-sync]
+  - name: run-test
+    command: arborist task run-test T002
+    depends: [run]
+  - name: post-merge
+    command: arborist task post-merge T002
+    depends: [run-test]
+  - name: post-cleanup
+    command: arborist task post-cleanup T002
+    depends: [post-merge]
+```
 
-4. First step MUST be branches-setup (no depends key needed):
-   - name: branches-setup
-     command: arborist spec branch-create-all
+PARENT SUBDAG (tasks with children):
+```yaml
+---
+name: T001
+steps:
+  - name: pre-sync
+    command: arborist task pre-sync T001
+  - name: call-T002
+    call: T002
+    depends: [pre-sync]
+  - name: call-T003  # Multiple children run in parallel
+    call: T003
+    depends: [pre-sync]
+  - name: complete
+    command: |
+      arborist task run-test T001 &&
+      arborist task post-merge T001 &&
+      arborist task post-cleanup T001
+    depends: [call-T002, call-T003]
+```
 
-5. For LEAF tasks (no children depend on them), create a step:
-   - name: "TXXX-slug" (max 40 chars, slug from description)
-   - command: |
-       arborist task pre-sync TXXX &&
-       arborist task run TXXX &&
-       arborist task run-test TXXX &&
-       arborist task post-merge TXXX &&
-       arborist task post-cleanup TXXX
-   - depends: [parent-task-step-name or branches-setup if root]
+RULES:
+1. Root DAG calls root-level tasks (no parent) in LINEAR sequence by task ID
+2. Parent subdags call children in PARALLEL (all depend on pre-sync)
+3. Leaf subdags have exactly 5 steps: pre-sync, run, run-test, post-merge, post-cleanup
+4. Task hierarchy is inferred from dependencies (first dependency = parent)
+5. Tasks marked [P] are parallel siblings (same parent)
+6. Sort subdags by task ID (T001, T002, T003...)
 
-6. For PARENT tasks (other tasks depend on them), create TWO steps:
-   a) Setup step:
-      - name: "TXXX-setup"
-      - command: arborist task pre-sync TXXX
-      - depends: [its-parent-step-name or branches-setup if root]
-
-   b) Complete step (runs after all children complete):
-      - name: "TXXX-complete"
-      - command: |
-          arborist task run-test TXXX &&
-          arborist task post-merge TXXX &&
-          arborist task post-cleanup TXXX
-      - depends: [all-child-step-names]
-
-7. INFER DEPENDENCIES from:
-   - Explicit "Dependencies" section (arrows like "T001 → T002")
-   - Task ordering within phases/sections
-   - "Parallel Opportunities" sections
-
-8. Tasks marked [P] can run in parallel (share same parent dependency)
-
-9. Do NOT add phase-complete or all-complete steps - just the task steps.
-
-10. CRITICAL - TOPOLOGICAL ORDERING: Steps MUST be listed so that every step's
-    dependencies appear BEFORE that step in the YAML. Order should be:
-    - branches-setup (first, no deps)
-    - All setup steps in dependency order (T001-setup, T002-setup, etc.)
-    - All leaf task steps (after their parent setup steps)
-    - All complete steps in REVERSE order (T003-complete before T002-complete before T001-complete)
-    - Final tasks that depend on complete steps
-
-CRITICAL: Output ONLY the YAML content. No markdown fences. No explanation. Start directly with "name:" on the first line.
+CRITICAL: Output ONLY the YAML content. No markdown fences. No explanation. Start with "name:" on line 1.
 '''
 
 
@@ -214,14 +229,14 @@ def validate_and_fix_dag(dag_data: dict) -> tuple[dict, list[str]]:
     """Validate and fix common issues in generated DAG data.
 
     Args:
-        dag_data: Parsed YAML dict
+        dag_data: Parsed YAML dict (single document)
 
     Returns:
         (fixed_dag_data, list of fixes applied)
     """
     all_fixes = []
 
-    # Fix env format and duplicates
+    # Fix env format and duplicates (only root DAG has env)
     all_fixes.extend(_fix_env_format(dag_data))
 
     # Remove empty depends arrays
@@ -234,6 +249,28 @@ def validate_and_fix_dag(dag_data: dict) -> tuple[dict, list[str]]:
         all_fixes.extend(sort_fixes)
 
     return dag_data, all_fixes
+
+
+def validate_and_fix_multi_doc(documents: list[dict]) -> tuple[list[dict], list[str]]:
+    """Validate and fix all documents in a multi-doc YAML.
+
+    Args:
+        documents: List of parsed YAML dicts
+
+    Returns:
+        (fixed_documents, list of all fixes applied)
+    """
+    all_fixes = []
+    fixed_docs = []
+
+    for i, doc in enumerate(documents):
+        fixed_doc, fixes = validate_and_fix_dag(doc)
+        fixed_docs.append(fixed_doc)
+        # Prefix fixes with document identifier
+        doc_name = doc.get("name", f"doc-{i}")
+        all_fixes.extend([f"[{doc_name}] {fix}" for fix in fixes])
+
+    return fixed_docs, all_fixes
 
 
 class DagGenerator:
@@ -249,7 +286,7 @@ class DagGenerator:
         timeout: int = 120,
         spec_dir: Path | None = None,
     ) -> GenerationResult:
-        """Generate a DAGU DAG from task spec content using AI.
+        """Generate a DAGU DAG with subdags from task spec content using AI.
 
         Args:
             spec_content: The task specification content
@@ -283,15 +320,25 @@ class DagGenerator:
                 raw_output=result.output,
             )
 
-        # Validate the YAML
+        # Parse multi-document YAML
         try:
-            parsed = yaml.safe_load(yaml_content)
-            if not isinstance(parsed, dict) or "steps" not in parsed:
+            documents = list(yaml.safe_load_all(yaml_content))
+            if not documents:
                 return GenerationResult(
                     success=False,
-                    error="YAML missing required 'steps' field",
+                    error="No YAML documents found",
                     raw_output=result.output,
                 )
+
+            # First document should be root DAG
+            root = documents[0]
+            if not isinstance(root, dict) or "steps" not in root:
+                return GenerationResult(
+                    success=False,
+                    error="Root DAG missing required 'steps' field",
+                    raw_output=result.output,
+                )
+
         except yaml.YAMLError as e:
             return GenerationResult(
                 success=False,
@@ -299,8 +346,8 @@ class DagGenerator:
                 raw_output=result.output,
             )
 
-        # Validate and fix common issues
-        fixed_dag, fixes = validate_and_fix_dag(parsed)
+        # Validate and fix all documents
+        fixed_docs, fixes = validate_and_fix_multi_doc(documents)
 
         # Check for unfixable issues (like cycles)
         for fix in fixes:
@@ -311,8 +358,12 @@ class DagGenerator:
                     raw_output=result.output,
                 )
 
-        # Re-serialize the fixed YAML
-        yaml_content = yaml.dump(fixed_dag, default_flow_style=False, sort_keys=False)
+        # Re-serialize as multi-document YAML
+        yaml_parts = []
+        for doc in fixed_docs:
+            yaml_parts.append(yaml.dump(doc, default_flow_style=False, sort_keys=False))
+
+        yaml_content = "---\n".join(yaml_parts)
 
         return GenerationResult(
             success=True,
@@ -328,11 +379,12 @@ class DagGenerator:
         if matches:
             return matches[0].strip()
 
-        # Try to find content starting with "name:"
+        # Try to find content starting with "name:" or "---"
         lines = output.strip().split("\n")
         yaml_start = None
         for i, line in enumerate(lines):
-            if line.strip().startswith("name:"):
+            stripped = line.strip()
+            if stripped.startswith("name:") or stripped == "---":
                 yaml_start = i
                 break
 
@@ -402,7 +454,7 @@ def build_simple_dag(
     tasks: list[dict],
     description: str = "",
 ) -> str:
-    """Build a simple DAG YAML from a list of tasks.
+    """Build a subdag-based DAG YAML from a list of tasks.
 
     This is a deterministic alternative to AI generation.
 
@@ -412,90 +464,108 @@ def build_simple_dag(
         description: DAG description
 
     Returns:
-        YAML string for the DAG
+        Multi-document YAML string with root DAG and subdags
     """
+    from agent_arborist.dag_builder import (
+        SubDagBuilder, DagConfig, SubDag, SubDagStep
+    )
+    from agent_arborist.task_state import TaskTree, TaskNode
+
     dag_name = spec_id.replace("-", "_")
-    dag = {
-        "name": dag_name,
-        "description": description or f"DAG for {spec_id}",
-        "env": [
-            f"ARBORIST_MANIFEST=${{DAG_DIR}}/{spec_id}.json",
-        ],
-        "steps": [],
-    }
 
-    # Add branches setup step (creates all branches from manifest)
-    dag["steps"].append({
-        "name": "branches-setup",
-        "command": "arborist spec branch-create-all",
-    })
+    # Build a TaskTree from the task list
+    tree = TaskTree(spec_id=spec_id)
 
-    # Build steps for each task
     for task in tasks:
-        task_id = task["id"]
-        has_children = bool(task.get("children"))
-        parent_id = task.get("parent_id")
+        tree.tasks[task["id"]] = TaskNode(
+            task_id=task["id"],
+            description=task.get("description", task["id"]),
+            parent_id=task.get("parent_id"),
+            children=task.get("children", []),
+        )
 
-        # Determine slug from description
-        desc_words = task.get("description", task_id).split()[:4]
-        slug = "-".join(w.lower() for w in desc_words if w.isalnum())[:30]
+    # Find root tasks
+    tree.root_tasks = [
+        tid for tid, t in tree.tasks.items()
+        if t.parent_id is None
+    ]
 
-        if has_children:
-            # Parent task: create setup and complete steps
-            setup_step = {
-                "name": f"{task_id}-setup",
-                "command": f"arborist task pre-sync {task_id}",
-            }
-            if parent_id:
-                setup_step["depends"] = [f"{parent_id}-setup"]
-            else:
-                setup_step["depends"] = ["branches-setup"]
-            dag["steps"].append(setup_step)
+    # Build using SubDagBuilder
+    config = DagConfig(name=dag_name, description=description, spec_id=spec_id)
+    builder = SubDagBuilder(config)
 
-            # Complete step will be added after we know all children
-            # (handled in second pass)
+    # We need a TaskSpec but we don't have one, so we build manually
+    # Build root DAG
+    root_steps: list[SubDagStep] = [
+        SubDagStep(name="branches-setup", command="arborist spec branch-create-all")
+    ]
+
+    # Linear calls to root tasks
+    prev_step = "branches-setup"
+    for task_id in sorted(tree.root_tasks):
+        root_steps.append(SubDagStep(
+            name=f"call-{task_id}",
+            call=task_id,
+            depends=[prev_step],
+        ))
+        prev_step = f"call-{task_id}"
+
+    root = SubDag(
+        name=dag_name,
+        description=description or f"DAG for {spec_id}",
+        env=[f"ARBORIST_MANIFEST=${{DAG_DIR}}/{spec_id}.json"],
+        steps=root_steps,
+        is_root=True,
+    )
+
+    # Build subdags for each task
+    subdags: list[SubDag] = []
+    for task_id in sorted(tree.tasks.keys()):
+        task = tree.get_task(task_id)
+        if not task:
+            continue
+
+        if tree.is_leaf(task_id):
+            subdag = builder._build_leaf_subdag(task_id)
         else:
-            # Leaf task: full workflow
-            step = {
-                "name": f"{task_id}-{slug}"[:40],
-                "command": f"""arborist task pre-sync {task_id} &&
-arborist task run {task_id} &&
-arborist task run-test {task_id} &&
-arborist task post-merge {task_id} &&
-arborist task post-cleanup {task_id}""",
-            }
-            if parent_id:
-                step["depends"] = [f"{parent_id}-setup"]
-            else:
-                step["depends"] = ["branches-setup"]
-            dag["steps"].append(step)
+            subdag = builder._build_parent_subdag(task_id, tree)
 
-    # Second pass: add complete steps for parent tasks
-    for task in tasks:
-        if task.get("children"):
-            task_id = task["id"]
-            children = task["children"]
+        subdags.append(subdag)
 
-            # Find step names for children
-            child_deps = []
-            for child_id in children:
-                child_task = next((t for t in tasks if t["id"] == child_id), None)
-                if child_task:
-                    if child_task.get("children"):
-                        child_deps.append(f"{child_id}-complete")
-                    else:
-                        # Find the leaf step name
-                        desc_words = child_task.get("description", child_id).split()[:4]
-                        slug = "-".join(w.lower() for w in desc_words if w.isalnum())[:30]
-                        child_deps.append(f"{child_id}-{slug}"[:40])
+    # Render to multi-document YAML
+    import yaml
 
-            complete_step = {
-                "name": f"{task_id}-complete",
-                "command": f"""arborist task run-test {task_id} &&
-arborist task post-merge {task_id} &&
-arborist task post-cleanup {task_id}""",
-                "depends": child_deps,
-            }
-            dag["steps"].append(complete_step)
+    class CustomDumper(yaml.SafeDumper):
+        pass
 
-    return yaml.dump(dag, default_flow_style=False, sort_keys=False)
+    def represent_list(dumper, data):
+        if all(isinstance(item, str) for item in data):
+            return dumper.represent_sequence(
+                "tag:yaml.org,2002:seq", data, flow_style=True
+            )
+        return dumper.represent_sequence("tag:yaml.org,2002:seq", data)
+
+    def represent_str(dumper, data):
+        if "\n" in data:
+            return dumper.represent_scalar("tag:yaml.org,2002:str", data, style="|")
+        return dumper.represent_scalar("tag:yaml.org,2002:str", data)
+
+    CustomDumper.add_representer(list, represent_list)
+    CustomDumper.add_representer(str, represent_str)
+
+    documents = []
+
+    # Root DAG
+    root_dict = builder._subdag_to_dict(root)
+    documents.append(yaml.dump(
+        root_dict, Dumper=CustomDumper, default_flow_style=False, sort_keys=False
+    ))
+
+    # Subdags
+    for subdag in subdags:
+        subdag_dict = builder._subdag_to_dict(subdag)
+        documents.append(yaml.dump(
+            subdag_dict, Dumper=CustomDumper, default_flow_style=False, sort_keys=False
+        ))
+
+    return "---\n".join(documents)

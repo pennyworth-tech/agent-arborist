@@ -677,11 +677,13 @@ T001 → T002 → T003
 
         # All arborist commands should have --echo-for-testing injected
         import yaml
-        dag_data = yaml.safe_load(content)
-        for step in dag_data.get("steps", []):
-            cmd = step.get("command", "")
-            if "arborist " in cmd:
-                assert "--echo-for-testing" in cmd, f"Missing --echo-for-testing in: {cmd}"
+        # Multi-document YAML - check all documents
+        documents = list(yaml.safe_load_all(content))
+        for dag_data in documents:
+            for step in dag_data.get("steps", []):
+                cmd = step.get("command", "")
+                if "arborist " in cmd:
+                    assert "--echo-for-testing" in cmd, f"Missing --echo-for-testing in: {cmd}"
 
     def test_dag_build_echo_only_flag_is_hidden(self):
         """--echo-only should be a hidden flag."""
@@ -737,10 +739,12 @@ T001 → T002 → T003
         lines = result.output.split("\n")
         yaml_start = next(i for i, line in enumerate(lines) if line.startswith("name:"))
         yaml_content = "\n".join(lines[yaml_start:])
-        dag = yaml.safe_load(yaml_content)
+        # Multi-document YAML - check all documents
+        documents = list(yaml.safe_load_all(yaml_content))
 
-        for step in dag["steps"]:
-            assert len(step["name"]) <= 40, f"Step name too long: {step['name']}"
+        for dag in documents:
+            for step in dag.get("steps", []):
+                assert len(step["name"]) <= 40, f"Step name too long: {step['name']}"
 
     def test_dag_build_with_show(self, git_repo_with_spec, tmp_path):
         """Test --show flag displays YAML after writing."""

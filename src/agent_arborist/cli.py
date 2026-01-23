@@ -1247,13 +1247,16 @@ def spec_dag_build(
         console.print(f"[dim]  Base branch: {manifest.base_branch}[/dim]")
         console.print(f"[dim]  Tasks: {len(manifest.tasks)}[/dim]")
 
-    # Inject ARBORIST_MANIFEST env into generated DAG YAML
+    # Inject ARBORIST_MANIFEST env into generated DAG YAML (multi-document)
     import yaml
-    dag_data = yaml.safe_load(dag_yaml)
+    documents = list(yaml.safe_load_all(dag_yaml))
+
+    # Root DAG is first document
+    root_dag = documents[0]
 
     # Add env section if not present
-    if "env" not in dag_data:
-        dag_data["env"] = []
+    if "env" not in root_dag:
+        root_dag["env"] = []
 
     # Add manifest path - use DAG_DIR variable that DAGU provides
     # NOTE: DAGU requires KEY=value format, not KEY: value
@@ -1261,36 +1264,40 @@ def spec_dag_build(
     manifest_env = f"ARBORIST_MANIFEST=${{DAG_DIR}}/{manifest_path.name}"
     has_manifest = any(
         isinstance(e, str) and e.startswith("ARBORIST_MANIFEST=")
-        for e in dag_data["env"]
+        for e in root_dag["env"]
     )
     if has_manifest:
         # Replace existing manifest with correct path
-        dag_data["env"] = [
+        root_dag["env"] = [
             manifest_env if (isinstance(e, str) and e.startswith("ARBORIST_MANIFEST=")) else e
-            for e in dag_data["env"]
+            for e in root_dag["env"]
         ]
         # Remove duplicates (keep first)
         seen = set()
         unique_env = []
-        for e in dag_data["env"]:
+        for e in root_dag["env"]:
             key = e.split("=")[0] if isinstance(e, str) and "=" in e else e
             if key not in seen:
                 seen.add(key)
                 unique_env.append(e)
-        dag_data["env"] = unique_env
+        root_dag["env"] = unique_env
     else:
-        dag_data["env"].append(manifest_env)
+        root_dag["env"].append(manifest_env)
 
-    # If echo_only, inject --echo-for-testing into all arborist commands
+    # If echo_only, inject --echo-for-testing into all arborist commands (in all documents)
     if echo_only:
-        for step in dag_data.get("steps", []):
-            cmd = step.get("command", "")
-            # Handle both 'arborist' and potential path variations
-            if "arborist " in cmd:
-                step["command"] = cmd.replace("arborist ", "arborist --echo-for-testing ", 1)
+        for doc in documents:
+            for step in doc.get("steps", []):
+                cmd = step.get("command", "")
+                # Handle both 'arborist' and potential path variations
+                if "arborist " in cmd:
+                    step["command"] = cmd.replace("arborist ", "arborist --echo-for-testing ", 1)
 
-    # Re-serialize YAML
-    dag_yaml = yaml.dump(dag_data, default_flow_style=False, sort_keys=False)
+    # Re-serialize as multi-document YAML
+    yaml_parts = []
+    for doc in documents:
+        yaml_parts.append(yaml.dump(doc, default_flow_style=False, sort_keys=False))
+    dag_yaml = "---\n".join(yaml_parts)
 
     # Write the DAG
     output_path.write_text(dag_yaml)
@@ -1376,10 +1383,11 @@ def spec_dag_show(
         console.print(f"[red]Error:[/red] DAG file not found: {dag_path}")
         raise SystemExit(1)
 
-    # Parse the DAG
+    # Parse the DAG (multi-document YAML - use first document as root)
     try:
         dag_content = dag_path.read_text()
-        dag_data = yaml.safe_load(dag_content)
+        documents = list(yaml.safe_load_all(dag_content))
+        dag_data = documents[0] if documents else {}
     except Exception as e:
         console.print(f"[red]Error parsing DAG:[/red] {e}")
         raise SystemExit(1)

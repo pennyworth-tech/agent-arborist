@@ -1,19 +1,55 @@
 name: simple_test_dag
-description: Simple test DAG for unit testing
+description: Simple test DAG with linear task chain
 env:
   - ARBORIST_MANIFEST=${DAG_DIR}/dag-simple.json
 steps:
-  - name: T001-setup
-    command: echo "Setting up"
-  - name: T002-build
-    command: echo "Building"
-    depends: [T001-setup]
-  - name: T003-test
-    command: echo "Testing"
-    depends: [T002-build]
-  - name: phase-1-complete
-    command: echo "Phase 1 complete"
-    depends: [T001-setup, T002-build]
-  - name: all-complete
-    command: echo "All tasks complete"
-    depends: [T003-test, phase-1-complete]
+  - name: branches-setup
+    command: arborist spec branch-create-all
+  - name: call-T001
+    call: T001
+    depends: [branches-setup]
+---
+name: T001
+steps:
+  - name: pre-sync
+    command: arborist task pre-sync T001
+  - name: call-T002
+    call: T002
+    depends: [pre-sync]
+  - name: complete
+    command: |
+      arborist task run-test T001 &&
+      arborist task post-merge T001 &&
+      arborist task post-cleanup T001
+    depends: [call-T002]
+---
+name: T002
+steps:
+  - name: pre-sync
+    command: arborist task pre-sync T002
+  - name: call-T003
+    call: T003
+    depends: [pre-sync]
+  - name: complete
+    command: |
+      arborist task run-test T002 &&
+      arborist task post-merge T002 &&
+      arborist task post-cleanup T002
+    depends: [call-T003]
+---
+name: T003
+steps:
+  - name: pre-sync
+    command: arborist task pre-sync T003
+  - name: run
+    command: arborist task run T003
+    depends: [pre-sync]
+  - name: run-test
+    command: arborist task run-test T003
+    depends: [run]
+  - name: post-merge
+    command: arborist task post-merge T003
+    depends: [run-test]
+  - name: post-cleanup
+    command: arborist task post-cleanup T003
+    depends: [post-merge]

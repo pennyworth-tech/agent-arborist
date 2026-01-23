@@ -3,24 +3,27 @@
   "source_branch": "main",
   "base_branch": "001-simple-test",
   "created_at": "2025-01-23T00:00:00Z",
-  "tasks": [
-    {
+  "tasks": {
+    "T001": {
       "task_id": "T001",
-      "branch": "001-simple-test/T001",
-      "parent_branch": "001-simple-test",
-      "children": []
+      "branch": "001-simple-test_a_T001",
+      "parent_branch": "001-simple-test_a",
+      "parent_task": null,
+      "children": ["T002"]
     },
-    {
+    "T002": {
       "task_id": "T002",
-      "branch": "001-simple-test/T002",
-      "parent_branch": "001-simple-test/T001",
-      "children": []
+      "branch": "001-simple-test_a_T001_T002",
+      "parent_branch": "001-simple-test_a_T001",
+      "parent_task": "T001",
+      "children": ["T003"]
     },
-    {
+    "T003": {
       "task_id": "T003",
-      "branch": "001-simple-test/T003",
-      "parent_branch": "001-simple-test/T002",
+      "branch": "001-simple-test_a_T002_T003",
+      "parent_branch": "001-simple-test_a_T002",
+      "parent_task": "T002",
       "children": []
     }
-  ]
+  }
 }

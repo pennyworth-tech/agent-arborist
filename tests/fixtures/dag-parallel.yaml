@@ -3,29 +3,113 @@ description: Test DAG with parallel tasks
 env:
   - ARBORIST_MANIFEST=${DAG_DIR}/dag-parallel.json
 steps:
-  - name: T001-init
-    command: echo "Initializing"
-  - name: T002-module-a
-    command: echo "Building module A"
-    depends: [T001-init]
-  - name: T003-module-b
-    command: echo "Building module B"
-    depends: [T001-init]
-  - name: T004-module-c
-    command: echo "Building module C"
-    depends: [T001-init]
-  - name: phase-1-complete
-    command: echo "Phase 1 complete"
-    depends: [T001-init]
-  - name: T005-integrate
-    command: echo "Integrating modules"
-    depends: [T002-module-a, T003-module-b, T004-module-c]
-  - name: T006-test
-    command: echo "Running tests"
-    depends: [T005-integrate]
-  - name: phase-2-complete
-    command: echo "Phase 2 complete"
-    depends: [T005-integrate, T006-test]
-  - name: all-complete
-    command: echo "All tasks complete"
-    depends: [phase-1-complete, phase-2-complete]
+  - name: branches-setup
+    command: arborist spec branch-create-all
+  - name: call-T001
+    call: T001
+    depends: [branches-setup]
+  - name: call-T005
+    call: T005
+    depends: [call-T001]
+---
+name: T001
+steps:
+  - name: pre-sync
+    command: arborist task pre-sync T001
+  - name: call-T002
+    call: T002
+    depends: [pre-sync]
+  - name: call-T003
+    call: T003
+    depends: [pre-sync]
+  - name: call-T004
+    call: T004
+    depends: [pre-sync]
+  - name: complete
+    command: |
+      arborist task run-test T001 &&
+      arborist task post-merge T001 &&
+      arborist task post-cleanup T001
+    depends: [call-T002, call-T003, call-T004]
+---
+name: T002
+steps:
+  - name: pre-sync
+    command: arborist task pre-sync T002
+  - name: run
+    command: arborist task run T002
+    depends: [pre-sync]
+  - name: run-test
+    command: arborist task run-test T002
+    depends: [run]
+  - name: post-merge
+    command: arborist task post-merge T002
+    depends: [run-test]
+  - name: post-cleanup
+    command: arborist task post-cleanup T002
+    depends: [post-merge]
+---
+name: T003
+steps:
+  - name: pre-sync
+    command: arborist task pre-sync T003
+  - name: run
+    command: arborist task run T003
+    depends: [pre-sync]
+  - name: run-test
+    command: arborist task run-test T003
+    depends: [run]
+  - name: post-merge
+    command: arborist task post-merge T003
+    depends: [run-test]
+  - name: post-cleanup
+    command: arborist task post-cleanup T003
+    depends: [post-merge]
+---
+name: T004
+steps:
+  - name: pre-sync
+    command: arborist task pre-sync T004
+  - name: run
+    command: arborist task run T004
+    depends: [pre-sync]
+  - name: run-test
+    command: arborist task run-test T004
+    depends: [run]
+  - name: post-merge
+    command: arborist task post-merge T004
+    depends: [run-test]
+  - name: post-cleanup
+    command: arborist task post-cleanup T004
+    depends: [post-merge]
+---
+name: T005
+steps:
+  - name: pre-sync
+    command: arborist task pre-sync T005
+  - name: call-T006
+    call: T006
+    depends: [pre-sync]
+  - name: complete
+    command: |
+      arborist task run-test T005 &&
+      arborist task post-merge T005 &&
+      arborist task post-cleanup T005
+    depends: [call-T006]
+---
+name: T006
+steps:
+  - name: pre-sync
+    command: arborist task pre-sync T006
+  - name: run
+    command: arborist task run T006
+    depends: [pre-sync]
+  - name: run-test
+    command: arborist task run-test T006
+    depends: [run]
+  - name: post-merge
+    command: arborist task post-merge T006
+    depends: [run-test]
+  - name: post-cleanup
+    command: arborist task post-cleanup T006
+    depends: [post-merge]

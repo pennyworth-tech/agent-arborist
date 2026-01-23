@@ -8,6 +8,7 @@ from agent_arborist.dag_generator import (
     _topological_sort_steps,
     _remove_empty_depends,
     validate_and_fix_dag,
+    validate_and_fix_multi_doc,
 )
 
 
@@ -253,3 +254,68 @@ class TestValidateAndFixDag:
         assert step_names.index("T002-setup") < step_names.index("T003-leaf")
         assert step_names.index("T003-leaf") < step_names.index("T002-complete")
         assert step_names.index("T002-complete") < step_names.index("T001-complete")
+
+
+class TestValidateAndFixMultiDoc:
+    """Tests for validate_and_fix_multi_doc function."""
+
+    def test_fixes_all_documents(self):
+        """Test that fixes are applied to all documents."""
+        documents = [
+            {
+                "name": "root",
+                "env": ["KEY: value"],
+                "steps": [
+                    {"name": "step1", "command": "echo 1", "depends": []},
+                ],
+            },
+            {
+                "name": "T001",
+                "steps": [
+                    {"name": "step2", "command": "echo 2", "depends": ["step1"]},
+                    {"name": "step1", "command": "echo 1"},
+                ],
+            },
+        ]
+
+        fixed_docs, fixes = validate_and_fix_multi_doc(documents)
+
+        # Root env should be fixed
+        assert "=" in fixed_docs[0]["env"][0]
+
+        # Root empty depends should be removed
+        assert "depends" not in fixed_docs[0]["steps"][0]
+
+        # Subdag steps should be sorted
+        assert fixed_docs[1]["steps"][0]["name"] == "step1"
+
+        # Fixes should be prefixed with document names
+        assert any("[root]" in f for f in fixes)
+        assert any("[T001]" in f for f in fixes)
+
+    def test_detects_cycle_in_subdag(self):
+        """Test that cycle in a subdag is detected."""
+        documents = [
+            {
+                "name": "root",
+                "steps": [{"name": "call-T001", "call": "T001"}],
+            },
+            {
+                "name": "T001",
+                "steps": [
+                    {"name": "step1", "command": "echo 1", "depends": ["step2"]},
+                    {"name": "step2", "command": "echo 2", "depends": ["step1"]},
+                ],
+            },
+        ]
+
+        fixed_docs, fixes = validate_and_fix_multi_doc(documents)
+
+        assert any("Cycle detected" in f and "T001" in f for f in fixes)
+
+    def test_empty_documents_handled(self):
+        """Test that empty document list is handled."""
+        fixed_docs, fixes = validate_and_fix_multi_doc([])
+
+        assert fixed_docs == []
+        assert fixes == []
