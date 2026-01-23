@@ -878,24 +878,43 @@ def spec_whoami() -> None:
 def spec_branch_create_all(ctx: click.Context) -> None:
     """Create all branches from manifest.
 
-    This command reads the ARBORIST_MANIFEST environment variable to find the
-    manifest file, then creates the base branch and all task branches in
-    topological order.
+    Auto-detects spec from git branch, or use --spec to specify.
+    Can also use ARBORIST_MANIFEST env var when running from a DAG step.
 
-    Run this once at the start of a DAG execution.
+    Creates the base branch and all task branches in topological order.
     """
     import os
 
-    manifest_path = os.environ.get("ARBORIST_MANIFEST")
-    if not manifest_path:
-        console.print("[red]Error:[/red] ARBORIST_MANIFEST environment variable not set")
-        console.print("This command should be run from a DAGU DAG step")
-        raise SystemExit(1)
+    # Try to get manifest path from multiple sources
+    manifest_path_str = os.environ.get("ARBORIST_MANIFEST")
+
+    if manifest_path_str:
+        manifest_path = Path(manifest_path_str)
+    else:
+        # Auto-detect from spec_id and dagu_home
+        spec_id = ctx.obj.get("spec_id")
+        dagu_home = ctx.obj.get("dagu_home")
+
+        if not spec_id:
+            console.print("[red]Error:[/red] No spec available")
+            console.print("Either:")
+            console.print("  - Run from a spec branch (e.g., 002-my-feature)")
+            console.print("  - Use --spec option (e.g., --spec 002-my-feature)")
+            console.print("  - Set ARBORIST_MANIFEST environment variable")
+            raise SystemExit(1)
+
+        if not dagu_home:
+            console.print("[red]Error:[/red] DAGU_HOME not set")
+            console.print("Run 'arborist init' first to initialize the project")
+            raise SystemExit(1)
+
+        manifest_path = Path(dagu_home) / "dags" / f"{spec_id}.json"
 
     try:
-        manifest = load_manifest(Path(manifest_path))
+        manifest = load_manifest(manifest_path)
     except FileNotFoundError:
         console.print(f"[red]Error:[/red] Manifest not found: {manifest_path}")
+        console.print("Run 'arborist spec dag-build' first to generate the manifest")
         raise SystemExit(1)
     except Exception as e:
         console.print(f"[red]Error loading manifest:[/red] {e}")
@@ -934,23 +953,43 @@ def spec_branch_create_all(ctx: click.Context) -> None:
 def spec_branch_cleanup_all(ctx: click.Context, force: bool) -> None:
     """Remove all worktrees and branches for the current spec.
 
-    This command reads the ARBORIST_MANIFEST environment variable to find the
-    manifest file, then removes all task worktrees and branches.
+    Auto-detects spec from git branch, or use --spec to specify.
+    Can also use ARBORIST_MANIFEST env var when running from a DAG step.
 
     Use --force to force removal even if branches are not fully merged.
     """
     import os
 
-    manifest_path = os.environ.get("ARBORIST_MANIFEST")
-    if not manifest_path:
-        console.print("[red]Error:[/red] ARBORIST_MANIFEST environment variable not set")
-        console.print("This command should be run from a DAGU DAG step")
-        raise SystemExit(1)
+    # Try to get manifest path from multiple sources
+    manifest_path_str = os.environ.get("ARBORIST_MANIFEST")
+
+    if manifest_path_str:
+        manifest_path = Path(manifest_path_str)
+    else:
+        # Auto-detect from spec_id and dagu_home
+        spec_id = ctx.obj.get("spec_id")
+        dagu_home = ctx.obj.get("dagu_home")
+
+        if not spec_id:
+            console.print("[red]Error:[/red] No spec available")
+            console.print("Either:")
+            console.print("  - Run from a spec branch (e.g., 002-my-feature)")
+            console.print("  - Use --spec option (e.g., --spec 002-my-feature)")
+            console.print("  - Set ARBORIST_MANIFEST environment variable")
+            raise SystemExit(1)
+
+        if not dagu_home:
+            console.print("[red]Error:[/red] DAGU_HOME not set")
+            console.print("Run 'arborist init' first to initialize the project")
+            raise SystemExit(1)
+
+        manifest_path = Path(dagu_home) / "dags" / f"{spec_id}.json"
 
     try:
-        manifest = load_manifest(Path(manifest_path))
+        manifest = load_manifest(manifest_path)
     except FileNotFoundError:
         console.print(f"[red]Error:[/red] Manifest not found: {manifest_path}")
+        console.print("Run 'arborist spec dag-build' first to generate the manifest")
         raise SystemExit(1)
     except Exception as e:
         console.print(f"[red]Error loading manifest:[/red] {e}")
