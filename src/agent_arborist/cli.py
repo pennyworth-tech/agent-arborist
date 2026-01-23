@@ -13,7 +13,14 @@ from rich.table import Table
 from agent_arborist import __version__
 from agent_arborist.checks import check_dagu, check_runtimes
 from agent_arborist.spec import detect_spec_from_git
-from agent_arborist.runner import get_runner, RunnerType, DEFAULT_RUNNER
+from agent_arborist.runner import (
+    get_runner,
+    RunnerType,
+    get_default_runner,
+    get_default_model,
+    ARBORIST_DEFAULT_RUNNER_ENV_VAR,
+    ARBORIST_DEFAULT_MODEL_ENV_VAR,
+)
 from agent_arborist.home import (
     get_arborist_home,
     get_dagu_home,
@@ -163,20 +170,21 @@ def doctor(ctx: click.Context) -> None:
     "--runner",
     "-r",
     type=click.Choice(["claude", "opencode", "gemini"]),
-    default=DEFAULT_RUNNER,
-    help=f"Runner to test (default: {DEFAULT_RUNNER})",
+    default=None,
+    help=f"Runner to test (default: ${ARBORIST_DEFAULT_RUNNER_ENV_VAR} or opencode)",
 )
-def doctor_check_runner(runner: RunnerType) -> None:
+def doctor_check_runner(runner: RunnerType | None) -> None:
     """Test that a runner can execute prompts."""
-    console.print(f"[cyan]Testing {runner} runner...[/cyan]")
+    runner_type = runner or get_default_runner()
+    console.print(f"[cyan]Testing {runner_type} runner...[/cyan]")
 
-    runner_instance = get_runner(runner)
+    runner_instance = get_runner(runner_type)
 
     if not runner_instance.is_available():
-        console.print(f"[red]FAIL:[/red] {runner} not found in PATH")
+        console.print(f"[red]FAIL:[/red] {runner_type} not found in PATH")
         raise SystemExit(1)
 
-    console.print(f"[dim]Found {runner} at {runner_instance.command}[/dim]")
+    console.print(f"[dim]Found {runner_type} at {runner_instance.command}[/dim]")
     console.print("[dim]Sending test prompt...[/dim]\n")
 
     result = runner_instance.run("Tell me a short joke (one liner).", timeout=30)
@@ -477,7 +485,7 @@ def task_pre_sync(ctx: click.Context, task_id: str) -> None:
     "-r",
     type=click.Choice(["claude", "opencode", "gemini"]),
     default=None,
-    help=f"Runner to use (default: {DEFAULT_RUNNER})",
+    help=f"Runner to use (default: ${ARBORIST_DEFAULT_RUNNER_ENV_VAR} or opencode)",
 )
 @click.pass_context
 def task_run(ctx: click.Context, task_id: str, timeout: int, runner: str | None) -> None:
@@ -513,7 +521,7 @@ def task_run(ctx: click.Context, task_id: str, timeout: int, runner: str | None)
     worktree_path = get_worktree_path(manifest.spec_id, task_id)
 
     # Get runner type early for echo
-    runner_type = runner or DEFAULT_RUNNER
+    runner_type = runner or get_default_runner()
 
     if ctx.obj.get("echo_for_testing"):
         echo_command(
@@ -544,8 +552,7 @@ Complete the implementation for this specific task. After implementing:
 Do NOT commit - that will be handled by the task workflow.
 """
 
-    # Get runner
-    runner_type = runner or DEFAULT_RUNNER
+    # Get runner (model comes from environment default)
     runner_instance = get_runner(runner_type)
 
     if not runner_instance.is_available():
@@ -718,10 +725,11 @@ def task_post_merge(ctx: click.Context, task_id: str, no_resolve: bool) -> None:
         # Attempt AI conflict resolution
         console.print("\n[cyan]Attempting AI conflict resolution...[/cyan]")
 
-        runner = get_runner(DEFAULT_RUNNER)
-        if not runner.is_available():
+        default_runner = get_default_runner()
+        runner_instance = get_runner(default_runner)
+        if not runner_instance.is_available():
             abort_merge()
-            console.print(f"[red]Error:[/red] {DEFAULT_RUNNER} not available for conflict resolution")
+            console.print(f"[red]Error:[/red] {default_runner} not available for conflict resolution")
             raise SystemExit(1)
 
         git_root = get_git_root()
@@ -746,7 +754,7 @@ Conflicted file:
 {conflict_content}
 ```"""
 
-            resolve_result = runner.run(resolve_prompt, timeout=60)
+            resolve_result = runner_instance.run(resolve_prompt, timeout=60)
 
             if resolve_result.success and resolve_result.output:
                 # Write resolved content
@@ -1042,14 +1050,14 @@ def spec_branch_cleanup_all(ctx: click.Context, force: bool) -> None:
     "-r",
     type=click.Choice(["claude", "opencode", "gemini"]),
     default=None,
-    help=f"Runner for AI inference (default: {DEFAULT_RUNNER})",
+    help=f"Runner for AI inference (default: ${ARBORIST_DEFAULT_RUNNER_ENV_VAR} or opencode)",
 )
 @click.option(
     "--model",
     "-m",
     type=str,
     default=None,
-    help="Model to use (e.g., 'gemini-2.5-flash' for gemini, 'zai-coding-plan/glm-4.7' for opencode)",
+    help=f"Model to use (default: ${ARBORIST_DEFAULT_MODEL_ENV_VAR} or cerebras/zai-glm-4.7)",
 )
 @click.option(
     "--output",
@@ -1114,8 +1122,8 @@ def spec_dag_build(
             "spec dag-build",
             spec_id=spec_id or "none",
             directory=directory or "auto",
-            runner=runner or DEFAULT_RUNNER,
-            model=model or "default",
+            runner=runner or get_default_runner(),
+            model=model or get_default_model() or "default",
             no_ai=str(no_ai),
             echo_only=str(echo_only),
         )
@@ -1186,13 +1194,14 @@ def spec_dag_build(
         dag_yaml = builder.build_yaml(task_spec)
     else:
         # AI inference mode
-        runner_type = runner or DEFAULT_RUNNER
-        model_display = f" ({model})" if model else ""
+        runner_type = runner or get_default_runner()
+        resolved_model = model if model is not None else get_default_model()
+        model_display = f" ({resolved_model})" if resolved_model else ""
         if not ctx.obj.get("quiet"):
             console.print(f"[cyan]Generating DAG using {runner_type}{model_display}...[/cyan]")
 
-        # Check if runner is available
-        runner_instance = get_runner(runner_type, model=model)
+        # Check if runner is available (pass model explicitly to avoid double-defaulting)
+        runner_instance = get_runner(runner_type, model=resolved_model)
         if not runner_instance.is_available():
             console.print(f"[red]Error:[/red] {runner_type} not found in PATH")
             console.print("Install the runner or use --no-ai for deterministic parsing")

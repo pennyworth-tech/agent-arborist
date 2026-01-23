@@ -161,7 +161,8 @@ class TestGeminiRunner:
 
 class TestGetRunner:
     def test_default_runner(self):
-        assert DEFAULT_RUNNER == "claude"
+        # Default is now opencode (can be overridden via ARBORIST_DEFAULT_RUNNER env var)
+        assert DEFAULT_RUNNER == "opencode"
 
     def test_get_claude_runner(self):
         runner = get_runner("claude")
@@ -176,8 +177,9 @@ class TestGetRunner:
         assert isinstance(runner, GeminiRunner)
 
     def test_get_default_runner(self):
+        # Default is now opencode (can be overridden via ARBORIST_DEFAULT_RUNNER env var)
         runner = get_runner()
-        assert isinstance(runner, ClaudeRunner)
+        assert isinstance(runner, OpencodeRunner)
 
     def test_unknown_runner_raises(self):
         with pytest.raises(ValueError) as exc_info:
