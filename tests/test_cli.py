@@ -479,3 +479,266 @@ class TestDaguHomeEnvVar:
 
         # DAGU_HOME should not be set since we didn't init
         assert os.environ.get(DAGU_HOME_ENV_VAR) is None
+
+
+# -----------------------------------------------------------------------------
+# DAG commands
+# -----------------------------------------------------------------------------
+
+
+class TestDagCommands:
+    def test_dag_group_help(self):
+        runner = CliRunner()
+        result = runner.invoke(main, ["dag", "--help"])
+        assert result.exit_code == 0
+        assert "build" in result.output
+
+    def test_dag_build_help(self):
+        runner = CliRunner()
+        result = runner.invoke(main, ["dag", "build", "--help"])
+        assert result.exit_code == 0
+        assert "DIRECTORY" in result.output
+        assert "--dry-run" in result.output
+        assert "--runner" in result.output
+
+
+class TestDagBuild:
+    @pytest.fixture
+    def git_repo_with_spec(self, tmp_path):
+        """Create a temp git repo with a spec directory."""
+        original_cwd = os.getcwd()
+        os.chdir(tmp_path)
+        subprocess.run(["git", "init"], capture_output=True, check=True)
+        readme = tmp_path / "README.md"
+        readme.write_text("# Test\n")
+        subprocess.run(["git", "add", "."], capture_output=True, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "init"],
+            capture_output=True,
+            check=True,
+            env={
+                **os.environ,
+                "GIT_AUTHOR_NAME": "Test",
+                "GIT_AUTHOR_EMAIL": "test@test.com",
+                "GIT_COMMITTER_NAME": "Test",
+                "GIT_COMMITTER_EMAIL": "test@test.com",
+            },
+        )
+
+        # Create spec directory with task file
+        spec_dir = tmp_path / "specs" / "test-spec"
+        spec_dir.mkdir(parents=True)
+        task_file = spec_dir / "tasks.md"
+        task_file.write_text("""# Tasks: Test Project
+
+**Project**: Test project
+**Total Tasks**: 3
+
+## Phase 1: Setup
+
+- [ ] T001 Create project directory
+- [ ] T002 Add requirements file
+- [ ] T003 Create main module
+
+**Checkpoint**: Ready
+
+---
+
+## Dependencies
+
+```
+T001 → T002 → T003
+```
+""")
+
+        yield tmp_path
+        os.chdir(original_cwd)
+
+    def test_dag_build_dry_run(self, git_repo_with_spec):
+        runner = CliRunner()
+        spec_dir = git_repo_with_spec / "specs" / "test-spec"
+
+        result = runner.invoke(main, ["dag", "build", str(spec_dir), "--dry-run", "--no-ai"])
+
+        assert result.exit_code == 0
+        # Name is derived from directory name (with dashes converted to underscores)
+        assert "name: test_spec" in result.output
+        assert "T001" in result.output
+        assert "T002" in result.output
+        assert "T003" in result.output
+
+    def test_dag_build_with_output(self, git_repo_with_spec, tmp_path):
+        runner = CliRunner()
+        spec_dir = git_repo_with_spec / "specs" / "test-spec"
+        output_file = tmp_path / "output.yaml"
+
+        result = runner.invoke(
+            main, ["dag", "build", str(spec_dir), "-o", str(output_file), "--no-ai"]
+        )
+
+        assert result.exit_code == 0
+        assert output_file.exists()
+        content = output_file.read_text()
+        assert "T001" in content
+        assert "depends:" in content
+
+    def test_dag_build_to_dagu_home(self, git_repo_with_spec, monkeypatch):
+        # Initialize arborist first
+        runner = CliRunner()
+        result = runner.invoke(main, ["init"])
+        assert result.exit_code == 0
+
+        spec_dir = git_repo_with_spec / "specs" / "test-spec"
+
+        result = runner.invoke(main, ["dag", "build", str(spec_dir), "--no-ai"])
+
+        assert result.exit_code == 0
+        assert "DAG written to:" in result.output
+
+        # Verify file was created in dagu home
+        dagu_home = git_repo_with_spec / ".arborist" / "dagu" / "dags"
+        dag_files = list(dagu_home.glob("*.yaml"))
+        assert len(dag_files) == 1
+
+    def test_dag_build_no_directory_no_spec(self, non_git_dir):
+        runner = CliRunner()
+        result = runner.invoke(main, ["dag", "build"])
+
+        assert result.exit_code == 1
+        assert "No spec name" in result.output or "Error" in result.output
+
+    def test_dag_build_nonexistent_directory(self, git_repo):
+        runner = CliRunner()
+        result = runner.invoke(main, ["dag", "build", "/nonexistent/path"])
+
+        # Click validates path exists
+        assert result.exit_code != 0
+
+    def test_dag_build_step_names_under_40_chars(self, git_repo_with_spec):
+        """Ensure all step names are under 40 chars for dagu compatibility."""
+        runner = CliRunner()
+        spec_dir = git_repo_with_spec / "specs" / "test-spec"
+
+        result = runner.invoke(main, ["dag", "build", str(spec_dir), "--dry-run", "--no-ai"])
+
+        assert result.exit_code == 0
+
+        # Parse the YAML output and check step names
+        import yaml
+        # Find the YAML content (skip the status messages)
+        lines = result.output.split("\n")
+        yaml_start = next(i for i, line in enumerate(lines) if line.startswith("name:"))
+        yaml_content = "\n".join(lines[yaml_start:])
+        dag = yaml.safe_load(yaml_content)
+
+        for step in dag["steps"]:
+            assert len(step["name"]) <= 40, f"Step name too long: {step['name']}"
+
+    def test_dag_build_with_show(self, git_repo_with_spec, tmp_path):
+        """Test --show flag displays YAML after writing."""
+        runner = CliRunner()
+        spec_dir = git_repo_with_spec / "specs" / "test-spec"
+        output_file = tmp_path / "output.yaml"
+
+        result = runner.invoke(
+            main, ["dag", "build", str(spec_dir), "-o", str(output_file), "--show", "--no-ai"]
+        )
+
+        assert result.exit_code == 0
+        assert "DAG written to:" in result.output
+        # YAML content should appear after the write message
+        assert "steps:" in result.output
+        assert "T001" in result.output
+
+
+class TestDagShow:
+    @pytest.fixture
+    def git_repo_with_dag(self, tmp_path):
+        """Create a temp git repo with a built DAG."""
+        original_cwd = os.getcwd()
+        os.chdir(tmp_path)
+        subprocess.run(["git", "init"], capture_output=True, check=True)
+        readme = tmp_path / "README.md"
+        readme.write_text("# Test\n")
+        subprocess.run(["git", "add", "."], capture_output=True, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "init"],
+            capture_output=True,
+            check=True,
+            env={
+                **os.environ,
+                "GIT_AUTHOR_NAME": "Test",
+                "GIT_AUTHOR_EMAIL": "test@test.com",
+                "GIT_COMMITTER_NAME": "Test",
+                "GIT_COMMITTER_EMAIL": "test@test.com",
+            },
+        )
+
+        # Initialize arborist
+        cli_runner = CliRunner()
+        cli_runner.invoke(main, ["init"])
+
+        # Create a DAG file directly
+        dags_dir = tmp_path / ".arborist" / "dagu" / "dags"
+        dag_file = dags_dir / "test-dag.yaml"
+        dag_file.write_text("""name: test_dag
+description: Test DAG
+steps:
+  - name: step1
+    command: echo step1
+  - name: step2
+    command: echo step2
+    depends: [step1]
+  - name: step3
+    command: echo step3
+    depends: [step1]
+  - name: step4
+    command: echo step4
+    depends: [step2, step3]
+""")
+
+        yield tmp_path
+        os.chdir(original_cwd)
+
+    def test_dag_show_summary(self, git_repo_with_dag):
+        runner = CliRunner()
+        result = runner.invoke(main, ["dag", "show", "test-dag"])
+
+        assert result.exit_code == 0
+        assert "test_dag" in result.output
+        assert "Steps:" in result.output
+        assert "step1" in result.output
+        assert "step4" in result.output
+
+    def test_dag_show_deps(self, git_repo_with_dag):
+        runner = CliRunner()
+        result = runner.invoke(main, ["dag", "show", "test-dag", "--deps"])
+
+        assert result.exit_code == 0
+        assert "step2" in result.output
+        assert "← step1" in result.output
+
+    def test_dag_show_blocking(self, git_repo_with_dag):
+        runner = CliRunner()
+        result = runner.invoke(main, ["dag", "show", "test-dag", "--blocking"])
+
+        assert result.exit_code == 0
+        assert "step1" in result.output
+        assert "→ step2" in result.output
+        assert "→ step3" in result.output
+
+    def test_dag_show_yaml(self, git_repo_with_dag):
+        runner = CliRunner()
+        result = runner.invoke(main, ["dag", "show", "test-dag", "--yaml"])
+
+        assert result.exit_code == 0
+        assert "name: test_dag" in result.output
+        assert "step2" in result.output
+        assert "depends:" in result.output
+
+    def test_dag_show_not_found(self, git_repo_with_dag):
+        runner = CliRunner()
+        result = runner.invoke(main, ["dag", "show", "nonexistent"])
+
+        assert result.exit_code == 1
+        assert "not found" in result.output

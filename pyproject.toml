@@ -32,6 +32,7 @@ pythonpath = ["src"]
 addopts = "-m 'not integration'"
 markers = [
     "integration: marks tests that require actual CLI tools (deselect with '-m \"not integration\"')",
+    "flaky: marks non-deterministic tests that use AI inference (run with '-m flaky')",
     "claude: marks tests that require claude CLI",
     "opencode: marks tests that require opencode CLI",
     "gemini: marks tests that require gemini CLI",

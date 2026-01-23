@@ -17,11 +17,15 @@ from agent_arborist.runner import get_runner, RunnerType, DEFAULT_RUNNER
 from agent_arborist.home import (
     get_arborist_home,
     get_dagu_home,
+    get_git_root,
     init_arborist_home,
     is_initialized,
     ArboristHomeError,
     DAGU_HOME_ENV_VAR,
 )
+from agent_arborist.task_spec import parse_task_spec
+from agent_arborist.dag_builder import DagConfig, DagBuilder
+from agent_arborist.dag_generator import DagGenerator
 
 console = Console()
 
@@ -29,8 +33,9 @@ console = Console()
 @click.group()
 @click.option("--quiet", "-q", is_flag=True, help="Suppress non-essential output")
 @click.option("--home", envvar="ARBORIST_HOME", help="Override arborist home directory")
+@click.option("--spec", "-s", envvar="ARBORIST_SPEC", help="Spec name (auto-detected from git branch if not set)")
 @click.pass_context
-def main(ctx: click.Context, quiet: bool, home: str | None) -> None:
+def main(ctx: click.Context, quiet: bool, home: str | None, spec: str | None) -> None:
     """Agent Arborist - Automated Task Tree Executor.
 
     Orchestrate DAG workflows with Claude Code and Dagu.
@@ -38,6 +43,7 @@ def main(ctx: click.Context, quiet: bool, home: str | None) -> None:
     ctx.ensure_object(dict)
     ctx.obj["quiet"] = quiet
     ctx.obj["home_override"] = home
+    ctx.obj["spec_override"] = spec
 
     # Set DAGU_HOME if arborist is initialized
     try:
@@ -50,6 +56,19 @@ def main(ctx: click.Context, quiet: bool, home: str | None) -> None:
     except ArboristHomeError:
         # Not in a git repo or not initialized - that's fine for some commands
         pass
+
+    # Resolve spec name (from override or git)
+    if spec:
+        ctx.obj["spec_name"] = spec
+        ctx.obj["spec_id"] = spec
+    else:
+        spec_info = detect_spec_from_git()
+        if spec_info.found:
+            ctx.obj["spec_name"] = spec_info.name
+            ctx.obj["spec_id"] = spec_info.spec_id
+        else:
+            ctx.obj["spec_name"] = None
+            ctx.obj["spec_id"] = None
 
 
 @main.command()
@@ -311,6 +330,344 @@ def spec_whoami() -> None:
             console.print(f"[dim]Branch:[/dim] {info.branch}")
         console.print()
         console.print("Set spec manually with [cyan]--spec[/cyan] or [cyan]-s[/cyan] on subsequent commands.")
+
+
+# -----------------------------------------------------------------------------
+# DAG commands
+# -----------------------------------------------------------------------------
+
+
+@main.group()
+def dag() -> None:
+    """DAG generation and management."""
+    pass
+
+
+@dag.command("build")
+@click.argument("directory", required=False, type=click.Path(exists=True))
+@click.option(
+    "--runner",
+    "-r",
+    type=click.Choice(["claude", "opencode", "gemini"]),
+    default=None,
+    help=f"Runner for AI inference (default: {DEFAULT_RUNNER})",
+)
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(),
+    help="Output path for DAG YAML (default: $DAGU_HOME/dags/<spec-id>.yaml)",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Generate DAG without writing (implies --show)",
+)
+@click.option(
+    "--show",
+    is_flag=True,
+    help="Display the generated YAML after writing",
+)
+@click.option(
+    "--no-ai",
+    is_flag=True,
+    help="Use deterministic parser instead of AI inference",
+)
+@click.option(
+    "--timeout",
+    "-t",
+    type=int,
+    default=120,
+    help="Timeout for AI inference in seconds (default: 120)",
+)
+@click.pass_context
+def dag_build(
+    ctx: click.Context,
+    directory: str | None,
+    runner: str | None,
+    output: str | None,
+    dry_run: bool,
+    show: bool,
+    no_ai: bool,
+    timeout: int,
+) -> None:
+    """Build a DAGU DAG from a task spec directory using AI inference.
+
+    DIRECTORY is the path to the task spec directory (default: specs/<spec-id>).
+    The directory should contain task markdown files.
+
+    By default, uses AI (claude/opencode/gemini) to analyze the spec and generate
+    the DAG with proper dependencies. Use --no-ai for deterministic parsing.
+    """
+    # Resolve spec_id (full identifier like "002-my-feature")
+    spec_id = ctx.obj.get("spec_id")
+
+    # Resolve directory
+    if directory:
+        spec_dir = Path(directory)
+    else:
+        if not spec_id:
+            console.print("[red]Error:[/red] No spec available")
+            console.print("Either:")
+            console.print("  - Provide a directory argument")
+            console.print("  - Use --spec option (e.g., --spec 002-my-feature)")
+            console.print("  - Run from a spec branch (e.g., 002-my-feature)")
+            raise SystemExit(1)
+
+        # Default to specs/<spec-id>
+        try:
+            git_root = get_git_root()
+            spec_dir = git_root / "specs" / spec_id
+        except ArboristHomeError:
+            console.print("[red]Error:[/red] Not in a git repository")
+            raise SystemExit(1)
+
+    if not spec_dir.is_dir():
+        console.print(f"[red]Error:[/red] Directory not found: {spec_dir}")
+        raise SystemExit(1)
+
+    # Find task spec files in directory
+    task_files = list(spec_dir.glob("tasks*.md")) + list(spec_dir.glob("**/tasks*.md"))
+    if not task_files:
+        # Also try any .md file
+        task_files = list(spec_dir.glob("*.md"))
+
+    if not task_files:
+        console.print(f"[red]Error:[/red] No task spec files found in {spec_dir}")
+        raise SystemExit(1)
+
+    # Use the first task file found (or combine them in future)
+    task_file = task_files[0]
+    if not ctx.obj.get("quiet"):
+        console.print(f"[dim]Using task spec:[/dim] {task_file}")
+
+    # Determine DAG name
+    dag_name = spec_id or spec_dir.name
+
+    if no_ai:
+        # Deterministic parsing mode
+        if not ctx.obj.get("quiet"):
+            console.print("[dim]Using deterministic parser (--no-ai)[/dim]")
+
+        try:
+            task_spec = parse_task_spec(task_file)
+        except Exception as e:
+            console.print(f"[red]Error parsing task spec:[/red] {e}")
+            raise SystemExit(1)
+
+        if not ctx.obj.get("quiet"):
+            console.print(f"[dim]Found {len(task_spec.tasks)} tasks in {len(task_spec.phases)} phases[/dim]")
+
+        dag_name_safe = dag_name.replace("-", "_")
+        config = DagConfig(
+            name=dag_name_safe,
+            description=task_spec.project,
+        )
+        builder = DagBuilder(config)
+        dag_yaml = builder.build_yaml(task_spec)
+    else:
+        # AI inference mode
+        runner_type = runner or DEFAULT_RUNNER
+        if not ctx.obj.get("quiet"):
+            console.print(f"[cyan]Generating DAG using {runner_type}...[/cyan]")
+
+        # Check if runner is available
+        runner_instance = get_runner(runner_type)
+        if not runner_instance.is_available():
+            console.print(f"[red]Error:[/red] {runner_type} not found in PATH")
+            console.print("Install the runner or use --no-ai for deterministic parsing")
+            raise SystemExit(1)
+
+        # Read spec content
+        spec_content = task_file.read_text()
+
+        # Generate using AI
+        generator = DagGenerator(runner=runner_instance)
+        result = generator.generate(spec_content, dag_name, timeout=timeout)
+
+        if not result.success:
+            console.print(f"[red]Error generating DAG:[/red] {result.error}")
+            if result.raw_output:
+                console.print(f"[dim]Raw output:[/dim]\n{result.raw_output[:500]}...")
+            raise SystemExit(1)
+
+        dag_yaml = result.yaml_content
+        if not ctx.obj.get("quiet"):
+            console.print("[green]OK:[/green] DAG generated successfully")
+
+    if dry_run:
+        console.print(dag_yaml)
+        return
+
+    # Determine output path - use spec_id for filename
+    if output:
+        output_path = Path(output)
+    else:
+        dagu_home = ctx.obj.get("dagu_home")
+        if not dagu_home:
+            console.print("[red]Error:[/red] DAGU_HOME not set")
+            console.print("Run 'arborist init' first or specify --output")
+            raise SystemExit(1)
+        output_path = Path(dagu_home) / "dags" / f"{dag_name}.yaml"
+
+    # Ensure parent directory exists
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Write the DAG
+    output_path.write_text(dag_yaml)
+    console.print(f"[green]DAG written to:[/green] {output_path}")
+
+    # Show the YAML if requested
+    if show:
+        console.print()
+        console.print(dag_yaml)
+
+    # Validate with dagu if available
+    dagu_path = shutil.which("dagu")
+    if dagu_path and not ctx.obj.get("quiet"):
+        console.print("\n[cyan]Validating DAG with dagu...[/cyan]")
+        try:
+            result = subprocess.run(
+                [dagu_path, "dry", "--quiet", str(output_path)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.returncode == 0:
+                console.print("[green]OK:[/green] DAG validation passed")
+            else:
+                console.print(f"[yellow]WARN:[/yellow] DAG validation issues")
+                if result.stderr:
+                    console.print(f"[dim]{result.stderr}[/dim]")
+        except subprocess.TimeoutExpired:
+            console.print("[yellow]WARN:[/yellow] DAG validation timed out")
+        except Exception as e:
+            console.print(f"[yellow]WARN:[/yellow] Could not validate DAG: {e}")
+
+
+@dag.command("show")
+@click.argument("dag_name", required=False)
+@click.option("--deps", is_flag=True, help="Show dependency graph")
+@click.option("--blocking", is_flag=True, help="Show what each step blocks")
+@click.option("--yaml", "show_yaml", is_flag=True, help="Show raw YAML content")
+@click.pass_context
+def dag_show(
+    ctx: click.Context,
+    dag_name: str | None,
+    deps: bool,
+    blocking: bool,
+    show_yaml: bool,
+) -> None:
+    """Show information about a DAG.
+
+    DAG_NAME is the name of the DAG (default: current spec-id).
+    Looks for <dag-name>.yaml in $DAGU_HOME/dags/.
+    """
+    import yaml
+
+    # Resolve DAG name
+    if not dag_name:
+        dag_name = ctx.obj.get("spec_id")
+        if not dag_name:
+            console.print("[red]Error:[/red] No DAG name specified and no spec available")
+            console.print("Provide a DAG name or use --spec option")
+            raise SystemExit(1)
+
+    # Find the DAG file
+    dagu_home = ctx.obj.get("dagu_home")
+    if dagu_home:
+        dag_path = Path(dagu_home) / "dags" / f"{dag_name}.yaml"
+    else:
+        # Try current directory
+        dag_path = Path(f"{dag_name}.yaml")
+
+    if not dag_path.exists():
+        console.print(f"[red]Error:[/red] DAG file not found: {dag_path}")
+        raise SystemExit(1)
+
+    # Parse the DAG
+    try:
+        dag_content = dag_path.read_text()
+        dag_data = yaml.safe_load(dag_content)
+    except Exception as e:
+        console.print(f"[red]Error parsing DAG:[/red] {e}")
+        raise SystemExit(1)
+
+    steps = dag_data.get("steps", [])
+
+    # Show raw YAML if requested
+    if show_yaml:
+        console.print(dag_content)
+        return
+
+    # Default: show summary
+    if not deps and not blocking:
+        console.print(f"[bold]DAG:[/bold] {dag_data.get('name', dag_name)}")
+        console.print(f"[dim]Description:[/dim] {dag_data.get('description', '-')}")
+        console.print(f"[dim]Steps:[/dim] {len(steps)}")
+        console.print(f"[dim]File:[/dim] {dag_path}")
+        console.print()
+
+        # Show steps summary
+        table = Table(title="Steps")
+        table.add_column("Step", style="cyan")
+        table.add_column("Depends On")
+        table.add_column("Blocked By")
+
+        # Build reverse dependency map (what blocks what)
+        blocked_by: dict[str, list[str]] = {s["name"]: [] for s in steps}
+        for step in steps:
+            for dep in step.get("depends", []):
+                if dep in blocked_by:
+                    blocked_by[dep].append(step["name"])
+
+        for step in steps:
+            step_deps = step.get("depends", [])
+            step_blocks = blocked_by.get(step["name"], [])
+            table.add_row(
+                step["name"],
+                ", ".join(step_deps) if step_deps else "-",
+                ", ".join(step_blocks) if step_blocks else "-",
+            )
+
+        console.print(table)
+        return
+
+    # Show dependency graph
+    if deps:
+        console.print(f"[bold]Dependencies for {dag_name}:[/bold]")
+        console.print()
+        for step in steps:
+            step_deps = step.get("depends", [])
+            if step_deps:
+                console.print(f"  {step['name']}")
+                for dep in step_deps:
+                    console.print(f"    ← {dep}")
+            else:
+                console.print(f"  {step['name']} [dim](no dependencies)[/dim]")
+        console.print()
+
+    # Show blocking graph
+    if blocking:
+        console.print(f"[bold]Blocking relationships for {dag_name}:[/bold]")
+        console.print()
+
+        # Build reverse map
+        blocked_by: dict[str, list[str]] = {s["name"]: [] for s in steps}
+        for step in steps:
+            for dep in step.get("depends", []):
+                if dep in blocked_by:
+                    blocked_by[dep].append(step["name"])
+
+        for step in steps:
+            blocks = blocked_by.get(step["name"], [])
+            if blocks:
+                console.print(f"  {step['name']}")
+                for blocked in blocks:
+                    console.print(f"    → {blocked}")
+            else:
+                console.print(f"  {step['name']} [dim](blocks nothing)[/dim]")
+        console.print()
 
 
 def _check_dependencies() -> None:
