@@ -12,11 +12,12 @@ from agent_arborist.spec import (
 class TestParseSpecFromString:
     def test_simple_spec(self):
         result = parse_spec_from_string("001-my-feature")
-        assert result == ("001", "my-feature")
+        # spec_id is the full string, name is the suffix
+        assert result == ("001-my-feature", "my-feature")
 
     def test_complex_spec(self):
         result = parse_spec_from_string("002-bl-17-rabbitmq-event-bus")
-        assert result == ("002", "bl-17-rabbitmq-event-bus")
+        assert result == ("002-bl-17-rabbitmq-event-bus", "bl-17-rabbitmq-event-bus")
 
     def test_three_digit_required(self):
         assert parse_spec_from_string("01-feature") is None
@@ -39,7 +40,7 @@ class TestDetectSpecFromGit:
         mock_branch.return_value = "002-my-feature"
         result = detect_spec_from_git()
         assert result.found
-        assert result.spec_id == "002"
+        assert result.spec_id == "002-my-feature"  # full string, not just digits
         assert result.name == "my-feature"
         assert result.source == "git"
         assert result.branch == "002-my-feature"
@@ -49,7 +50,7 @@ class TestDetectSpecFromGit:
         mock_branch.return_value = "002-my-feature/phase-1"
         result = detect_spec_from_git()
         assert result.found
-        assert result.spec_id == "002"
+        assert result.spec_id == "002-my-feature"  # full string
         assert result.name == "my-feature"
 
     @patch("agent_arborist.spec.get_git_branch")
@@ -57,7 +58,7 @@ class TestDetectSpecFromGit:
         mock_branch.return_value = "002-my-feature/phase-1/T001"
         result = detect_spec_from_git()
         assert result.found
-        assert result.spec_id == "002"
+        assert result.spec_id == "002-my-feature"  # full string
         assert result.name == "my-feature"
 
     @patch("agent_arborist.spec.get_git_branch")
@@ -65,7 +66,7 @@ class TestDetectSpecFromGit:
         mock_branch.return_value = "feature/001-new-thing"
         result = detect_spec_from_git()
         assert result.found
-        assert result.spec_id == "001"
+        assert result.spec_id == "001-new-thing"  # full string
         assert result.name == "new-thing"
 
     @patch("agent_arborist.spec.get_git_branch")

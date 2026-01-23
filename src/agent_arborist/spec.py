@@ -30,10 +30,14 @@ def parse_spec_from_string(value: str) -> tuple[str, str] | None:
 
     Expected format: NNN-specname-could-be-anything
     Returns: (spec_id, name) tuple or None if not matching.
+
+    The spec_id is the FULL matched string (e.g., "002-my-feature"),
+    while name is just the part after the digits for display.
     """
     match = SPEC_ID_PATTERN.match(value)
     if match:
-        return (match.group(1), match.group(2))
+        # spec_id is the full matched string, name is the suffix for display
+        return (value, match.group(2))
     return None
 
 

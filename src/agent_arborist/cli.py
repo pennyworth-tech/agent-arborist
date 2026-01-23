@@ -301,7 +301,7 @@ def spec_whoami() -> None:
     info = detect_spec_from_git()
 
     if info.found:
-        console.print(f"[green]Spec:[/green] {info.spec_id}-{info.name}")
+        console.print(f"[green]Spec:[/green] {info.spec_id}")
         console.print(f"[dim]Source:[/dim] {info.source}")
         if info.branch:
             console.print(f"[dim]Branch:[/dim] {info.branch}")

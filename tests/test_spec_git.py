@@ -62,7 +62,7 @@ class TestDetectSpecFromGitIntegration:
 
         result = detect_spec_from_git()
         assert result.found
-        assert result.spec_id == "001"
+        assert result.spec_id == "001-calculator"  # full string
         assert result.name == "calculator"
         assert result.branch == "001-calculator"
         assert result.source == "git"
@@ -72,7 +72,7 @@ class TestDetectSpecFromGitIntegration:
 
         result = detect_spec_from_git()
         assert result.found
-        assert result.spec_id == "002"
+        assert result.spec_id == "002-bl-17-rabbitmq-event-bus"  # full string
         assert result.name == "bl-17-rabbitmq-event-bus"
 
     def test_detects_spec_in_nested_branch(self, git_sandbox):
@@ -81,7 +81,7 @@ class TestDetectSpecFromGitIntegration:
 
         result = detect_spec_from_git()
         assert result.found
-        assert result.spec_id == "003"
+        assert result.spec_id == "003-todo-app"  # full string
         assert result.name == "todo-app"
         assert result.branch == "003-todo-app/phase-1"
 
@@ -91,7 +91,7 @@ class TestDetectSpecFromGitIntegration:
 
         result = detect_spec_from_git()
         assert result.found
-        assert result.spec_id == "004"
+        assert result.spec_id == "004-weather-cli"  # full string
         assert result.name == "weather-cli"
 
     def test_detects_spec_with_feature_prefix(self, git_sandbox):
@@ -100,7 +100,7 @@ class TestDetectSpecFromGitIntegration:
 
         result = detect_spec_from_git()
         assert result.found
-        assert result.spec_id == "005"
+        assert result.spec_id == "005-url-shortener"  # full string
         assert result.name == "url-shortener"
 
     def test_no_spec_on_main(self, git_sandbox):
@@ -141,26 +141,26 @@ class TestDetectSpecFromGitIntegration:
 
         result = detect_spec_from_git()
         assert result.found
-        assert result.spec_id == "001"
+        assert result.spec_id == "001-first"  # full string
         assert result.name == "first"
 
 
 class TestBranchPatterns:
     """Test various branch naming patterns."""
 
-    @pytest.mark.parametrize("branch,expected_id,expected_name", [
-        ("001-a", "001", "a"),
-        ("999-z", "999", "z"),
-        ("123-test-branch", "123", "test-branch"),
-        ("000-zero-prefix", "000", "zero-prefix"),
-        ("042-answer-to-everything", "042", "answer-to-everything"),
+    @pytest.mark.parametrize("branch,expected_name", [
+        ("001-a", "a"),
+        ("999-z", "z"),
+        ("123-test-branch", "test-branch"),
+        ("000-zero-prefix", "zero-prefix"),
+        ("042-answer-to-everything", "answer-to-everything"),
     ])
-    def test_valid_spec_branches(self, git_sandbox, branch, expected_id, expected_name):
+    def test_valid_spec_branches(self, git_sandbox, branch, expected_name):
         init_git_repo(git_sandbox, branch=branch)
 
         result = detect_spec_from_git()
         assert result.found
-        assert result.spec_id == expected_id
+        assert result.spec_id == branch  # spec_id is the full branch/segment
         assert result.name == expected_name
 
     @pytest.mark.parametrize("branch", [
