@@ -44,6 +44,51 @@ class TestVersionCommand:
         assert "dagu" in result.output
 
 
+class TestEchoForTesting:
+    """Tests for --echo-for-testing hidden flag."""
+
+    def test_echo_flag_is_hidden(self):
+        runner = CliRunner()
+        result = runner.invoke(main, ["--help"])
+        assert result.exit_code == 0
+        assert "--echo-for-testing" not in result.output
+
+    def test_echo_task_status(self):
+        runner = CliRunner()
+        result = runner.invoke(main, ["--echo-for-testing", "task", "status"])
+        assert result.exit_code == 0
+        assert "ECHO: task status" in result.output
+        assert "spec_id=" in result.output
+        assert "task_id=all" in result.output
+
+    def test_echo_spec_dag_show(self):
+        runner = CliRunner()
+        result = runner.invoke(main, ["--echo-for-testing", "spec", "dag-show", "--deps"])
+        assert result.exit_code == 0
+        assert "ECHO: spec dag-show" in result.output
+        assert "deps=True" in result.output
+
+    def test_echo_spec_dag_build(self):
+        runner = CliRunner()
+        result = runner.invoke(main, ["--echo-for-testing", "spec", "dag-build", "--no-ai"])
+        assert result.exit_code == 0
+        assert "ECHO: spec dag-build" in result.output
+        assert "spec_id=" in result.output
+        assert "no_ai=True" in result.output
+
+    def test_echo_standard_fields_first(self):
+        """spec_id and task_id should always come first in echo output."""
+        runner = CliRunner()
+        result = runner.invoke(main, ["--echo-for-testing", "task", "status", "T001"])
+        assert result.exit_code == 0
+        output = result.output
+        # spec_id should come before task_id, which should come before other fields
+        spec_pos = output.find("spec_id=")
+        task_pos = output.find("task_id=")
+        json_pos = output.find("json=")
+        assert spec_pos < task_pos < json_pos, f"Fields out of order: {output}"
+
+
 class TestDoctorCommand:
     def test_doctor_group_help(self):
         runner = CliRunner()
@@ -615,6 +660,35 @@ T001 → T002 → T003
         content = output_file.read_text()
         assert "T001" in content
         assert "depends:" in content
+
+    def test_dag_build_echo_only_injects_flag(self, git_repo_with_spec, tmp_path):
+        """--echo-only should inject --echo-for-testing into all arborist commands."""
+        runner = CliRunner()
+        spec_dir = git_repo_with_spec / "specs" / "test-spec"
+        output_file = tmp_path / "output.yaml"
+
+        result = runner.invoke(
+            main, ["spec", "dag-build", str(spec_dir), "-o", str(output_file), "--no-ai", "--echo-only"]
+        )
+
+        assert result.exit_code == 0
+        assert output_file.exists()
+        content = output_file.read_text()
+
+        # All arborist commands should have --echo-for-testing injected
+        import yaml
+        dag_data = yaml.safe_load(content)
+        for step in dag_data.get("steps", []):
+            cmd = step.get("command", "")
+            if "arborist " in cmd:
+                assert "--echo-for-testing" in cmd, f"Missing --echo-for-testing in: {cmd}"
+
+    def test_dag_build_echo_only_flag_is_hidden(self):
+        """--echo-only should be a hidden flag."""
+        runner = CliRunner()
+        result = runner.invoke(main, ["spec", "dag-build", "--help"])
+        assert result.exit_code == 0
+        assert "--echo-only" not in result.output
 
     def test_dag_build_to_dagu_home(self, git_repo_with_spec, monkeypatch):
         # Initialize arborist first

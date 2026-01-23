@@ -57,12 +57,37 @@ from agent_arborist.task_state import (
 console = Console()
 
 
+def echo_command(cmd: str, **kwargs: str | None) -> None:
+    """Output a consistently formatted echo line for testing.
+
+    Format: ECHO: <command> | spec=X | task=Y | other=Z ...
+
+    Standard fields (spec_id, task_id) are always printed first if provided,
+    followed by other fields in the order they were passed.
+    """
+    parts = [f"ECHO: {cmd:<30}"]
+
+    # Standard fields first, in order
+    standard_fields = ["spec_id", "task_id"]
+    for field in standard_fields:
+        if field in kwargs and kwargs[field] is not None:
+            parts.append(f"{field}={kwargs[field]}")
+
+    # Then remaining fields
+    for key, value in kwargs.items():
+        if key not in standard_fields and value is not None:
+            parts.append(f"{key}={value}")
+
+    print(" | ".join(parts) if len(parts) > 1 else parts[0])
+
+
 @click.group()
 @click.option("--quiet", "-q", is_flag=True, help="Suppress non-essential output")
 @click.option("--home", envvar="ARBORIST_HOME", help="Override arborist home directory")
 @click.option("--spec", "-s", envvar="ARBORIST_SPEC", help="Spec name (auto-detected from git branch if not set)")
+@click.option("--echo-for-testing", is_flag=True, hidden=True, help="Echo command info and exit (for testing)")
 @click.pass_context
-def main(ctx: click.Context, quiet: bool, home: str | None, spec: str | None) -> None:
+def main(ctx: click.Context, quiet: bool, home: str | None, spec: str | None, echo_for_testing: bool) -> None:
     """Agent Arborist - Automated Task Tree Executor.
 
     Orchestrate DAG workflows with Claude Code and Dagu.
@@ -71,6 +96,7 @@ def main(ctx: click.Context, quiet: bool, home: str | None, spec: str | None) ->
     ctx.obj["quiet"] = quiet
     ctx.obj["home_override"] = home
     ctx.obj["spec_override"] = spec
+    ctx.obj["echo_for_testing"] = echo_for_testing
 
     # Set DAGU_HOME if arborist is initialized
     try:
@@ -328,6 +354,17 @@ def task_sync(ctx: click.Context, task_id: str) -> None:
     # Get worktree path
     worktree_path = get_worktree_path(manifest.spec_id, task_id)
 
+    if ctx.obj.get("echo_for_testing"):
+        echo_command(
+            "task sync",
+            task_id=task_id,
+            spec_id=manifest.spec_id,
+            branch=task_info.branch,
+            parent=task_info.parent_branch,
+            worktree=str(worktree_path),
+        )
+        return
+
     if not ctx.obj.get("quiet"):
         console.print(f"[cyan]Syncing task {task_id}...[/cyan]")
         console.print(f"[dim]Branch: {task_info.branch}[/dim]")
@@ -389,6 +426,21 @@ def task_run(ctx: click.Context, task_id: str, timeout: int, runner: str | None)
 
     # Get worktree path
     worktree_path = get_worktree_path(manifest.spec_id, task_id)
+
+    # Get runner type early for echo
+    runner_type = runner or DEFAULT_RUNNER
+
+    if ctx.obj.get("echo_for_testing"):
+        echo_command(
+            "task run",
+            task_id=task_id,
+            spec_id=manifest.spec_id,
+            runner=runner_type,
+            timeout=str(timeout),
+            worktree=str(worktree_path),
+        )
+        return
+
     if not worktree_path.exists():
         console.print(f"[red]Error:[/red] Worktree not found at {worktree_path}")
         console.print("Run 'arborist task sync' first")
@@ -462,6 +514,19 @@ def task_test(ctx: click.Context, task_id: str, cmd: str | None) -> None:
         console.print(f"[red]Error:[/red] Task {task_id} not found in manifest")
         raise SystemExit(1)
 
+    # Get worktree path
+    worktree_path = get_worktree_path(manifest.spec_id, task_id)
+
+    if ctx.obj.get("echo_for_testing"):
+        echo_command(
+            "task test",
+            task_id=task_id,
+            spec_id=manifest.spec_id,
+            cmd=cmd or "auto",
+            worktree=str(worktree_path),
+        )
+        return
+
     # For parent tasks, check children are complete
     if task_info.children:
         tree = load_task_tree(manifest.spec_id)
@@ -477,8 +542,6 @@ def task_test(ctx: click.Context, task_id: str, cmd: str | None) -> None:
                 raise SystemExit(1)
             console.print(f"[green]OK:[/green] All {len(task_info.children)} children complete")
 
-    # Get worktree path
-    worktree_path = get_worktree_path(manifest.spec_id, task_id)
     if not worktree_path.exists():
         console.print(f"[yellow]WARN:[/yellow] No worktree at {worktree_path}, using git root")
         worktree_path = get_git_root()
@@ -534,6 +597,17 @@ def task_merge(ctx: click.Context, task_id: str, no_resolve: bool) -> None:
     # Get branch names from manifest
     task_branch = task_info.branch
     parent_branch = task_info.parent_branch
+
+    if ctx.obj.get("echo_for_testing"):
+        echo_command(
+            "task merge",
+            task_id=task_id,
+            spec_id=manifest.spec_id,
+            branch=task_branch,
+            parent=parent_branch,
+            no_resolve=str(no_resolve),
+        )
+        return
 
     if not ctx.obj.get("quiet"):
         console.print(f"[cyan]Merging {task_branch} → {parent_branch}[/cyan]")
@@ -647,6 +721,17 @@ def task_cleanup(ctx: click.Context, task_id: str, keep_branch: bool) -> None:
     task_branch = task_info.branch
     worktree_path = get_worktree_path(manifest.spec_id, task_id)
 
+    if ctx.obj.get("echo_for_testing"):
+        echo_command(
+            "task cleanup",
+            task_id=task_id,
+            spec_id=manifest.spec_id,
+            branch=task_branch,
+            keep_branch=str(keep_branch),
+            worktree=str(worktree_path),
+        )
+        return
+
     if not ctx.obj.get("quiet"):
         console.print(f"[cyan]Cleaning up task {task_id}...[/cyan]")
 
@@ -679,6 +764,16 @@ def task_status(ctx: click.Context, task_id: str | None, as_json: bool) -> None:
     import json
 
     spec_id = ctx.obj.get("spec_id")
+
+    if ctx.obj.get("echo_for_testing"):
+        echo_command(
+            "task status",
+            task_id=task_id or "all",
+            spec_id=spec_id or "none",
+            json=str(as_json),
+        )
+        return
+
     if not spec_id:
         console.print("[red]Error:[/red] No spec available")
         raise SystemExit(1)
@@ -798,6 +893,16 @@ def spec_branch_create_all(ctx: click.Context) -> None:
         console.print(f"[red]Error loading manifest:[/red] {e}")
         raise SystemExit(1)
 
+    if ctx.obj.get("echo_for_testing"):
+        echo_command(
+            "spec branch-create-all",
+            spec_id=manifest.spec_id,
+            source=manifest.source_branch,
+            base=manifest.base_branch,
+            tasks=str(len(manifest.tasks)),
+        )
+        return
+
     if not ctx.obj.get("quiet"):
         console.print(f"[cyan]Creating branches from manifest...[/cyan]")
         console.print(f"[dim]Source: {manifest.source_branch}[/dim]")
@@ -842,6 +947,15 @@ def spec_branch_cleanup_all(ctx: click.Context, force: bool) -> None:
     except Exception as e:
         console.print(f"[red]Error loading manifest:[/red] {e}")
         raise SystemExit(1)
+
+    if ctx.obj.get("echo_for_testing"):
+        echo_command(
+            "spec branch-cleanup-all",
+            spec_id=manifest.spec_id,
+            force=str(force),
+            tasks=str(len(manifest.tasks)),
+        )
+        return
 
     if not ctx.obj.get("quiet"):
         console.print(f"[cyan]Cleaning up branches for spec {manifest.spec_id}...[/cyan]")
@@ -958,6 +1072,12 @@ def spec_branch_cleanup_all(ctx: click.Context, force: bool) -> None:
     default=120,
     help="Timeout for AI inference in seconds (default: 120)",
 )
+@click.option(
+    "--echo-only",
+    is_flag=True,
+    hidden=True,
+    help="Generate DAG with --echo-for-testing flags for testing",
+)
 @click.pass_context
 def spec_dag_build(
     ctx: click.Context,
@@ -968,6 +1088,7 @@ def spec_dag_build(
     show: bool,
     no_ai: bool,
     timeout: int,
+    echo_only: bool,
 ) -> None:
     """Build a DAGU DAG from a task spec directory using AI inference.
 
@@ -979,6 +1100,17 @@ def spec_dag_build(
     """
     # Resolve spec_id (full identifier like "002-my-feature")
     spec_id = ctx.obj.get("spec_id")
+
+    if ctx.obj.get("echo_for_testing"):
+        echo_command(
+            "spec dag-build",
+            spec_id=spec_id or "none",
+            directory=directory or "auto",
+            runner=runner or DEFAULT_RUNNER,
+            no_ai=str(no_ai),
+            echo_only=str(echo_only),
+        )
+        return
 
     # Resolve directory
     if directory:
@@ -1127,6 +1259,14 @@ def spec_dag_build(
     manifest_env = f"ARBORIST_MANIFEST: ${{DAG_DIR}}/{manifest_path.name}"
     dag_data["env"].append(manifest_env)
 
+    # If echo_only, inject --echo-for-testing into all arborist commands
+    if echo_only:
+        for step in dag_data.get("steps", []):
+            cmd = step.get("command", "")
+            # Handle both 'arborist' and potential path variations
+            if "arborist " in cmd:
+                step["command"] = cmd.replace("arborist ", "arborist --echo-for-testing ", 1)
+
     # Re-serialize YAML
     dag_yaml = yaml.dump(dag_data, default_flow_style=False, sort_keys=False)
 
@@ -1182,9 +1322,21 @@ def spec_dag_show(
     """
     import yaml
 
+    spec_id = ctx.obj.get("spec_id")
+
+    if ctx.obj.get("echo_for_testing"):
+        echo_command(
+            "spec dag-show",
+            dag_name=dag_name or spec_id or "none",
+            deps=str(deps),
+            blocking=str(blocking),
+            yaml=str(show_yaml),
+        )
+        return
+
     # Resolve DAG name
     if not dag_name:
-        dag_name = ctx.obj.get("spec_id")
+        dag_name = spec_id
         if not dag_name:
             console.print("[red]Error:[/red] No DAG name specified and no spec available")
             console.print("Provide a DAG name or use --spec option")
