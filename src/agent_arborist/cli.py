@@ -954,132 +954,105 @@ def spec_branch_cleanup_all(ctx: click.Context, force: bool) -> None:
     """Remove all worktrees and branches for the current spec.
 
     Auto-detects spec from git branch, or use --spec to specify.
-    Can also use ARBORIST_MANIFEST env var when running from a DAG step.
+    Finds branches matching {spec}_a* pattern and worktrees in .arborist/worktrees/{spec}/.
 
     Use --force to force removal even if branches are not fully merged.
     """
-    import os
+    spec_id = ctx.obj.get("spec_id")
 
-    # Try to get manifest path from multiple sources
-    manifest_path_str = os.environ.get("ARBORIST_MANIFEST")
-
-    if manifest_path_str:
-        manifest_path = Path(manifest_path_str)
-    else:
-        # Auto-detect from spec_id and dagu_home
-        spec_id = ctx.obj.get("spec_id")
-        dagu_home = ctx.obj.get("dagu_home")
-
-        if not spec_id:
-            console.print("[red]Error:[/red] No spec available")
-            console.print("Either:")
-            console.print("  - Run from a spec branch (e.g., 002-my-feature)")
-            console.print("  - Use --spec option (e.g., --spec 002-my-feature)")
-            console.print("  - Set ARBORIST_MANIFEST environment variable")
-            raise SystemExit(1)
-
-        if not dagu_home:
-            console.print("[red]Error:[/red] DAGU_HOME not set")
-            console.print("Run 'arborist init' first to initialize the project")
-            raise SystemExit(1)
-
-        manifest_path = Path(dagu_home) / "dags" / f"{spec_id}.json"
-
-    try:
-        manifest = load_manifest(manifest_path)
-    except FileNotFoundError:
-        console.print(f"[red]Error:[/red] Manifest not found: {manifest_path}")
-        console.print("Run 'arborist spec dag-build' first to generate the manifest")
-        raise SystemExit(1)
-    except Exception as e:
-        console.print(f"[red]Error loading manifest:[/red] {e}")
+    if not spec_id:
+        console.print("[red]Error:[/red] No spec available")
+        console.print("Either:")
+        console.print("  - Run from a spec branch (e.g., 002-my-feature)")
+        console.print("  - Use --spec option (e.g., --spec 002-my-feature)")
         raise SystemExit(1)
 
     if ctx.obj.get("echo_for_testing"):
         echo_command(
             "spec branch-cleanup-all",
-            spec_id=manifest.spec_id,
+            spec_id=spec_id,
             force=str(force),
-            tasks=str(len(manifest.tasks)),
         )
         return
 
+    git_root = get_git_root()
+    branch_pattern = f"{spec_id}_a"
+
+    # Find all branches matching the pattern
+    result = subprocess.run(
+        ["git", "branch", "--list", f"{branch_pattern}*"],
+        cwd=git_root,
+        capture_output=True,
+        text=True,
+    )
+    branches = [b.strip().lstrip("* ") for b in result.stdout.strip().split("\n") if b.strip()]
+
+    # Find worktrees directory for this spec
+    try:
+        arborist_home = get_arborist_home()
+        worktrees_dir = arborist_home / "worktrees" / spec_id
+    except ArboristHomeError:
+        worktrees_dir = None
+
+    # Get list of worktree subdirs
+    worktrees = []
+    if worktrees_dir and worktrees_dir.exists():
+        worktrees = [d for d in worktrees_dir.iterdir() if d.is_dir()]
+
+    if not branches and not worktrees:
+        console.print(f"[dim]No branches or worktrees found for spec {spec_id}[/dim]")
+        return
+
     if not ctx.obj.get("quiet"):
-        console.print(f"[cyan]Cleaning up branches for spec {manifest.spec_id}...[/cyan]")
-        console.print(f"[dim]Tasks: {len(manifest.tasks)}[/dim]")
+        console.print(f"[cyan]Cleaning up for spec {spec_id}...[/cyan]")
+        if branches:
+            console.print(f"[dim]Found {len(branches)} branches matching {branch_pattern}*[/dim]")
+        if worktrees:
+            console.print(f"[dim]Found {len(worktrees)} worktrees[/dim]")
         if force:
             console.print(f"[yellow]Force mode enabled[/yellow]")
 
     cleaned = []
     errors = []
 
-    # Clean up each task in reverse order (children before parents)
-    for task_info in reversed(manifest.tasks):
-        worktree_path = get_worktree_path(manifest.spec_id, task_info.task_id)
-
+    # Remove worktrees first (must be done before deleting branches)
+    for worktree_path in worktrees:
         if not ctx.obj.get("quiet"):
-            console.print(f"[dim]Cleaning up {task_info.task_id}...[/dim]")
-
-        result = cleanup_task(task_info.branch, worktree_path, delete_branch=True)
-
-        if result.success:
-            cleaned.append(task_info.task_id)
-        else:
-            if force:
-                # Force cleanup: remove worktree and branch with -D
-                git_root = get_git_root()
-                try:
-                    if worktree_path.exists():
-                        subprocess.run(
-                            ["git", "worktree", "remove", str(worktree_path), "--force"],
-                            cwd=git_root,
-                            check=True,
-                            capture_output=True,
-                        )
-                    if branch_exists(task_info.branch):
-                        subprocess.run(
-                            ["git", "branch", "-D", task_info.branch],
-                            cwd=git_root,
-                            check=True,
-                            capture_output=True,
-                        )
-                    cleaned.append(task_info.task_id)
-                except subprocess.CalledProcessError as e:
-                    errors.append(f"{task_info.task_id}: {e.stderr.decode() if e.stderr else str(e)}")
-            else:
-                errors.append(f"{task_info.task_id}: {result.message}")
-
-    # Also clean up the base branch if requested
-    if branch_exists(manifest.base_branch):
-        if not ctx.obj.get("quiet"):
-            console.print(f"[dim]Cleaning up base branch {manifest.base_branch}...[/dim]")
+            console.print(f"[dim]Removing worktree {worktree_path.name}...[/dim]")
         try:
-            git_root = get_git_root()
+            cmd = ["git", "worktree", "remove", str(worktree_path)]
             if force:
-                subprocess.run(
-                    ["git", "branch", "-D", manifest.base_branch],
-                    cwd=git_root,
-                    check=True,
-                    capture_output=True,
-                )
-            else:
-                subprocess.run(
-                    ["git", "branch", "-d", manifest.base_branch],
-                    cwd=git_root,
-                    check=True,
-                    capture_output=True,
-                )
-            cleaned.append("base")
+                cmd.append("--force")
+            subprocess.run(cmd, cwd=git_root, check=True, capture_output=True)
+            cleaned.append(f"worktree:{worktree_path.name}")
         except subprocess.CalledProcessError as e:
-            errors.append(f"base branch: {e.stderr.decode() if e.stderr else str(e)}")
+            errors.append(f"worktree {worktree_path.name}: {e.stderr.strip() if e.stderr else str(e)}")
+
+    # Clean up empty worktrees directory
+    if worktrees_dir and worktrees_dir.exists():
+        try:
+            worktrees_dir.rmdir()  # Only removes if empty
+        except OSError:
+            pass  # Not empty, that's fine
+
+    # Delete branches (longer names first to delete children before parents)
+    for branch in sorted(branches, key=len, reverse=True):
+        if not ctx.obj.get("quiet"):
+            console.print(f"[dim]Deleting branch {branch}...[/dim]")
+        try:
+            cmd = ["git", "branch", "-D" if force else "-d", branch]
+            subprocess.run(cmd, cwd=git_root, check=True, capture_output=True)
+            cleaned.append(f"branch:{branch}")
+        except subprocess.CalledProcessError as e:
+            errors.append(f"branch {branch}: {e.stderr.strip() if e.stderr else str(e)}")
 
     if errors:
-        console.print(f"[yellow]Cleaned up {len(cleaned)} tasks with {len(errors)} errors:[/yellow]")
+        console.print(f"[yellow]Cleaned up {len(cleaned)} items with {len(errors)} errors:[/yellow]")
         for err in errors:
             console.print(f"  [red]Error:[/red] {err}")
         raise SystemExit(1)
     else:
-        console.print(f"[green]OK:[/green] Cleaned up {len(cleaned)} tasks and branches")
+        console.print(f"[green]OK:[/green] Cleaned up {len(cleaned)} items")
 
 
 @spec.command("dag-build")
