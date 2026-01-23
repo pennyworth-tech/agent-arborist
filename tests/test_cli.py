@@ -39,6 +39,12 @@ class TestVersionCommand:
 
 
 class TestDoctorCommand:
+    def test_doctor_group_help(self):
+        runner = CliRunner()
+        result = runner.invoke(main, ["doctor", "--help"])
+        assert result.exit_code == 0
+        assert "check-runner" in result.output
+
     @patch("agent_arborist.cli.check_runtimes")
     @patch("agent_arborist.cli.check_dagu")
     def test_doctor_all_ok(self, mock_dagu, mock_runtimes):
@@ -193,3 +199,78 @@ class TestSpecCommands:
         assert result.exit_code == 0
         assert "Not detected" in result.output
         assert "--spec" in result.output or "-s" in result.output
+
+
+class TestCheckRunnerCommand:
+    @patch("agent_arborist.cli.get_runner")
+    def test_check_runner_success(self, mock_get_runner):
+        from agent_arborist.runner import RunResult
+
+        mock_runner = mock_get_runner.return_value
+        mock_runner.is_available.return_value = True
+        mock_runner.command = "claude"
+        mock_runner.run.return_value = RunResult(
+            success=True,
+            output="Why did the programmer quit? Because he didn't get arrays!",
+            exit_code=0,
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["doctor", "check-runner"])
+        assert result.exit_code == 0
+        assert "OK" in result.output
+        assert "arrays" in result.output
+
+    @patch("agent_arborist.cli.get_runner")
+    def test_check_runner_not_found(self, mock_get_runner):
+        mock_runner = mock_get_runner.return_value
+        mock_runner.is_available.return_value = False
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["doctor", "check-runner"])
+        assert result.exit_code == 1
+        assert "FAIL" in result.output
+        assert "not found" in result.output
+
+    @patch("agent_arborist.cli.get_runner")
+    def test_check_runner_execution_failure(self, mock_get_runner):
+        from agent_arborist.runner import RunResult
+
+        mock_runner = mock_get_runner.return_value
+        mock_runner.is_available.return_value = True
+        mock_runner.command = "claude"
+        mock_runner.run.return_value = RunResult(
+            success=False,
+            output="",
+            error="Timeout after 30 seconds",
+            exit_code=-1,
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["doctor", "check-runner"])
+        assert result.exit_code != 0
+        assert "FAIL" in result.output
+        assert "Timeout" in result.output
+
+    @patch("agent_arborist.cli.get_runner")
+    def test_check_runner_with_runner_option(self, mock_get_runner):
+        from agent_arborist.runner import RunResult
+
+        mock_runner = mock_get_runner.return_value
+        mock_runner.is_available.return_value = True
+        mock_runner.command = "opencode"
+        mock_runner.run.return_value = RunResult(
+            success=True,
+            output="A joke from opencode",
+            exit_code=0,
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["doctor", "check-runner", "--runner", "opencode"])
+        assert result.exit_code == 0
+        mock_get_runner.assert_called_with("opencode")
+
+    def test_check_runner_invalid_runner(self):
+        runner = CliRunner()
+        result = runner.invoke(main, ["doctor", "check-runner", "--runner", "invalid"])
+        assert result.exit_code != 0

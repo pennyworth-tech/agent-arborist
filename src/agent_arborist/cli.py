@@ -7,6 +7,7 @@ from rich.table import Table
 from agent_arborist import __version__
 from agent_arborist.checks import check_dagu, check_runtimes
 from agent_arborist.spec import detect_spec_from_git
+from agent_arborist.runner import get_runner, RunnerType, DEFAULT_RUNNER
 
 console = Console()
 
@@ -34,10 +35,45 @@ def version(check: bool) -> None:
         _check_dependencies()
 
 
-@main.command()
-def doctor() -> None:
-    """Check all dependencies and system requirements."""
-    _check_dependencies()
+@main.group(invoke_without_command=True)
+@click.pass_context
+def doctor(ctx: click.Context) -> None:
+    """Check dependencies and system requirements."""
+    if ctx.invoked_subcommand is None:
+        _check_dependencies()
+
+
+@doctor.command("check-runner")
+@click.option(
+    "--runner",
+    "-r",
+    type=click.Choice(["claude", "opencode", "gemini"]),
+    default=DEFAULT_RUNNER,
+    help=f"Runner to test (default: {DEFAULT_RUNNER})",
+)
+def doctor_check_runner(runner: RunnerType) -> None:
+    """Test that a runner can execute prompts."""
+    console.print(f"[cyan]Testing {runner} runner...[/cyan]")
+
+    runner_instance = get_runner(runner)
+
+    if not runner_instance.is_available():
+        console.print(f"[red]FAIL:[/red] {runner} not found in PATH")
+        raise SystemExit(1)
+
+    console.print(f"[dim]Found {runner} at {runner_instance.command}[/dim]")
+    console.print("[dim]Sending test prompt...[/dim]\n")
+
+    result = runner_instance.run("Tell me a short joke (one liner).", timeout=30)
+
+    if result.success:
+        console.print(f"[green]OK:[/green] Runner responded successfully\n")
+        console.print(f"[bold]Response:[/bold]\n{result.output}")
+    else:
+        console.print(f"[red]FAIL:[/red] {result.error}")
+        if result.output:
+            console.print(f"[dim]Output:[/dim] {result.output}")
+        raise SystemExit(result.exit_code if result.exit_code != 0 else 1)
 
 
 # -----------------------------------------------------------------------------
