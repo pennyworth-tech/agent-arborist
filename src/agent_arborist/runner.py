@@ -54,9 +54,9 @@ class ClaudeRunner(Runner):
         """Initialize Claude runner.
 
         Args:
-            model: Model to use (not currently supported by claude CLI)
+            model: Model to use (e.g., "opus", "sonnet", "haiku" or full model name)
         """
-        self.model = model  # Reserved for future use
+        self.model = model
 
     def run(self, prompt: str, timeout: int = 60, cwd: Path | None = None) -> RunResult:
         """Run a prompt using Claude CLI.
@@ -73,8 +73,12 @@ class ClaudeRunner(Runner):
             )
 
         try:
+            cmd = [path, "-p", prompt]
+            if self.model:
+                cmd.extend(["--model", self.model])
+
             result = subprocess.run(
-                [path, "-p", prompt],
+                cmd,
                 capture_output=True,
                 text=True,
                 timeout=timeout,
@@ -236,9 +240,9 @@ def get_runner(runner_type: RunnerType = DEFAULT_RUNNER, model: str | None = Non
     Args:
         runner_type: Type of runner ("claude", "opencode", "gemini")
         model: Model to use (format depends on runner type)
+            - claude: "opus", "sonnet", "haiku" or full model name
             - gemini: "gemini-2.5-flash", "gemini-2.5-pro", etc.
             - opencode: "provider/model" format, e.g., "zai-coding-plan/glm-4.7"
-            - claude: Not currently supported
     """
     runners = {
         "claude": ClaudeRunner,

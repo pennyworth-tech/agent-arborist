@@ -2,6 +2,7 @@
 Multi-provider integration tests for DAG generation.
 
 Tests DAG generation across different AI providers:
+- claude CLI: Claude models (opus, sonnet, haiku)
 - gemini CLI: Google Gemini models
 - opencode CLI: zai, cerebras, minimax models
 
@@ -9,6 +10,7 @@ These tests are non-deterministic and require the respective CLI tools.
 Run with: pytest tests/test_dag_generator_providers.py -v -m provider
 
 To run a specific provider:
+    pytest tests/test_dag_generator_providers.py -v -k "claude"
     pytest tests/test_dag_generator_providers.py -v -k "gemini"
     pytest tests/test_dag_generator_providers.py -v -k "zai"
     pytest tests/test_dag_generator_providers.py -v -k "cerebras"
@@ -22,6 +24,7 @@ from pathlib import Path
 from agent_arborist.dag_generator import DagGenerator
 from agent_arborist.runner import (
     Runner,
+    ClaudeRunner,
     GeminiRunner,
     OpencodeRunner,
     get_runner,
@@ -35,8 +38,11 @@ pytestmark = [
 ]
 
 
-# Provider configurations: (runner_class, model, display_name)
+# Provider configurations: (runner_type, model, display_name)
 PROVIDER_CONFIGS = [
+    ("claude", "opus", "Claude Opus"),
+    ("claude", "sonnet", "Claude Sonnet"),
+    ("claude", "haiku", "Claude Haiku"),
     ("gemini", "gemini-2.5-flash", "Gemini 2.5 Flash"),
     ("opencode", "zai-coding-plan/glm-4.7", "ZAI GLM 4.7"),
     ("opencode", "cerebras/zai-glm-4.7", "Cerebras GLM 4.7"),
@@ -64,7 +70,9 @@ def calculator_spec(fixtures_dir):
 
 def create_runner(runner_type: str, model: str | None = None) -> Runner:
     """Create a runner with optional model specification."""
-    if runner_type == "gemini":
+    if runner_type == "claude":
+        return ClaudeRunner(model=model)
+    elif runner_type == "gemini":
         return GeminiRunner(model=model)
     elif runner_type == "opencode":
         return OpencodeRunner(model=model)
@@ -120,6 +128,16 @@ def assert_dag_structure(dag: dict, is_root: bool = False):
 class TestRunnerWithModel:
     """Tests for runner model parameter support."""
 
+    def test_claude_runner_accepts_model(self):
+        """Test ClaudeRunner accepts model parameter."""
+        runner = ClaudeRunner(model="opus")
+        assert runner.model == "opus"
+
+    def test_claude_runner_default_model(self):
+        """Test ClaudeRunner has sensible default."""
+        runner = ClaudeRunner()
+        assert runner.model is None or isinstance(runner.model, str)
+
     def test_gemini_runner_accepts_model(self):
         """Test GeminiRunner accepts model parameter."""
         runner = GeminiRunner(model="gemini-2.5-flash")
@@ -142,6 +160,10 @@ class TestRunnerWithModel:
 
     def test_get_runner_with_model(self):
         """Test get_runner supports model parameter."""
+        runner = get_runner("claude", model="sonnet")
+        assert isinstance(runner, ClaudeRunner)
+        assert runner.model == "sonnet"
+
         runner = get_runner("gemini", model="gemini-2.5-pro")
         assert isinstance(runner, GeminiRunner)
         assert runner.model == "gemini-2.5-pro"
@@ -149,6 +171,123 @@ class TestRunnerWithModel:
         runner = get_runner("opencode", model="cerebras/zai-glm-4.7")
         assert isinstance(runner, OpencodeRunner)
         assert runner.model == "cerebras/zai-glm-4.7"
+
+
+class TestClaudeOpusProvider:
+    """Tests for Claude Opus provider DAG generation."""
+
+    @pytest.fixture
+    def runner(self):
+        """Create Claude Opus runner."""
+        return ClaudeRunner(model="opus")
+
+    @pytest.mark.skipif(
+        not is_runner_available("claude"),
+        reason="claude CLI not available"
+    )
+    def test_claude_opus_generates_valid_yaml(self, runner, hello_world_spec):
+        """Test Claude Opus generates valid multi-document YAML."""
+        generator = DagGenerator(runner=runner)
+        result = generator.generate(hello_world_spec, "hello-world", timeout=180)
+
+        assert result.success, f"Generation failed: {result.error}\nRaw: {result.raw_output}"
+
+        documents = assert_valid_multi_doc_yaml(result.yaml_content)
+        assert_dag_structure(documents[0], is_root=True)
+
+    @pytest.mark.skipif(
+        not is_runner_available("claude"),
+        reason="claude CLI not available"
+    )
+    def test_claude_opus_generates_subdags(self, runner, hello_world_spec):
+        """Test Claude Opus generates subdags for tasks."""
+        generator = DagGenerator(runner=runner)
+        result = generator.generate(hello_world_spec, "hello-world", timeout=180)
+
+        assert result.success, f"Generation failed: {result.error}"
+
+        documents = assert_valid_multi_doc_yaml(result.yaml_content, min_docs=2)
+
+        for doc in documents:
+            assert_dag_structure(doc)
+
+
+class TestClaudeSonnetProvider:
+    """Tests for Claude Sonnet provider DAG generation."""
+
+    @pytest.fixture
+    def runner(self):
+        """Create Claude Sonnet runner."""
+        return ClaudeRunner(model="sonnet")
+
+    @pytest.mark.skipif(
+        not is_runner_available("claude"),
+        reason="claude CLI not available"
+    )
+    def test_claude_sonnet_generates_valid_yaml(self, runner, hello_world_spec):
+        """Test Claude Sonnet generates valid multi-document YAML."""
+        generator = DagGenerator(runner=runner)
+        result = generator.generate(hello_world_spec, "hello-world", timeout=180)
+
+        assert result.success, f"Generation failed: {result.error}\nRaw: {result.raw_output}"
+
+        documents = assert_valid_multi_doc_yaml(result.yaml_content)
+        assert_dag_structure(documents[0], is_root=True)
+
+    @pytest.mark.skipif(
+        not is_runner_available("claude"),
+        reason="claude CLI not available"
+    )
+    def test_claude_sonnet_generates_subdags(self, runner, hello_world_spec):
+        """Test Claude Sonnet generates subdags for tasks."""
+        generator = DagGenerator(runner=runner)
+        result = generator.generate(hello_world_spec, "hello-world", timeout=180)
+
+        assert result.success, f"Generation failed: {result.error}"
+
+        documents = assert_valid_multi_doc_yaml(result.yaml_content, min_docs=2)
+
+        for doc in documents:
+            assert_dag_structure(doc)
+
+
+class TestClaudeHaikuProvider:
+    """Tests for Claude Haiku provider DAG generation."""
+
+    @pytest.fixture
+    def runner(self):
+        """Create Claude Haiku runner."""
+        return ClaudeRunner(model="haiku")
+
+    @pytest.mark.skipif(
+        not is_runner_available("claude"),
+        reason="claude CLI not available"
+    )
+    def test_claude_haiku_generates_valid_yaml(self, runner, hello_world_spec):
+        """Test Claude Haiku generates valid multi-document YAML."""
+        generator = DagGenerator(runner=runner)
+        result = generator.generate(hello_world_spec, "hello-world", timeout=180)
+
+        assert result.success, f"Generation failed: {result.error}\nRaw: {result.raw_output}"
+
+        documents = assert_valid_multi_doc_yaml(result.yaml_content)
+        assert_dag_structure(documents[0], is_root=True)
+
+    @pytest.mark.skipif(
+        not is_runner_available("claude"),
+        reason="claude CLI not available"
+    )
+    def test_claude_haiku_generates_subdags(self, runner, hello_world_spec):
+        """Test Claude Haiku generates subdags for tasks."""
+        generator = DagGenerator(runner=runner)
+        result = generator.generate(hello_world_spec, "hello-world", timeout=180)
+
+        assert result.success, f"Generation failed: {result.error}"
+
+        documents = assert_valid_multi_doc_yaml(result.yaml_content, min_docs=2)
+
+        for doc in documents:
+            assert_dag_structure(doc)
 
 
 class TestGeminiProvider:
