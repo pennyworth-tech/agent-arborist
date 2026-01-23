@@ -50,6 +50,14 @@ class ClaudeRunner(Runner):
     name = "claude"
     command = "claude"
 
+    def __init__(self, model: str | None = None):
+        """Initialize Claude runner.
+
+        Args:
+            model: Model to use (not currently supported by claude CLI)
+        """
+        self.model = model  # Reserved for future use
+
     def run(self, prompt: str, timeout: int = 60, cwd: Path | None = None) -> RunResult:
         """Run a prompt using Claude CLI.
 
@@ -102,6 +110,14 @@ class OpencodeRunner(Runner):
     name = "opencode"
     command = "opencode"
 
+    def __init__(self, model: str | None = None):
+        """Initialize OpenCode runner.
+
+        Args:
+            model: Model to use in format "provider/model" (e.g., "zai-coding-plan/glm-4.7")
+        """
+        self.model = model
+
     def run(self, prompt: str, timeout: int = 60, cwd: Path | None = None) -> RunResult:
         """Run a prompt using OpenCode CLI."""
         path = shutil.which(self.command)
@@ -115,8 +131,13 @@ class OpencodeRunner(Runner):
 
         try:
             # OpenCode uses 'run' subcommand for non-interactive mode
+            cmd = [path, "run"]
+            if self.model:
+                cmd.extend(["-m", self.model])
+            cmd.append(prompt)
+
             result = subprocess.run(
-                [path, "run", prompt],
+                cmd,
                 capture_output=True,
                 text=True,
                 timeout=timeout,
@@ -152,6 +173,14 @@ class GeminiRunner(Runner):
     name = "gemini"
     command = "gemini"
 
+    def __init__(self, model: str | None = None):
+        """Initialize Gemini runner.
+
+        Args:
+            model: Model to use (e.g., "gemini-2.5-flash", "gemini-2.5-pro")
+        """
+        self.model = model
+
     def run(self, prompt: str, timeout: int = 60, cwd: Path | None = None) -> RunResult:
         """Run a prompt using Gemini CLI."""
         path = shutil.which(self.command)
@@ -165,8 +194,13 @@ class GeminiRunner(Runner):
 
         try:
             # Gemini CLI uses positional prompt argument
+            cmd = [path]
+            if self.model:
+                cmd.extend(["-m", self.model])
+            cmd.append(prompt)
+
             result = subprocess.run(
-                [path, prompt],
+                cmd,
                 capture_output=True,
                 text=True,
                 timeout=timeout,
@@ -196,8 +230,16 @@ class GeminiRunner(Runner):
             )
 
 
-def get_runner(runner_type: RunnerType = DEFAULT_RUNNER) -> Runner:
-    """Get a runner instance by type."""
+def get_runner(runner_type: RunnerType = DEFAULT_RUNNER, model: str | None = None) -> Runner:
+    """Get a runner instance by type.
+
+    Args:
+        runner_type: Type of runner ("claude", "opencode", "gemini")
+        model: Model to use (format depends on runner type)
+            - gemini: "gemini-2.5-flash", "gemini-2.5-pro", etc.
+            - opencode: "provider/model" format, e.g., "zai-coding-plan/glm-4.7"
+            - claude: Not currently supported
+    """
     runners = {
         "claude": ClaudeRunner,
         "opencode": OpencodeRunner,
@@ -207,4 +249,4 @@ def get_runner(runner_type: RunnerType = DEFAULT_RUNNER) -> Runner:
     if runner_type not in runners:
         raise ValueError(f"Unknown runner type: {runner_type}")
 
-    return runners[runner_type]()
+    return runners[runner_type](model=model)

@@ -1045,6 +1045,13 @@ def spec_branch_cleanup_all(ctx: click.Context, force: bool) -> None:
     help=f"Runner for AI inference (default: {DEFAULT_RUNNER})",
 )
 @click.option(
+    "--model",
+    "-m",
+    type=str,
+    default=None,
+    help="Model to use (e.g., 'gemini-2.5-flash' for gemini, 'zai-coding-plan/glm-4.7' for opencode)",
+)
+@click.option(
     "--output",
     "-o",
     type=click.Path(),
@@ -1083,6 +1090,7 @@ def spec_dag_build(
     ctx: click.Context,
     directory: str | None,
     runner: str | None,
+    model: str | None,
     output: str | None,
     dry_run: bool,
     show: bool,
@@ -1107,6 +1115,7 @@ def spec_dag_build(
             spec_id=spec_id or "none",
             directory=directory or "auto",
             runner=runner or DEFAULT_RUNNER,
+            model=model or "default",
             no_ai=str(no_ai),
             echo_only=str(echo_only),
         )
@@ -1178,11 +1187,12 @@ def spec_dag_build(
     else:
         # AI inference mode
         runner_type = runner or DEFAULT_RUNNER
+        model_display = f" ({model})" if model else ""
         if not ctx.obj.get("quiet"):
-            console.print(f"[cyan]Generating DAG using {runner_type}...[/cyan]")
+            console.print(f"[cyan]Generating DAG using {runner_type}{model_display}...[/cyan]")
 
         # Check if runner is available
-        runner_instance = get_runner(runner_type)
+        runner_instance = get_runner(runner_type, model=model)
         if not runner_instance.is_available():
             console.print(f"[red]Error:[/red] {runner_type} not found in PATH")
             console.print("Install the runner or use --no-ai for deterministic parsing")
