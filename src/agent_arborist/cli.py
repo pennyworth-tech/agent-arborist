@@ -26,6 +26,33 @@ from agent_arborist.home import (
 from agent_arborist.task_spec import parse_task_spec
 from agent_arborist.dag_builder import DagConfig, DagBuilder
 from agent_arborist.dag_generator import DagGenerator
+from agent_arborist.git_tasks import (
+    get_worktree_path,
+    find_parent_branch,
+    merge_to_parent,
+    cleanup_task,
+    run_tests,
+    detect_test_command,
+    get_conflict_files,
+    abort_merge,
+    branch_exists,
+    create_all_branches_from_manifest,
+    sync_task,
+    get_current_branch,
+)
+from agent_arborist.branch_manifest import (
+    generate_manifest,
+    save_manifest,
+    load_manifest,
+    load_manifest_from_env,
+    BranchManifest,
+)
+from agent_arborist.task_state import (
+    init_task_tree,
+    load_task_tree,
+    update_task_status,
+    get_task_status_summary,
+)
 
 console = Console()
 
@@ -257,6 +284,62 @@ steps:
 
 
 # -----------------------------------------------------------------------------
+# Branches commands
+# -----------------------------------------------------------------------------
+
+
+@main.group()
+def branches() -> None:
+    """Branch management for task DAGs."""
+    pass
+
+
+@branches.command("create-all")
+@click.pass_context
+def branches_create_all(ctx: click.Context) -> None:
+    """Create all branches from manifest.
+
+    This command reads the ARBORIST_MANIFEST environment variable to find the
+    manifest file, then creates the base branch and all task branches in
+    topological order.
+
+    Run this once at the start of a DAG execution.
+    """
+    import os
+
+    manifest_path = os.environ.get("ARBORIST_MANIFEST")
+    if not manifest_path:
+        console.print("[red]Error:[/red] ARBORIST_MANIFEST environment variable not set")
+        console.print("This command should be run from a DAGU DAG step")
+        raise SystemExit(1)
+
+    try:
+        manifest = load_manifest(Path(manifest_path))
+    except FileNotFoundError:
+        console.print(f"[red]Error:[/red] Manifest not found: {manifest_path}")
+        raise SystemExit(1)
+    except Exception as e:
+        console.print(f"[red]Error loading manifest:[/red] {e}")
+        raise SystemExit(1)
+
+    if not ctx.obj.get("quiet"):
+        console.print(f"[cyan]Creating branches from manifest...[/cyan]")
+        console.print(f"[dim]Source: {manifest.source_branch}[/dim]")
+        console.print(f"[dim]Base: {manifest.base_branch}[/dim]")
+        console.print(f"[dim]Tasks: {len(manifest.tasks)}[/dim]")
+
+    result = create_all_branches_from_manifest(manifest)
+
+    if result.success:
+        console.print(f"[green]OK:[/green] {result.message}")
+    else:
+        console.print(f"[red]Error:[/red] {result.message}")
+        if result.error:
+            console.print(f"[dim]{result.error}[/dim]")
+        raise SystemExit(1)
+
+
+# -----------------------------------------------------------------------------
 # Task commands
 # -----------------------------------------------------------------------------
 
@@ -267,40 +350,451 @@ def task() -> None:
     pass
 
 
+@task.command("sync")
+@click.argument("task_id")
+@click.pass_context
+def task_sync(ctx: click.Context, task_id: str) -> None:
+    """Create worktree and sync from parent for a task.
+
+    This command reads branch info from the ARBORIST_MANIFEST environment variable.
+    Branches must already exist (run 'arborist branches create-all' first).
+    """
+    import os
+
+    manifest_path = os.environ.get("ARBORIST_MANIFEST")
+    if not manifest_path:
+        console.print("[red]Error:[/red] ARBORIST_MANIFEST environment variable not set")
+        console.print("This command should be run from a DAGU DAG step")
+        raise SystemExit(1)
+
+    try:
+        manifest = load_manifest(Path(manifest_path))
+    except FileNotFoundError:
+        console.print(f"[red]Error:[/red] Manifest not found: {manifest_path}")
+        raise SystemExit(1)
+    except Exception as e:
+        console.print(f"[red]Error loading manifest:[/red] {e}")
+        raise SystemExit(1)
+
+    task_info = manifest.get_task(task_id)
+    if not task_info:
+        console.print(f"[red]Error:[/red] Task {task_id} not found in manifest")
+        raise SystemExit(1)
+
+    # Get worktree path
+    worktree_path = get_worktree_path(manifest.spec_id, task_id)
+
+    if not ctx.obj.get("quiet"):
+        console.print(f"[cyan]Syncing task {task_id}...[/cyan]")
+        console.print(f"[dim]Branch: {task_info.branch}[/dim]")
+        console.print(f"[dim]Parent: {task_info.parent_branch}[/dim]")
+
+    # Sync the task (create worktree and sync from parent)
+    result = sync_task(task_info.branch, task_info.parent_branch, worktree_path)
+
+    if result.success:
+        console.print(f"[green]OK:[/green] {result.message}")
+        # Update state
+        update_task_status(manifest.spec_id, task_id, "running", branch=task_info.branch, worktree=str(worktree_path))
+    else:
+        console.print(f"[red]Error:[/red] {result.message}")
+        if result.error:
+            console.print(f"[dim]{result.error}[/dim]")
+        raise SystemExit(1)
+
+
 @task.command("run")
 @click.argument("task_id")
-@click.option("--prompt", "-p", required=True, help="Prompt file path or - for stdin")
 @click.option("--timeout", "-t", default=1800, help="Timeout in seconds")
-@click.option("--runtime", "-r", default=None, help="Runtime to use (claude, opencode, gemini)")
-def task_run(task_id: str, prompt: str, timeout: int, runtime: str | None) -> None:
-    """Execute a task with the specified prompt."""
-    # TODO: Implement task execution
-    console.print(f"[yellow]TODO:[/yellow] Run task {task_id} with prompt={prompt}, timeout={timeout}, runtime={runtime}")
+@click.option(
+    "--runner",
+    "-r",
+    type=click.Choice(["claude", "opencode", "gemini"]),
+    default=None,
+    help=f"Runner to use (default: {DEFAULT_RUNNER})",
+)
+@click.pass_context
+def task_run(ctx: click.Context, task_id: str, timeout: int, runner: str | None) -> None:
+    """Execute a task using AI in its worktree.
+
+    The AI runner will be invoked in the task's worktree directory,
+    allowing it to explore files and implement the task.
+    """
+    import os
+
+    manifest_path = os.environ.get("ARBORIST_MANIFEST")
+    if not manifest_path:
+        console.print("[red]Error:[/red] ARBORIST_MANIFEST environment variable not set")
+        raise SystemExit(1)
+
+    try:
+        manifest = load_manifest(Path(manifest_path))
+    except Exception as e:
+        console.print(f"[red]Error loading manifest:[/red] {e}")
+        raise SystemExit(1)
+
+    task_info = manifest.get_task(task_id)
+    if not task_info:
+        console.print(f"[red]Error:[/red] Task {task_id} not found in manifest")
+        raise SystemExit(1)
+
+    # Load task tree for description
+    tree = load_task_tree(manifest.spec_id)
+    task_node = tree.get_task(task_id) if tree else None
+    task_description = task_node.description if task_node else task_id
+
+    # Get worktree path
+    worktree_path = get_worktree_path(manifest.spec_id, task_id)
+    if not worktree_path.exists():
+        console.print(f"[red]Error:[/red] Worktree not found at {worktree_path}")
+        console.print("Run 'arborist task sync' first")
+        raise SystemExit(1)
+
+    # Build prompt for AI
+    prompt = f"""Implement task {task_id}: "{task_description}"
+
+You are in the project worktree. Read the task spec at specs/{manifest.spec_id}/tasks.md for full context including dependencies and requirements.
+
+Complete the implementation for this specific task. After implementing:
+1. Ensure all code compiles/lints
+2. Add any necessary tests
+3. Stage your changes with git add
+
+Do NOT commit - that will be handled by the task workflow.
+"""
+
+    # Get runner
+    runner_type = runner or DEFAULT_RUNNER
+    runner_instance = get_runner(runner_type)
+
+    if not runner_instance.is_available():
+        console.print(f"[red]Error:[/red] {runner_type} not found in PATH")
+        raise SystemExit(1)
+
+    if not ctx.obj.get("quiet"):
+        console.print(f"[cyan]Running task {task_id} with {runner_type}...[/cyan]")
+        console.print(f"[dim]Worktree: {worktree_path}[/dim]")
+
+    # Run the AI in the worktree directory
+    result = runner_instance.run(prompt, timeout=timeout, cwd=worktree_path)
+
+    if result.success:
+        console.print(f"[green]OK:[/green] Task {task_id} completed")
+        if result.output and not ctx.obj.get("quiet"):
+            console.print(f"\n[dim]Output:[/dim]\n{result.output[:1000]}")
+    else:
+        console.print(f"[red]Error:[/red] Task failed")
+        if result.error:
+            console.print(f"[dim]{result.error}[/dim]")
+        update_task_status(manifest.spec_id, task_id, "failed", error=result.error)
+        raise SystemExit(1)
+
+
+@task.command("test")
+@click.argument("task_id")
+@click.option("--cmd", help="Override test command (auto-detected if not specified)")
+@click.pass_context
+def task_test(ctx: click.Context, task_id: str, cmd: str | None) -> None:
+    """Run tests for a task.
+
+    Auto-detects test command based on project files (pytest, npm test, etc.).
+    For parent tasks, verifies all children are complete first.
+    """
+    import os
+
+    manifest_path = os.environ.get("ARBORIST_MANIFEST")
+    if not manifest_path:
+        console.print("[red]Error:[/red] ARBORIST_MANIFEST environment variable not set")
+        raise SystemExit(1)
+
+    try:
+        manifest = load_manifest(Path(manifest_path))
+    except Exception as e:
+        console.print(f"[red]Error loading manifest:[/red] {e}")
+        raise SystemExit(1)
+
+    task_info = manifest.get_task(task_id)
+    if not task_info:
+        console.print(f"[red]Error:[/red] Task {task_id} not found in manifest")
+        raise SystemExit(1)
+
+    # For parent tasks, check children are complete
+    if task_info.children:
+        tree = load_task_tree(manifest.spec_id)
+        if tree:
+            if not tree.are_children_complete(task_id):
+                incomplete = [
+                    c for c in tree.get_children(task_id)
+                    if c.status != "complete"
+                ]
+                console.print(f"[red]Error:[/red] Children not complete:")
+                for child in incomplete:
+                    console.print(f"  - {child.task_id}: {child.status}")
+                raise SystemExit(1)
+            console.print(f"[green]OK:[/green] All {len(task_info.children)} children complete")
+
+    # Get worktree path
+    worktree_path = get_worktree_path(manifest.spec_id, task_id)
+    if not worktree_path.exists():
+        console.print(f"[yellow]WARN:[/yellow] No worktree at {worktree_path}, using git root")
+        worktree_path = get_git_root()
+
+    # Detect or use provided test command
+    test_cmd = cmd or detect_test_command(worktree_path)
+    if not test_cmd:
+        console.print("[dim]No test command detected, skipping tests[/dim]")
+        return
+
+    if not ctx.obj.get("quiet"):
+        console.print(f"[cyan]Running tests: {test_cmd}[/cyan]")
+
+    result = run_tests(worktree_path, test_cmd)
+
+    if result.success:
+        console.print(f"[green]OK:[/green] {result.message}")
+    else:
+        console.print(f"[red]FAIL:[/red] {result.message}")
+        if result.error:
+            console.print(f"[dim]{result.error[:500]}[/dim]")
+        raise SystemExit(1)
+
+
+@task.command("merge")
+@click.argument("task_id")
+@click.option("--no-resolve", is_flag=True, help="Don't attempt AI conflict resolution")
+@click.pass_context
+def task_merge(ctx: click.Context, task_id: str, no_resolve: bool) -> None:
+    """Merge task branch to parent branch.
+
+    By default, attempts AI-powered conflict resolution if conflicts occur.
+    Use --no-resolve to fail on conflicts instead.
+    """
+    import os
+
+    manifest_path = os.environ.get("ARBORIST_MANIFEST")
+    if not manifest_path:
+        console.print("[red]Error:[/red] ARBORIST_MANIFEST environment variable not set")
+        raise SystemExit(1)
+
+    try:
+        manifest = load_manifest(Path(manifest_path))
+    except Exception as e:
+        console.print(f"[red]Error loading manifest:[/red] {e}")
+        raise SystemExit(1)
+
+    task_info = manifest.get_task(task_id)
+    if not task_info:
+        console.print(f"[red]Error:[/red] Task {task_id} not found in manifest")
+        raise SystemExit(1)
+
+    # Get branch names from manifest
+    task_branch = task_info.branch
+    parent_branch = task_info.parent_branch
+
+    if not ctx.obj.get("quiet"):
+        console.print(f"[cyan]Merging {task_branch} → {parent_branch}[/cyan]")
+
+    result = merge_to_parent(task_branch, parent_branch)
+
+    if result.success:
+        console.print(f"[green]OK:[/green] {result.message}")
+        update_task_status(manifest.spec_id, task_id, "complete")
+        return
+
+    # Handle conflicts
+    if result.conflicts:
+        console.print(f"[yellow]Conflicts in {len(result.conflicts)} files:[/yellow]")
+        for f in result.conflicts:
+            console.print(f"  - {f}")
+
+        if no_resolve:
+            abort_merge()
+            console.print("[red]Merge aborted due to conflicts[/red]")
+            raise SystemExit(1)
+
+        # Attempt AI conflict resolution
+        console.print("\n[cyan]Attempting AI conflict resolution...[/cyan]")
+
+        runner = get_runner(DEFAULT_RUNNER)
+        if not runner.is_available():
+            abort_merge()
+            console.print(f"[red]Error:[/red] {DEFAULT_RUNNER} not available for conflict resolution")
+            raise SystemExit(1)
+
+        git_root = get_git_root()
+        resolved_all = True
+
+        for conflict_file in result.conflicts:
+            conflict_path = git_root / conflict_file
+            if not conflict_path.exists():
+                continue
+
+            conflict_content = conflict_path.read_text()
+
+            resolve_prompt = f"""Resolve this git merge conflict in {conflict_file}.
+
+The file contains conflict markers (<<<<<<, ======, >>>>>>).
+Analyze both versions and produce the correctly merged result.
+
+Output ONLY the resolved file content, no explanation.
+
+Conflicted file:
+```
+{conflict_content}
+```"""
+
+            resolve_result = runner.run(resolve_prompt, timeout=60)
+
+            if resolve_result.success and resolve_result.output:
+                # Write resolved content
+                conflict_path.write_text(resolve_result.output.strip())
+                subprocess.run(["git", "add", conflict_file], cwd=git_root, check=True)
+                console.print(f"  [green]Resolved:[/green] {conflict_file}")
+            else:
+                console.print(f"  [red]Failed:[/red] {conflict_file}")
+                resolved_all = False
+
+        if resolved_all:
+            # Complete the merge
+            subprocess.run(
+                ["git", "commit", "--no-edit"],
+                cwd=git_root,
+                check=True,
+                capture_output=True,
+            )
+            console.print(f"[green]OK:[/green] Merge completed with AI-resolved conflicts")
+            update_task_status(manifest.spec_id, task_id, "complete")
+        else:
+            abort_merge()
+            console.print("[red]Error:[/red] Could not resolve all conflicts")
+            update_task_status(manifest.spec_id, task_id, "failed", error="Merge conflicts")
+            raise SystemExit(1)
+    else:
+        console.print(f"[red]Error:[/red] {result.message}")
+        if result.error:
+            console.print(f"[dim]{result.error}[/dim]")
+        raise SystemExit(1)
+
+
+@task.command("cleanup")
+@click.argument("task_id")
+@click.option("--keep-branch", is_flag=True, help="Don't delete the branch")
+@click.pass_context
+def task_cleanup(ctx: click.Context, task_id: str, keep_branch: bool) -> None:
+    """Remove worktree and branch for a completed task."""
+    import os
+
+    manifest_path = os.environ.get("ARBORIST_MANIFEST")
+    if not manifest_path:
+        console.print("[red]Error:[/red] ARBORIST_MANIFEST environment variable not set")
+        raise SystemExit(1)
+
+    try:
+        manifest = load_manifest(Path(manifest_path))
+    except Exception as e:
+        console.print(f"[red]Error loading manifest:[/red] {e}")
+        raise SystemExit(1)
+
+    task_info = manifest.get_task(task_id)
+    if not task_info:
+        console.print(f"[red]Error:[/red] Task {task_id} not found in manifest")
+        raise SystemExit(1)
+
+    task_branch = task_info.branch
+    worktree_path = get_worktree_path(manifest.spec_id, task_id)
+
+    if not ctx.obj.get("quiet"):
+        console.print(f"[cyan]Cleaning up task {task_id}...[/cyan]")
+
+    result = cleanup_task(task_branch, worktree_path, delete_branch=not keep_branch)
+
+    if result.success:
+        console.print(f"[green]OK:[/green] {result.message}")
+        # Clear worktree from state
+        tree = load_task_tree(manifest.spec_id)
+        if tree:
+            task_node = tree.get_task(task_id)
+            if task_node:
+                update_task_status(manifest.spec_id, task_id, task_node.status, worktree=None)
+    else:
+        console.print(f"[yellow]WARN:[/yellow] {result.message}")
+        if result.error:
+            console.print(f"[dim]{result.error}[/dim]")
 
 
 @task.command("status")
-@click.argument("task_id")
-def task_status(task_id: str) -> None:
-    """Get task status as JSON."""
-    # TODO: Implement task status
-    console.print(f"[yellow]TODO:[/yellow] Get status for task {task_id}")
+@click.argument("task_id", required=False)
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+@click.pass_context
+def task_status(ctx: click.Context, task_id: str | None, as_json: bool) -> None:
+    """Get task status.
 
+    If TASK_ID is provided, shows that task's status.
+    Otherwise, shows summary of all tasks.
+    """
+    import json
 
-@task.command("deps")
-@click.argument("task_id")
-def task_deps(task_id: str) -> None:
-    """Check if task dependencies are satisfied."""
-    # TODO: Implement dependency checking
-    console.print(f"[yellow]TODO:[/yellow] Check dependencies for task {task_id}")
+    spec_id = ctx.obj.get("spec_id")
+    if not spec_id:
+        console.print("[red]Error:[/red] No spec available")
+        raise SystemExit(1)
 
+    tree = load_task_tree(spec_id)
+    if not tree:
+        console.print(f"[red]Error:[/red] No task tree found for spec {spec_id}")
+        raise SystemExit(1)
 
-@task.command("mark")
-@click.argument("task_id")
-@click.option("--status", "-s", required=True, type=click.Choice(["completed", "failed"]))
-def task_mark(task_id: str, status: str) -> None:
-    """Manually mark a task's status."""
-    # TODO: Implement task marking
-    console.print(f"[yellow]TODO:[/yellow] Mark task {task_id} as {status}")
+    if task_id:
+        task_node = tree.get_task(task_id)
+        if not task_node:
+            console.print(f"[red]Error:[/red] Task {task_id} not found")
+            raise SystemExit(1)
+
+        if as_json:
+            console.print(json.dumps({
+                "task_id": task_node.task_id,
+                "status": task_node.status,
+                "description": task_node.description,
+                "parent_id": task_node.parent_id,
+                "children": task_node.children,
+                "branch": task_node.branch,
+                "worktree": task_node.worktree,
+                "error": task_node.error,
+            }, indent=2))
+        else:
+            status_color = {
+                "pending": "yellow",
+                "running": "cyan",
+                "complete": "green",
+                "failed": "red",
+            }.get(task_node.status, "white")
+
+            console.print(f"[bold]Task:[/bold] {task_node.task_id}")
+            console.print(f"[bold]Status:[/bold] [{status_color}]{task_node.status}[/{status_color}]")
+            console.print(f"[dim]Description:[/dim] {task_node.description}")
+            if task_node.parent_id:
+                console.print(f"[dim]Parent:[/dim] {task_node.parent_id}")
+            if task_node.children:
+                console.print(f"[dim]Children:[/dim] {', '.join(task_node.children)}")
+            if task_node.branch:
+                console.print(f"[dim]Branch:[/dim] {task_node.branch}")
+            if task_node.worktree:
+                console.print(f"[dim]Worktree:[/dim] {task_node.worktree}")
+            if task_node.error:
+                console.print(f"[red]Error:[/red] {task_node.error}")
+    else:
+        # Show summary
+        summary = get_task_status_summary(tree)
+
+        if as_json:
+            console.print(json.dumps(summary, indent=2))
+        else:
+            console.print(f"[bold]Spec:[/bold] {spec_id}")
+            console.print(f"[bold]Total tasks:[/bold] {summary['total']}")
+            console.print(f"  [yellow]Pending:[/yellow] {summary['pending']}")
+            console.print(f"  [cyan]Running:[/cyan] {summary['running']}")
+            console.print(f"  [green]Complete:[/green] {summary['complete']}")
+            console.print(f"  [red]Failed:[/red] {summary['failed']}")
 
 
 # -----------------------------------------------------------------------------
@@ -512,6 +1006,45 @@ def dag_build(
 
     # Ensure parent directory exists
     output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Generate and save branch manifest
+    if not ctx.obj.get("quiet"):
+        console.print("[cyan]Generating branch manifest...[/cyan]")
+
+    # Get current branch for base naming
+    source_branch = get_current_branch()
+
+    # Build task tree from spec
+    from agent_arborist.task_state import build_task_tree_from_spec
+    task_tree = build_task_tree_from_spec(dag_name, task_file)
+
+    # Generate manifest
+    manifest = generate_manifest(dag_name, task_tree, source_branch)
+
+    # Save manifest alongside DAG
+    manifest_path = output_path.with_suffix(".json")
+    save_manifest(manifest, manifest_path)
+
+    if not ctx.obj.get("quiet"):
+        console.print(f"[green]Manifest written to:[/green] {manifest_path}")
+        console.print(f"[dim]  Source branch: {manifest.source_branch}[/dim]")
+        console.print(f"[dim]  Base branch: {manifest.base_branch}[/dim]")
+        console.print(f"[dim]  Tasks: {len(manifest.tasks)}[/dim]")
+
+    # Inject ARBORIST_MANIFEST env into generated DAG YAML
+    import yaml
+    dag_data = yaml.safe_load(dag_yaml)
+
+    # Add env section if not present
+    if "env" not in dag_data:
+        dag_data["env"] = []
+
+    # Add manifest path - use DAG_DIR variable that DAGU provides
+    manifest_env = f"ARBORIST_MANIFEST: ${{DAG_DIR}}/{manifest_path.name}"
+    dag_data["env"].append(manifest_env)
+
+    # Re-serialize YAML
+    dag_yaml = yaml.dump(dag_data, default_flow_style=False, sort_keys=False)
 
     # Write the DAG
     output_path.write_text(dag_yaml)

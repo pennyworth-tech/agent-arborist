@@ -19,7 +19,8 @@ class GenerationResult:
     raw_output: str | None = None
 
 
-DAG_GENERATION_PROMPT = '''You are a workflow automation expert. Read the following task specification and generate a DAGU DAG YAML file.
+# Prompt for git-worktree-based task execution with deterministic branch manifest
+DAG_GENERATION_PROMPT = '''You are a workflow automation expert. Analyze the task specification and output a DAGU DAG as YAML.
 
 TASK SPECIFICATION:
 ---
@@ -27,36 +28,62 @@ TASK SPECIFICATION:
 ---
 
 REQUIREMENTS:
-1. Generate valid DAGU YAML with these fields:
-   - name: Use "{dag_name}" (underscores, no dashes)
+1. Output valid DAGU YAML with:
+   - name: "{dag_name}" (underscores, no dashes)
    - description: Brief project description
+   - env: ARBORIST_MANIFEST pointing to manifest JSON (see below)
    - steps: List of workflow steps
 
-2. For each task (T001, T002, etc.), create a step with:
-   - name: "{task_id}-{slug}" where slug is 2-4 words from description (max 40 chars total)
-   - command: 'sleep 0.1 && echo "[{task_id}] {description}"'
-   - depends: List of step names this task depends on (based on the Dependencies section)
+2. Add env section:
+   env:
+     - ARBORIST_MANIFEST: ${{DAG_DIR}}/{dag_name}.json
 
-3. Escape any backticks in descriptions with single quotes
+3. Analyze the task hierarchy:
+   - Identify all tasks (T001, T002, etc.)
+   - Determine parent-child relationships from dependencies
+   - A task's "parent" is typically its first dependency
+   - Tasks with no dependencies that others depend on are "parent" tasks
+   - Tasks at the end of dependency chains are "leaf" tasks
 
-4. Add phase completion steps:
-   - name: "phase-complete-{phase-slug}"
-   - command: 'sleep 0.1 && echo "Phase complete: {checkpoint}"'
-   - depends: All task steps in that phase
+4. First step MUST be branches-setup:
+   - name: branches-setup
+   - command: arborist branches create-all
+   - depends: []
 
-5. Add final step:
-   - name: "all-complete"
-   - depends: All phase-complete steps
+5. For LEAF tasks (no children depend on them), create a step:
+   - name: "TXXX-slug" (max 40 chars, slug from description)
+   - command: |
+       arborist task sync TXXX &&
+       arborist task run TXXX &&
+       arborist task test TXXX &&
+       arborist task merge TXXX &&
+       arborist task cleanup TXXX
+   - depends: [parent-task-step-name or branches-setup if root]
 
-6. Parse the Dependencies section carefully:
-   - "T001 → T002" means T002 depends on T001
-   - "T001 → T002, T003" means both T002 and T003 depend on T001
-   - "T001 → T002 → T003" is a chain
+6. For PARENT tasks (other tasks depend on them), create TWO steps:
+   a) Setup step:
+      - name: "TXXX-setup"
+      - command: arborist task sync TXXX
+      - depends: [its-parent-step-name or branches-setup if root]
 
-7. Tasks marked [P] can run in parallel with siblings (they share the same dependencies)
+   b) Complete step (runs after all children complete):
+      - name: "TXXX-complete"
+      - command: |
+          arborist task test TXXX &&
+          arborist task merge TXXX &&
+          arborist task cleanup TXXX
+      - depends: [all-child-step-names]
 
-OUTPUT FORMAT:
-Return ONLY valid YAML, no markdown code fences, no explanation. Start directly with "name:".
+7. INFER DEPENDENCIES from:
+   - Explicit "Dependencies" section (arrows like "T001 → T002")
+   - Task ordering within phases/sections
+   - "Parallel Opportunities" sections
+
+8. Tasks marked [P] can run in parallel (share same parent dependency)
+
+9. Do NOT add phase-complete or all-complete steps - just the task steps.
+
+CRITICAL: Output ONLY the YAML content. No markdown fences. No explanation. Start directly with "name:" on the first line.
 '''
 
 
@@ -71,20 +98,24 @@ class DagGenerator:
         spec_content: str,
         dag_name: str,
         timeout: int = 120,
+        spec_dir: Path | None = None,
     ) -> GenerationResult:
-        """Generate a DAGU DAG from task spec content using AI."""
+        """Generate a DAGU DAG from task spec content using AI.
+
+        Args:
+            spec_content: The task specification content
+            dag_name: Name for the DAG
+            timeout: Timeout for AI inference
+            spec_dir: Optional directory for AI to explore (for richer context)
+        """
         # Build the prompt
         prompt = DAG_GENERATION_PROMPT.format(
             spec_content=spec_content,
             dag_name=dag_name.replace("-", "_"),
-            task_id="{task_id}",  # Keep as template markers in instructions
-            slug="{slug}",
-            description="{description}",
-            checkpoint="{checkpoint}",
         )
 
-        # Run the AI
-        result = self.runner.run(prompt, timeout=timeout)
+        # Run the AI (optionally in the spec directory for context)
+        result = self.runner.run(prompt, timeout=timeout, cwd=spec_dir)
 
         if not result.success:
             return GenerationResult(
@@ -163,7 +194,8 @@ class DagGenerator:
         if dag_name is None:
             dag_name = spec_path.stem.replace("tasks-", "").replace("tasks", "spec")
 
-        return self.generate(spec_content, dag_name, timeout)
+        # Pass the spec directory for context
+        return self.generate(spec_content, dag_name, timeout, spec_dir=spec_path.parent)
 
     def generate_from_directory(
         self,
@@ -199,3 +231,107 @@ def generate_dag(
     """Convenience function to generate a DAG using AI."""
     generator = DagGenerator(runner_type=runner_type)
     return generator.generate(spec_content, dag_name, timeout)
+
+
+def build_simple_dag(
+    spec_id: str,
+    tasks: list[dict],
+    description: str = "",
+) -> str:
+    """Build a simple DAG YAML from a list of tasks.
+
+    This is a deterministic alternative to AI generation.
+
+    Args:
+        spec_id: The spec identifier
+        tasks: List of task dicts with 'id', 'description', 'parent_id', 'children'
+        description: DAG description
+
+    Returns:
+        YAML string for the DAG
+    """
+    dag_name = spec_id.replace("-", "_")
+    dag = {
+        "name": dag_name,
+        "description": description or f"DAG for {spec_id}",
+        "env": [
+            {"ARBORIST_MANIFEST": f"${{DAG_DIR}}/{spec_id}.json"},
+        ],
+        "steps": [],
+    }
+
+    # Add branches setup step (creates all branches from manifest)
+    dag["steps"].append({
+        "name": "branches-setup",
+        "command": "arborist branches create-all",
+    })
+
+    # Build steps for each task
+    for task in tasks:
+        task_id = task["id"]
+        has_children = bool(task.get("children"))
+        parent_id = task.get("parent_id")
+
+        # Determine slug from description
+        desc_words = task.get("description", task_id).split()[:4]
+        slug = "-".join(w.lower() for w in desc_words if w.isalnum())[:30]
+
+        if has_children:
+            # Parent task: create setup and complete steps
+            setup_step = {
+                "name": f"{task_id}-setup",
+                "command": f"arborist task sync {task_id}",
+            }
+            if parent_id:
+                setup_step["depends"] = [f"{parent_id}-setup"]
+            else:
+                setup_step["depends"] = ["branches-setup"]
+            dag["steps"].append(setup_step)
+
+            # Complete step will be added after we know all children
+            # (handled in second pass)
+        else:
+            # Leaf task: full workflow
+            step = {
+                "name": f"{task_id}-{slug}"[:40],
+                "command": f"""arborist task sync {task_id} &&
+arborist task run {task_id} &&
+arborist task test {task_id} &&
+arborist task merge {task_id} &&
+arborist task cleanup {task_id}""",
+            }
+            if parent_id:
+                step["depends"] = [f"{parent_id}-setup"]
+            else:
+                step["depends"] = ["branches-setup"]
+            dag["steps"].append(step)
+
+    # Second pass: add complete steps for parent tasks
+    for task in tasks:
+        if task.get("children"):
+            task_id = task["id"]
+            children = task["children"]
+
+            # Find step names for children
+            child_deps = []
+            for child_id in children:
+                child_task = next((t for t in tasks if t["id"] == child_id), None)
+                if child_task:
+                    if child_task.get("children"):
+                        child_deps.append(f"{child_id}-complete")
+                    else:
+                        # Find the leaf step name
+                        desc_words = child_task.get("description", child_id).split()[:4]
+                        slug = "-".join(w.lower() for w in desc_words if w.isalnum())[:30]
+                        child_deps.append(f"{child_id}-{slug}"[:40])
+
+            complete_step = {
+                "name": f"{task_id}-complete",
+                "command": f"""arborist task test {task_id} &&
+arborist task merge {task_id} &&
+arborist task cleanup {task_id}""",
+                "depends": child_deps,
+            }
+            dag["steps"].append(complete_step)
+
+    return yaml.dump(dag, default_flow_style=False, sort_keys=False)

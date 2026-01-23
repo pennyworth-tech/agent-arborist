@@ -4,6 +4,7 @@ import subprocess
 import shutil
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 
 RunnerType = Literal["claude", "opencode", "gemini"]
@@ -28,8 +29,14 @@ class Runner(ABC):
     command: str
 
     @abstractmethod
-    def run(self, prompt: str, timeout: int = 60) -> RunResult:
-        """Run a prompt and return the result."""
+    def run(self, prompt: str, timeout: int = 60, cwd: Path | None = None) -> RunResult:
+        """Run a prompt and return the result.
+
+        Args:
+            prompt: The prompt to execute
+            timeout: Timeout in seconds
+            cwd: Working directory for the runner (allows AI to explore files)
+        """
         pass
 
     def is_available(self) -> bool:
@@ -43,8 +50,11 @@ class ClaudeRunner(Runner):
     name = "claude"
     command = "claude"
 
-    def run(self, prompt: str, timeout: int = 60) -> RunResult:
-        """Run a prompt using Claude CLI."""
+    def run(self, prompt: str, timeout: int = 60, cwd: Path | None = None) -> RunResult:
+        """Run a prompt using Claude CLI.
+
+        If cwd is provided, Claude runs in that directory and can explore files there.
+        """
         path = shutil.which(self.command)
         if not path:
             return RunResult(
@@ -60,6 +70,7 @@ class ClaudeRunner(Runner):
                 capture_output=True,
                 text=True,
                 timeout=timeout,
+                cwd=cwd,
             )
 
             return RunResult(
@@ -91,7 +102,7 @@ class OpencodeRunner(Runner):
     name = "opencode"
     command = "opencode"
 
-    def run(self, prompt: str, timeout: int = 60) -> RunResult:
+    def run(self, prompt: str, timeout: int = 60, cwd: Path | None = None) -> RunResult:
         """Run a prompt using OpenCode CLI."""
         path = shutil.which(self.command)
         if not path:
@@ -109,6 +120,7 @@ class OpencodeRunner(Runner):
                 capture_output=True,
                 text=True,
                 timeout=timeout,
+                cwd=cwd,
             )
 
             return RunResult(
@@ -140,7 +152,7 @@ class GeminiRunner(Runner):
     name = "gemini"
     command = "gemini"
 
-    def run(self, prompt: str, timeout: int = 60) -> RunResult:
+    def run(self, prompt: str, timeout: int = 60, cwd: Path | None = None) -> RunResult:
         """Run a prompt using Gemini CLI."""
         path = shutil.which(self.command)
         if not path:
@@ -158,6 +170,7 @@ class GeminiRunner(Runner):
                 capture_output=True,
                 text=True,
                 timeout=timeout,
+                cwd=cwd,
             )
 
             return RunResult(

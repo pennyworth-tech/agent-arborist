@@ -114,56 +114,76 @@ class TestDoctorCommand:
         assert "At least one runtime" in result.output
 
 
+class TestBranchesCommands:
+    """Tests for branches command group."""
+
+    def test_branches_group_help(self):
+        runner = CliRunner()
+        result = runner.invoke(main, ["branches", "--help"])
+        assert result.exit_code == 0
+        assert "create-all" in result.output
+
+    def test_branches_create_all_requires_manifest(self):
+        """create-all requires ARBORIST_MANIFEST env var."""
+        runner = CliRunner()
+        result = runner.invoke(main, ["branches", "create-all"])
+        assert result.exit_code != 0
+        assert "ARBORIST_MANIFEST environment variable not set" in result.output
+
+
 class TestTaskCommands:
     def test_task_group_help(self):
         runner = CliRunner()
         result = runner.invoke(main, ["task", "--help"])
         assert result.exit_code == 0
+        assert "sync" in result.output
         assert "run" in result.output
+        assert "test" in result.output
+        assert "merge" in result.output
+        assert "cleanup" in result.output
         assert "status" in result.output
-        assert "deps" in result.output
-        assert "mark" in result.output
 
-    def test_task_run_requires_prompt(self):
+    def test_task_sync_requires_manifest(self):
+        """sync requires ARBORIST_MANIFEST env var."""
+        runner = CliRunner()
+        result = runner.invoke(main, ["task", "sync", "T001"])
+        assert result.exit_code != 0
+        assert "ARBORIST_MANIFEST environment variable not set" in result.output
+
+    def test_task_run_requires_manifest(self):
+        """run requires ARBORIST_MANIFEST env var."""
         runner = CliRunner()
         result = runner.invoke(main, ["task", "run", "T001"])
         assert result.exit_code != 0
-        assert "Missing option" in result.output or "required" in result.output.lower()
+        assert "ARBORIST_MANIFEST environment variable not set" in result.output
 
-    def test_task_run_placeholder(self):
+    def test_task_status_requires_spec(self):
+        """status requires a spec to be available (via context or --spec)."""
         runner = CliRunner()
-        result = runner.invoke(main, ["task", "run", "T001", "--prompt", "test.md"])
-        assert result.exit_code == 0
-        assert "T001" in result.output
-
-    def test_task_status_placeholder(self):
-        runner = CliRunner()
-        result = runner.invoke(main, ["task", "status", "T001"])
-        assert result.exit_code == 0
-        assert "T001" in result.output
-
-    def test_task_deps_placeholder(self):
-        runner = CliRunner()
-        result = runner.invoke(main, ["task", "deps", "T001"])
-        assert result.exit_code == 0
-        assert "T001" in result.output
-
-    def test_task_mark_requires_status(self):
-        runner = CliRunner()
-        result = runner.invoke(main, ["task", "mark", "T001"])
+        result = runner.invoke(main, ["task", "status"])
         assert result.exit_code != 0
+        assert "No spec available" in result.output
 
-    def test_task_mark_validates_status(self):
+    def test_task_test_requires_manifest(self):
+        """test requires ARBORIST_MANIFEST env var."""
         runner = CliRunner()
-        result = runner.invoke(main, ["task", "mark", "T001", "--status", "invalid"])
+        result = runner.invoke(main, ["task", "test", "T001"])
         assert result.exit_code != 0
+        assert "ARBORIST_MANIFEST environment variable not set" in result.output
 
-    def test_task_mark_placeholder(self):
+    def test_task_merge_requires_manifest(self):
+        """merge requires ARBORIST_MANIFEST env var."""
         runner = CliRunner()
-        result = runner.invoke(main, ["task", "mark", "T001", "--status", "completed"])
-        assert result.exit_code == 0
-        assert "T001" in result.output
-        assert "completed" in result.output
+        result = runner.invoke(main, ["task", "merge", "T001"])
+        assert result.exit_code != 0
+        assert "ARBORIST_MANIFEST environment variable not set" in result.output
+
+    def test_task_cleanup_requires_manifest(self):
+        """cleanup requires ARBORIST_MANIFEST env var."""
+        runner = CliRunner()
+        result = runner.invoke(main, ["task", "cleanup", "T001"])
+        assert result.exit_code != 0
+        assert "ARBORIST_MANIFEST environment variable not set" in result.output
 
 
 class TestSpecCommands:
