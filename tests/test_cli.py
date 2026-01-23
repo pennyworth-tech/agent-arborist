@@ -10,7 +10,7 @@ from click.testing import CliRunner
 
 from agent_arborist.cli import main
 from agent_arborist.checks import DependencyStatus
-from agent_arborist.home import ARBORIST_DIR_NAME
+from agent_arborist.home import ARBORIST_DIR_NAME, DAGU_DIR_NAME, DAGU_HOME_ENV_VAR
 
 
 class TestVersionCommand:
@@ -361,3 +361,39 @@ class TestInitCommand:
         result = runner.invoke(main, ["init"])
         assert result.exit_code == 0
         assert ARBORIST_DIR_NAME in result.output
+
+    def test_init_creates_dagu_subdirectory(self, git_repo):
+        runner = CliRunner()
+        result = runner.invoke(main, ["init"])
+        assert result.exit_code == 0
+
+        dagu_dir = git_repo / ARBORIST_DIR_NAME / DAGU_DIR_NAME
+        assert dagu_dir.is_dir()
+
+
+class TestDaguHomeEnvVar:
+    def test_dagu_home_set_when_initialized(self, git_repo):
+        # First initialize
+        runner = CliRunner()
+        result = runner.invoke(main, ["init"])
+        assert result.exit_code == 0
+
+        # Run any command and check env var is set
+        # We use version as a simple command
+        result = runner.invoke(main, ["version"])
+        assert result.exit_code == 0
+
+        # Check the env var was set
+        expected_dagu_home = str(git_repo / ARBORIST_DIR_NAME / DAGU_DIR_NAME)
+        assert os.environ.get(DAGU_HOME_ENV_VAR) == expected_dagu_home
+
+    def test_dagu_home_not_set_when_not_initialized(self, git_repo, monkeypatch):
+        # Ensure env var is not set
+        monkeypatch.delenv(DAGU_HOME_ENV_VAR, raising=False)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["version"])
+        assert result.exit_code == 0
+
+        # DAGU_HOME should not be set since we didn't init
+        assert os.environ.get(DAGU_HOME_ENV_VAR) is None

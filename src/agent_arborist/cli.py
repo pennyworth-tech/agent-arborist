@@ -1,5 +1,7 @@
 """Agent Arborist CLI - Automated Task Tree Executor."""
 
+import os
+
 import click
 from rich.console import Console
 from rich.table import Table
@@ -10,9 +12,11 @@ from agent_arborist.spec import detect_spec_from_git
 from agent_arborist.runner import get_runner, RunnerType, DEFAULT_RUNNER
 from agent_arborist.home import (
     get_arborist_home,
+    get_dagu_home,
     init_arborist_home,
     is_initialized,
     ArboristHomeError,
+    DAGU_HOME_ENV_VAR,
 )
 
 console = Console()
@@ -20,14 +24,28 @@ console = Console()
 
 @click.group()
 @click.option("--quiet", "-q", is_flag=True, help="Suppress non-essential output")
+@click.option("--home", envvar="ARBORIST_HOME", help="Override arborist home directory")
 @click.pass_context
-def main(ctx: click.Context, quiet: bool) -> None:
+def main(ctx: click.Context, quiet: bool, home: str | None) -> None:
     """Agent Arborist - Automated Task Tree Executor.
 
     Orchestrate DAG workflows with Claude Code and Dagu.
     """
     ctx.ensure_object(dict)
     ctx.obj["quiet"] = quiet
+    ctx.obj["home_override"] = home
+
+    # Set DAGU_HOME if arborist is initialized
+    try:
+        arborist_home = get_arborist_home(override=home)
+        if is_initialized(arborist_home):
+            dagu_home = get_dagu_home(arborist_home)
+            os.environ[DAGU_HOME_ENV_VAR] = str(dagu_home)
+            ctx.obj["arborist_home"] = arborist_home
+            ctx.obj["dagu_home"] = dagu_home
+    except ArboristHomeError:
+        # Not in a git repo or not initialized - that's fine for some commands
+        pass
 
 
 @main.command()

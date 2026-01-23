@@ -5,7 +5,9 @@ import subprocess
 from pathlib import Path
 
 ARBORIST_DIR_NAME = ".arborist"
+DAGU_DIR_NAME = "dagu"
 ENV_VAR_NAME = "ARBORIST_HOME"
+DAGU_HOME_ENV_VAR = "DAGU_HOME"
 
 
 class ArboristHomeError(Exception):
@@ -69,6 +71,19 @@ def get_arborist_home(override: str | Path | None = None) -> Path:
         "Cannot determine arborist home. "
         "Not in a git repository and ARBORIST_HOME not set."
     )
+
+
+def get_dagu_home(arborist_home: Path | None = None) -> Path:
+    """Get the dagu home directory.
+
+    Args:
+        arborist_home: Arborist home path. If None, uses get_arborist_home().
+
+    Returns:
+        Path to dagu home directory ($ARBORIST_HOME/dagu).
+    """
+    home = arborist_home or get_arborist_home()
+    return home / DAGU_DIR_NAME
 
 
 def is_initialized(home: Path | None = None) -> bool:
@@ -152,6 +167,10 @@ def init_arborist_home(home: Path | None = None) -> Path:
         )
 
     target.mkdir(parents=True)
+
+    # Create dagu subdirectory
+    dagu_dir = target / DAGU_DIR_NAME
+    dagu_dir.mkdir()
 
     # Add to .gitignore if we're in a git repo
     if git_root:

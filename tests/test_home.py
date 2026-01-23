@@ -10,10 +10,12 @@ import pytest
 from agent_arborist.home import (
     get_git_root,
     get_arborist_home,
+    get_dagu_home,
     is_initialized,
     init_arborist_home,
     ArboristHomeError,
     ARBORIST_DIR_NAME,
+    DAGU_DIR_NAME,
     ENV_VAR_NAME,
 )
 
@@ -98,6 +100,18 @@ class TestGetArboristHome:
         assert isinstance(result, Path)
 
 
+class TestGetDaguHome:
+    def test_returns_dagu_subdir(self, git_repo):
+        arborist_home = git_repo / ARBORIST_DIR_NAME
+        result = get_dagu_home(arborist_home)
+        assert result == arborist_home / DAGU_DIR_NAME
+
+    def test_uses_get_arborist_home_by_default(self, git_repo):
+        result = get_dagu_home()
+        expected = git_repo / ARBORIST_DIR_NAME / DAGU_DIR_NAME
+        assert result == expected
+
+
 class TestIsInitialized:
     def test_returns_false_when_not_initialized(self, git_repo):
         assert not is_initialized()
@@ -124,6 +138,11 @@ class TestInitArboristHome:
         expected = git_repo / ARBORIST_DIR_NAME
         assert result == expected
         assert expected.is_dir()
+
+    def test_creates_dagu_subdirectory(self, git_repo):
+        result = init_arborist_home()
+        dagu_dir = result / DAGU_DIR_NAME
+        assert dagu_dir.is_dir()
 
     def test_fails_if_not_in_git_repo(self, non_git_dir):
         with pytest.raises(ArboristHomeError) as exc_info:
