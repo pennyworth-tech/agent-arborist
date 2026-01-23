@@ -39,6 +39,53 @@ def doctor() -> None:
     _check_dependencies()
 
 
+# -----------------------------------------------------------------------------
+# Task commands
+# -----------------------------------------------------------------------------
+
+
+@main.group()
+def task() -> None:
+    """Task execution and management."""
+    pass
+
+
+@task.command("run")
+@click.argument("task_id")
+@click.option("--prompt", "-p", required=True, help="Prompt file path or - for stdin")
+@click.option("--timeout", "-t", default=1800, help="Timeout in seconds")
+@click.option("--runtime", "-r", default=None, help="Runtime to use (claude, opencode, gemini)")
+def task_run(task_id: str, prompt: str, timeout: int, runtime: str | None) -> None:
+    """Execute a task with the specified prompt."""
+    # TODO: Implement task execution
+    console.print(f"[yellow]TODO:[/yellow] Run task {task_id} with prompt={prompt}, timeout={timeout}, runtime={runtime}")
+
+
+@task.command("status")
+@click.argument("task_id")
+def task_status(task_id: str) -> None:
+    """Get task status as JSON."""
+    # TODO: Implement task status
+    console.print(f"[yellow]TODO:[/yellow] Get status for task {task_id}")
+
+
+@task.command("deps")
+@click.argument("task_id")
+def task_deps(task_id: str) -> None:
+    """Check if task dependencies are satisfied."""
+    # TODO: Implement dependency checking
+    console.print(f"[yellow]TODO:[/yellow] Check dependencies for task {task_id}")
+
+
+@task.command("mark")
+@click.argument("task_id")
+@click.option("--status", "-s", required=True, type=click.Choice(["completed", "failed"]))
+def task_mark(task_id: str, status: str) -> None:
+    """Manually mark a task's status."""
+    # TODO: Implement task marking
+    console.print(f"[yellow]TODO:[/yellow] Mark task {task_id} as {status}")
+
+
 def _check_dependencies() -> None:
     """Check and display dependency status."""
     table = Table(title="Dependency Status")

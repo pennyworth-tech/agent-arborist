@@ -1,6 +1,6 @@
 """Tests for CLI commands."""
 
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 from click.testing import CliRunner
 
 from agent_arborist.cli import main
@@ -100,3 +100,55 @@ class TestDoctorCommand:
         result = runner.invoke(main, ["doctor"])
         assert result.exit_code == 1
         assert "At least one runtime" in result.output
+
+
+class TestTaskCommands:
+    def test_task_group_help(self):
+        runner = CliRunner()
+        result = runner.invoke(main, ["task", "--help"])
+        assert result.exit_code == 0
+        assert "run" in result.output
+        assert "status" in result.output
+        assert "deps" in result.output
+        assert "mark" in result.output
+
+    def test_task_run_requires_prompt(self):
+        runner = CliRunner()
+        result = runner.invoke(main, ["task", "run", "T001"])
+        assert result.exit_code != 0
+        assert "Missing option" in result.output or "required" in result.output.lower()
+
+    def test_task_run_placeholder(self):
+        runner = CliRunner()
+        result = runner.invoke(main, ["task", "run", "T001", "--prompt", "test.md"])
+        assert result.exit_code == 0
+        assert "T001" in result.output
+
+    def test_task_status_placeholder(self):
+        runner = CliRunner()
+        result = runner.invoke(main, ["task", "status", "T001"])
+        assert result.exit_code == 0
+        assert "T001" in result.output
+
+    def test_task_deps_placeholder(self):
+        runner = CliRunner()
+        result = runner.invoke(main, ["task", "deps", "T001"])
+        assert result.exit_code == 0
+        assert "T001" in result.output
+
+    def test_task_mark_requires_status(self):
+        runner = CliRunner()
+        result = runner.invoke(main, ["task", "mark", "T001"])
+        assert result.exit_code != 0
+
+    def test_task_mark_validates_status(self):
+        runner = CliRunner()
+        result = runner.invoke(main, ["task", "mark", "T001", "--status", "invalid"])
+        assert result.exit_code != 0
+
+    def test_task_mark_placeholder(self):
+        runner = CliRunner()
+        result = runner.invoke(main, ["task", "mark", "T001", "--status", "completed"])
+        assert result.exit_code == 0
+        assert "T001" in result.output
+        assert "completed" in result.output
