@@ -1840,6 +1840,113 @@ def dag_run_show(
         raise SystemExit(1)
 
 
+@dag.command("dashboard")
+@click.option("--port", "-p", type=int, default=8080, help="Port to run dashboard on")
+@click.option("--host", "-H", default="127.0.0.1", help="Host to bind to")
+@click.pass_context
+def dag_dashboard(
+    ctx: click.Context,
+    port: int,
+    host: str,
+) -> None:
+    """Launch the Dagu web dashboard.
+
+    Starts the Dagu server which provides a web UI for monitoring and
+    managing DAG executions. Press Ctrl+C to stop the server.
+
+    The dashboard will be available at http://<host>:<port>/
+    """
+    import signal
+
+    arborist_home = ctx.obj.get("arborist_home")
+    dagu_home = ctx.obj.get("dagu_home")
+
+    if ctx.obj.get("echo_for_testing"):
+        echo_command(
+            "dag dashboard",
+            arborist_home=str(arborist_home) if arborist_home else "none",
+            dagu_home=str(dagu_home) if dagu_home else "none",
+            port=str(port),
+            host=host,
+        )
+        return
+
+    # Check DAGU_HOME is set
+    if not dagu_home:
+        console.print("[red]Error:[/red] DAGU_HOME not set")
+        console.print("Run 'arborist init' first to initialize the project")
+        raise SystemExit(1)
+
+    # Check dagu is installed
+    dagu_path = shutil.which("dagu")
+    if not dagu_path:
+        console.print("[red]Error:[/red] dagu not found in PATH")
+        console.print("Install dagu: https://dagu.readthedocs.io/")
+        raise SystemExit(1)
+
+    # Build environment
+    env = os.environ.copy()
+    env[DAGU_HOME_ENV_VAR] = str(dagu_home)
+
+    # Build dagu server command
+    dags_dir = Path(dagu_home) / "dags"
+    cmd = [
+        dagu_path,
+        "server",
+        "--host",
+        host,
+        "--port",
+        str(port),
+        "--dags",
+        str(dags_dir),
+    ]
+
+    if not ctx.obj.get("quiet"):
+        console.print(f"[cyan]Starting Dagu dashboard...[/cyan]")
+        console.print(f"[dim]DAGU_HOME: {dagu_home}[/dim]")
+        console.print(f"[dim]DAGs directory: {dags_dir}[/dim]")
+        console.print(f"[green]Dashboard URL: http://{host}:{port}/[/green]")
+        console.print("[dim]Press Ctrl+C to stop[/dim]")
+
+    process: subprocess.Popen | None = None
+
+    def signal_handler(sig: int, frame: object) -> None:
+        """Handle Ctrl+C gracefully."""
+        console.print("\n[yellow]Shutting down dashboard...[/yellow]")
+        if process is not None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+        raise SystemExit(0)
+
+    # Register signal handler
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
+    try:
+        # Start dagu server as a subprocess
+        # Use stdin/stdout/stderr pass-through for interactive output
+        process = subprocess.Popen(
+            cmd,
+            env=env,
+        )
+
+        # Wait for the process to complete (blocking)
+        exit_code = process.wait()
+
+        if exit_code != 0:
+            console.print(f"[red]Error:[/red] Dashboard exited with code {exit_code}")
+            raise SystemExit(exit_code)
+
+    except Exception as e:
+        if process is not None:
+            process.terminate()
+        console.print(f"[red]Error:[/red] {e}")
+        raise SystemExit(1)
+
+
 def _check_dependencies() -> None:
     """Check and display dependency status."""
     table = Table(title="Dependency Status")

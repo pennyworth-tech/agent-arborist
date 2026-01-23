@@ -637,3 +637,250 @@ class TestDagOutputFormats:
                 assert result.exit_code == 0, f"Failed: {result.output}"
                 # Should show some status info
                 assert "T001" in result.output or "completed" in result.output.lower() or "running" in result.output.lower()
+
+
+# -----------------------------------------------------------------------------
+# Dashboard command tests
+# -----------------------------------------------------------------------------
+
+
+class TestDagDashboardHelp:
+    """Tests for dag dashboard command help."""
+
+    def test_dag_group_has_dashboard_command(self):
+        runner = CliRunner()
+        result = runner.invoke(main, ["dag", "--help"])
+        assert result.exit_code == 0
+        assert "dashboard" in result.output
+
+    def test_dag_dashboard_help(self):
+        runner = CliRunner()
+        result = runner.invoke(main, ["dag", "dashboard", "--help"])
+        assert result.exit_code == 0
+        assert "Launch the Dagu web dashboard" in result.output
+        assert "--port" in result.output
+        assert "--host" in result.output
+
+
+class TestDagDashboardEchoForTesting:
+    """Tests for --echo-for-testing with dag dashboard."""
+
+    def test_echo_dag_dashboard(self):
+        runner = CliRunner()
+        result = runner.invoke(main, ["--echo-for-testing", "dag", "dashboard"])
+        assert result.exit_code == 0
+        assert "ECHO: dag dashboard" in result.output
+        assert "port=8080" in result.output  # default port
+        assert "host=127.0.0.1" in result.output  # default host
+
+    def test_echo_dag_dashboard_with_options(self):
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            ["--echo-for-testing", "dag", "dashboard", "--port", "9999", "--host", "0.0.0.0"],
+        )
+        assert result.exit_code == 0
+        assert "ECHO: dag dashboard" in result.output
+        assert "port=9999" in result.output
+        assert "host=0.0.0.0" in result.output
+
+
+class TestDagDashboardErrors:
+    """Tests for dag dashboard error handling."""
+
+    def test_dag_dashboard_requires_dagu_home(self, git_repo):
+        """dag dashboard should fail if arborist not initialized."""
+        runner = CliRunner()
+        result = runner.invoke(main, ["dag", "dashboard"])
+        assert result.exit_code != 0
+        assert "DAGU_HOME" in result.output or "init" in result.output.lower()
+
+    def test_dag_dashboard_dagu_not_found(self, initialized_repo):
+        """dag dashboard should fail gracefully if dagu not installed."""
+        with patch("agent_arborist.cli.shutil.which", return_value=None):
+            runner = CliRunner()
+            result = runner.invoke(main, ["dag", "dashboard"])
+
+            assert result.exit_code != 0
+            assert "dagu" in result.output.lower()
+
+
+def mock_popen_for_dagu(original_popen):
+    """Create a mock that only intercepts dagu commands, passes through other Popen calls."""
+    mock_process = MagicMock()
+    mock_process.wait.return_value = 0
+
+    def side_effect(*args, **kwargs):
+        cmd = args[0] if args else kwargs.get("args", [])
+        # If it's a dagu command (server), return mock
+        if cmd and "server" in cmd:
+            return mock_process
+        # Otherwise use real Popen
+        return original_popen(*args, **kwargs)
+    return side_effect, mock_process
+
+
+class TestDagDashboardWithMockedDagu:
+    """Tests for dag dashboard with mocked dagu subprocess."""
+
+    def test_dag_dashboard_calls_dagu_server(self, initialized_repo):
+        """dag dashboard should call dagu server with correct arguments."""
+        original_popen = subprocess.Popen
+        side_effect, mock_process = mock_popen_for_dagu(original_popen)
+
+        with patch("agent_arborist.cli.shutil.which", return_value="/usr/bin/dagu"):
+            with patch("agent_arborist.cli.subprocess.Popen", side_effect=side_effect) as mock_popen:
+                runner = CliRunner()
+                result = runner.invoke(main, ["dag", "dashboard"])
+
+                assert result.exit_code == 0, f"Failed: {result.output}"
+                # Verify dagu server was called
+                calls = [c for c in mock_popen.call_args_list if "server" in str(c)]
+                assert len(calls) > 0
+                call_args = calls[0][0][0]
+                assert "server" in call_args
+                assert "--port" in call_args
+                assert "--host" in call_args
+
+    def test_dag_dashboard_custom_port(self, initialized_repo):
+        """dag dashboard --port should pass port to dagu server."""
+        original_popen = subprocess.Popen
+        side_effect, _ = mock_popen_for_dagu(original_popen)
+
+        with patch("agent_arborist.cli.shutil.which", return_value="/usr/bin/dagu"):
+            with patch("agent_arborist.cli.subprocess.Popen", side_effect=side_effect) as mock_popen:
+                runner = CliRunner()
+                result = runner.invoke(main, ["dag", "dashboard", "--port", "9999"])
+
+                assert result.exit_code == 0, f"Failed: {result.output}"
+                calls = [c for c in mock_popen.call_args_list if "server" in str(c)]
+                call_args = str(calls[0])
+                assert "9999" in call_args
+
+    def test_dag_dashboard_custom_host(self, initialized_repo):
+        """dag dashboard --host should pass host to dagu server."""
+        original_popen = subprocess.Popen
+        side_effect, _ = mock_popen_for_dagu(original_popen)
+
+        with patch("agent_arborist.cli.shutil.which", return_value="/usr/bin/dagu"):
+            with patch("agent_arborist.cli.subprocess.Popen", side_effect=side_effect) as mock_popen:
+                runner = CliRunner()
+                result = runner.invoke(main, ["dag", "dashboard", "--host", "0.0.0.0"])
+
+                assert result.exit_code == 0, f"Failed: {result.output}"
+                calls = [c for c in mock_popen.call_args_list if "server" in str(c)]
+                call_args = str(calls[0])
+                assert "0.0.0.0" in call_args
+
+    def test_dag_dashboard_sets_dagu_home_env(self, initialized_repo):
+        """dag dashboard should set DAGU_HOME environment variable."""
+        original_popen = subprocess.Popen
+        side_effect, _ = mock_popen_for_dagu(original_popen)
+
+        with patch("agent_arborist.cli.shutil.which", return_value="/usr/bin/dagu"):
+            with patch("agent_arborist.cli.subprocess.Popen", side_effect=side_effect) as mock_popen:
+                runner = CliRunner()
+                result = runner.invoke(main, ["dag", "dashboard"])
+
+                assert result.exit_code == 0, f"Failed: {result.output}"
+                calls = [c for c in mock_popen.call_args_list if "server" in str(c)]
+                env = calls[0][1].get("env", {})
+                assert "DAGU_HOME" in env
+
+    def test_dag_dashboard_nonzero_exit(self, initialized_repo):
+        """dag dashboard should handle non-zero exit from dagu server."""
+        original_popen = subprocess.Popen
+        mock_process = MagicMock()
+        mock_process.wait.return_value = 1  # Non-zero exit
+
+        def side_effect(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get("args", [])
+            if cmd and "server" in cmd:
+                return mock_process
+            return original_popen(*args, **kwargs)
+
+        with patch("agent_arborist.cli.shutil.which", return_value="/usr/bin/dagu"):
+            with patch("agent_arborist.cli.subprocess.Popen", side_effect=side_effect):
+                runner = CliRunner()
+                result = runner.invoke(main, ["dag", "dashboard"])
+
+                assert result.exit_code != 0
+                assert "Error" in result.output or "exited" in result.output
+
+
+# -----------------------------------------------------------------------------
+# Dashboard integration test (real dagu)
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(not dagu_available(), reason="dagu not available")
+class TestDagDashboardIntegration:
+    """Integration tests for dag dashboard with real dagu."""
+
+    def test_dag_dashboard_launches_and_responds(self, initialized_repo):
+        """dag dashboard should launch and respond on the configured port."""
+        import socket
+        import time
+
+        # Find an available port dynamically
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+        sock.close()
+
+        # Get dagu home from initialized repo
+        dagu_home = initialized_repo / ARBORIST_DIR_NAME / DAGU_DIR_NAME
+        dags_dir = dagu_home / "dags"
+
+        # Build environment
+        env = os.environ.copy()
+        env["DAGU_HOME"] = str(dagu_home)
+
+        # Find dagu
+        dagu_path = shutil.which("dagu")
+        assert dagu_path is not None
+
+        # Launch dashboard directly (not via CLI to have control over process)
+        cmd = [
+            dagu_path,
+            "server",
+            "--host", "127.0.0.1",
+            "--port", str(port),
+            "--dags", str(dags_dir),
+        ]
+
+        process = subprocess.Popen(
+            cmd,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        try:
+            # Poll for availability (max 3 seconds)
+            import urllib.request
+            import urllib.error
+
+            url = f"http://127.0.0.1:{port}/"
+            available = False
+            start_time = time.time()
+
+            while time.time() - start_time < 3.0:
+                try:
+                    response = urllib.request.urlopen(url, timeout=0.5)
+                    if response.status == 200:
+                        available = True
+                        break
+                except (urllib.error.URLError, ConnectionRefusedError, TimeoutError):
+                    time.sleep(0.1)
+                    continue
+
+            assert available, f"Dashboard did not become available on port {port} within 3 seconds"
+
+        finally:
+            # Clean shutdown - use SIGKILL for immediate termination
+            # SIGTERM may leave the port in use if dagu doesn't handle it gracefully
+            process.kill()
+            process.wait()
+            # Small delay to ensure OS releases the port
+            time.sleep(0.1)
