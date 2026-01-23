@@ -6,6 +6,7 @@ from rich.table import Table
 
 from agent_arborist import __version__
 from agent_arborist.checks import check_dagu, check_runtimes
+from agent_arborist.spec import detect_spec_from_git
 
 console = Console()
 
@@ -84,6 +85,35 @@ def task_mark(task_id: str, status: str) -> None:
     """Manually mark a task's status."""
     # TODO: Implement task marking
     console.print(f"[yellow]TODO:[/yellow] Mark task {task_id} as {status}")
+
+
+# -----------------------------------------------------------------------------
+# Spec commands
+# -----------------------------------------------------------------------------
+
+
+@main.group()
+def spec() -> None:
+    """Spec detection and management."""
+    pass
+
+
+@spec.command("whoami")
+def spec_whoami() -> None:
+    """Detect current spec from git branch."""
+    info = detect_spec_from_git()
+
+    if info.found:
+        console.print(f"[green]Spec:[/green] {info.spec_id}-{info.name}")
+        console.print(f"[dim]Source:[/dim] {info.source}")
+        if info.branch:
+            console.print(f"[dim]Branch:[/dim] {info.branch}")
+    else:
+        console.print(f"[yellow]Not detected:[/yellow] {info.error}")
+        if info.branch:
+            console.print(f"[dim]Branch:[/dim] {info.branch}")
+        console.print()
+        console.print("Set spec manually with [cyan]--spec[/cyan] or [cyan]-s[/cyan] on subsequent commands.")
 
 
 def _check_dependencies() -> None:

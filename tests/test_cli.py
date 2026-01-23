@@ -152,3 +152,44 @@ class TestTaskCommands:
         assert result.exit_code == 0
         assert "T001" in result.output
         assert "completed" in result.output
+
+
+class TestSpecCommands:
+    def test_spec_group_help(self):
+        runner = CliRunner()
+        result = runner.invoke(main, ["spec", "--help"])
+        assert result.exit_code == 0
+        assert "whoami" in result.output
+
+    @patch("agent_arborist.cli.detect_spec_from_git")
+    def test_spec_whoami_found(self, mock_detect):
+        from agent_arborist.spec import SpecInfo
+
+        mock_detect.return_value = SpecInfo(
+            spec_id="002",
+            name="my-feature",
+            source="git",
+            branch="002-my-feature",
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["spec", "whoami"])
+        assert result.exit_code == 0
+        assert "002-my-feature" in result.output
+        assert "git" in result.output
+
+    @patch("agent_arborist.cli.detect_spec_from_git")
+    def test_spec_whoami_not_found(self, mock_detect):
+        from agent_arborist.spec import SpecInfo
+
+        mock_detect.return_value = SpecInfo(
+            error="Branch 'main' does not contain spec pattern",
+            source="git",
+            branch="main",
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["spec", "whoami"])
+        assert result.exit_code == 0
+        assert "Not detected" in result.output
+        assert "--spec" in result.output or "-s" in result.output
