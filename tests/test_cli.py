@@ -114,19 +114,32 @@ class TestDoctorCommand:
         assert "At least one runtime" in result.output
 
 
-class TestBranchesCommands:
-    """Tests for branches command group."""
+class TestSpecBranchCommands:
+    """Tests for spec branch commands."""
 
-    def test_branches_group_help(self):
+    def test_spec_branch_create_all_help(self):
         runner = CliRunner()
-        result = runner.invoke(main, ["branches", "--help"])
+        result = runner.invoke(main, ["spec", "branch-create-all", "--help"])
         assert result.exit_code == 0
-        assert "create-all" in result.output
+        assert "manifest" in result.output.lower()
 
-    def test_branches_create_all_requires_manifest(self):
-        """create-all requires ARBORIST_MANIFEST env var."""
+    def test_spec_branch_create_all_requires_manifest(self):
+        """branch-create-all requires ARBORIST_MANIFEST env var."""
         runner = CliRunner()
-        result = runner.invoke(main, ["branches", "create-all"])
+        result = runner.invoke(main, ["spec", "branch-create-all"])
+        assert result.exit_code != 0
+        assert "ARBORIST_MANIFEST environment variable not set" in result.output
+
+    def test_spec_branch_cleanup_all_help(self):
+        runner = CliRunner()
+        result = runner.invoke(main, ["spec", "branch-cleanup-all", "--help"])
+        assert result.exit_code == 0
+        assert "--force" in result.output
+
+    def test_spec_branch_cleanup_all_requires_manifest(self):
+        """branch-cleanup-all requires ARBORIST_MANIFEST env var."""
+        runner = CliRunner()
+        result = runner.invoke(main, ["spec", "branch-cleanup-all"])
         assert result.exit_code != 0
         assert "ARBORIST_MANIFEST environment variable not set" in result.output
 
@@ -502,20 +515,21 @@ class TestDaguHomeEnvVar:
 
 
 # -----------------------------------------------------------------------------
-# DAG commands
+# Spec DAG commands
 # -----------------------------------------------------------------------------
 
 
-class TestDagCommands:
-    def test_dag_group_help(self):
+class TestSpecDagCommands:
+    def test_spec_group_has_dag_commands(self):
         runner = CliRunner()
-        result = runner.invoke(main, ["dag", "--help"])
+        result = runner.invoke(main, ["spec", "--help"])
         assert result.exit_code == 0
-        assert "build" in result.output
+        assert "dag-build" in result.output
+        assert "dag-show" in result.output
 
-    def test_dag_build_help(self):
+    def test_spec_dag_build_help(self):
         runner = CliRunner()
-        result = runner.invoke(main, ["dag", "build", "--help"])
+        result = runner.invoke(main, ["spec", "dag-build", "--help"])
         assert result.exit_code == 0
         assert "DIRECTORY" in result.output
         assert "--dry-run" in result.output
@@ -578,7 +592,7 @@ T001 → T002 → T003
         runner = CliRunner()
         spec_dir = git_repo_with_spec / "specs" / "test-spec"
 
-        result = runner.invoke(main, ["dag", "build", str(spec_dir), "--dry-run", "--no-ai"])
+        result = runner.invoke(main, ["spec", "dag-build", str(spec_dir), "--dry-run", "--no-ai"])
 
         assert result.exit_code == 0
         # Name is derived from directory name (with dashes converted to underscores)
@@ -593,7 +607,7 @@ T001 → T002 → T003
         output_file = tmp_path / "output.yaml"
 
         result = runner.invoke(
-            main, ["dag", "build", str(spec_dir), "-o", str(output_file), "--no-ai"]
+            main, ["spec", "dag-build", str(spec_dir), "-o", str(output_file), "--no-ai"]
         )
 
         assert result.exit_code == 0
@@ -610,7 +624,7 @@ T001 → T002 → T003
 
         spec_dir = git_repo_with_spec / "specs" / "test-spec"
 
-        result = runner.invoke(main, ["dag", "build", str(spec_dir), "--no-ai"])
+        result = runner.invoke(main, ["spec", "dag-build", str(spec_dir), "--no-ai"])
 
         assert result.exit_code == 0
         assert "DAG written to:" in result.output
@@ -622,14 +636,14 @@ T001 → T002 → T003
 
     def test_dag_build_no_directory_no_spec(self, non_git_dir):
         runner = CliRunner()
-        result = runner.invoke(main, ["dag", "build"])
+        result = runner.invoke(main, ["spec", "dag-build"])
 
         assert result.exit_code == 1
-        assert "No spec name" in result.output or "Error" in result.output
+        assert "No spec" in result.output or "Error" in result.output
 
     def test_dag_build_nonexistent_directory(self, git_repo):
         runner = CliRunner()
-        result = runner.invoke(main, ["dag", "build", "/nonexistent/path"])
+        result = runner.invoke(main, ["spec", "dag-build", "/nonexistent/path"])
 
         # Click validates path exists
         assert result.exit_code != 0
@@ -639,7 +653,7 @@ T001 → T002 → T003
         runner = CliRunner()
         spec_dir = git_repo_with_spec / "specs" / "test-spec"
 
-        result = runner.invoke(main, ["dag", "build", str(spec_dir), "--dry-run", "--no-ai"])
+        result = runner.invoke(main, ["spec", "dag-build", str(spec_dir), "--dry-run", "--no-ai"])
 
         assert result.exit_code == 0
 
@@ -661,7 +675,7 @@ T001 → T002 → T003
         output_file = tmp_path / "output.yaml"
 
         result = runner.invoke(
-            main, ["dag", "build", str(spec_dir), "-o", str(output_file), "--show", "--no-ai"]
+            main, ["spec", "dag-build", str(spec_dir), "-o", str(output_file), "--show", "--no-ai"]
         )
 
         assert result.exit_code == 0
@@ -722,7 +736,7 @@ steps:
 
     def test_dag_show_summary(self, git_repo_with_dag):
         runner = CliRunner()
-        result = runner.invoke(main, ["dag", "show", "test-dag"])
+        result = runner.invoke(main, ["spec", "dag-show", "test-dag"])
 
         assert result.exit_code == 0
         assert "test_dag" in result.output
@@ -732,7 +746,7 @@ steps:
 
     def test_dag_show_deps(self, git_repo_with_dag):
         runner = CliRunner()
-        result = runner.invoke(main, ["dag", "show", "test-dag", "--deps"])
+        result = runner.invoke(main, ["spec", "dag-show", "test-dag", "--deps"])
 
         assert result.exit_code == 0
         assert "step2" in result.output
@@ -740,7 +754,7 @@ steps:
 
     def test_dag_show_blocking(self, git_repo_with_dag):
         runner = CliRunner()
-        result = runner.invoke(main, ["dag", "show", "test-dag", "--blocking"])
+        result = runner.invoke(main, ["spec", "dag-show", "test-dag", "--blocking"])
 
         assert result.exit_code == 0
         assert "step1" in result.output
@@ -749,7 +763,7 @@ steps:
 
     def test_dag_show_yaml(self, git_repo_with_dag):
         runner = CliRunner()
-        result = runner.invoke(main, ["dag", "show", "test-dag", "--yaml"])
+        result = runner.invoke(main, ["spec", "dag-show", "test-dag", "--yaml"])
 
         assert result.exit_code == 0
         assert "name: test_dag" in result.output
@@ -758,7 +772,7 @@ steps:
 
     def test_dag_show_not_found(self, git_repo_with_dag):
         runner = CliRunner()
-        result = runner.invoke(main, ["dag", "show", "nonexistent"])
+        result = runner.invoke(main, ["spec", "dag-show", "nonexistent"])
 
         assert result.exit_code == 1
         assert "not found" in result.output

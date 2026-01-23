@@ -284,62 +284,6 @@ steps:
 
 
 # -----------------------------------------------------------------------------
-# Branches commands
-# -----------------------------------------------------------------------------
-
-
-@main.group()
-def branches() -> None:
-    """Branch management for task DAGs."""
-    pass
-
-
-@branches.command("create-all")
-@click.pass_context
-def branches_create_all(ctx: click.Context) -> None:
-    """Create all branches from manifest.
-
-    This command reads the ARBORIST_MANIFEST environment variable to find the
-    manifest file, then creates the base branch and all task branches in
-    topological order.
-
-    Run this once at the start of a DAG execution.
-    """
-    import os
-
-    manifest_path = os.environ.get("ARBORIST_MANIFEST")
-    if not manifest_path:
-        console.print("[red]Error:[/red] ARBORIST_MANIFEST environment variable not set")
-        console.print("This command should be run from a DAGU DAG step")
-        raise SystemExit(1)
-
-    try:
-        manifest = load_manifest(Path(manifest_path))
-    except FileNotFoundError:
-        console.print(f"[red]Error:[/red] Manifest not found: {manifest_path}")
-        raise SystemExit(1)
-    except Exception as e:
-        console.print(f"[red]Error loading manifest:[/red] {e}")
-        raise SystemExit(1)
-
-    if not ctx.obj.get("quiet"):
-        console.print(f"[cyan]Creating branches from manifest...[/cyan]")
-        console.print(f"[dim]Source: {manifest.source_branch}[/dim]")
-        console.print(f"[dim]Base: {manifest.base_branch}[/dim]")
-        console.print(f"[dim]Tasks: {len(manifest.tasks)}[/dim]")
-
-    result = create_all_branches_from_manifest(manifest)
-
-    if result.success:
-        console.print(f"[green]OK:[/green] {result.message}")
-    else:
-        console.print(f"[red]Error:[/red] {result.message}")
-        if result.error:
-            console.print(f"[dim]{result.error}[/dim]")
-        raise SystemExit(1)
-
-
-# -----------------------------------------------------------------------------
 # Task commands
 # -----------------------------------------------------------------------------
 
@@ -804,7 +748,7 @@ def task_status(ctx: click.Context, task_id: str | None, as_json: bool) -> None:
 
 @main.group()
 def spec() -> None:
-    """Spec detection and management."""
+    """Spec management, DAG generation, and branch operations."""
     pass
 
 
@@ -826,18 +770,158 @@ def spec_whoami() -> None:
         console.print("Set spec manually with [cyan]--spec[/cyan] or [cyan]-s[/cyan] on subsequent commands.")
 
 
-# -----------------------------------------------------------------------------
-# DAG commands
-# -----------------------------------------------------------------------------
+@spec.command("branch-create-all")
+@click.pass_context
+def spec_branch_create_all(ctx: click.Context) -> None:
+    """Create all branches from manifest.
+
+    This command reads the ARBORIST_MANIFEST environment variable to find the
+    manifest file, then creates the base branch and all task branches in
+    topological order.
+
+    Run this once at the start of a DAG execution.
+    """
+    import os
+
+    manifest_path = os.environ.get("ARBORIST_MANIFEST")
+    if not manifest_path:
+        console.print("[red]Error:[/red] ARBORIST_MANIFEST environment variable not set")
+        console.print("This command should be run from a DAGU DAG step")
+        raise SystemExit(1)
+
+    try:
+        manifest = load_manifest(Path(manifest_path))
+    except FileNotFoundError:
+        console.print(f"[red]Error:[/red] Manifest not found: {manifest_path}")
+        raise SystemExit(1)
+    except Exception as e:
+        console.print(f"[red]Error loading manifest:[/red] {e}")
+        raise SystemExit(1)
+
+    if not ctx.obj.get("quiet"):
+        console.print(f"[cyan]Creating branches from manifest...[/cyan]")
+        console.print(f"[dim]Source: {manifest.source_branch}[/dim]")
+        console.print(f"[dim]Base: {manifest.base_branch}[/dim]")
+        console.print(f"[dim]Tasks: {len(manifest.tasks)}[/dim]")
+
+    result = create_all_branches_from_manifest(manifest)
+
+    if result.success:
+        console.print(f"[green]OK:[/green] {result.message}")
+    else:
+        console.print(f"[red]Error:[/red] {result.message}")
+        if result.error:
+            console.print(f"[dim]{result.error}[/dim]")
+        raise SystemExit(1)
 
 
-@main.group()
-def dag() -> None:
-    """DAG generation and management."""
-    pass
+@spec.command("branch-cleanup-all")
+@click.option("--force", "-f", is_flag=True, help="Force removal of worktrees and branches")
+@click.pass_context
+def spec_branch_cleanup_all(ctx: click.Context, force: bool) -> None:
+    """Remove all worktrees and branches for the current spec.
+
+    This command reads the ARBORIST_MANIFEST environment variable to find the
+    manifest file, then removes all task worktrees and branches.
+
+    Use --force to force removal even if branches are not fully merged.
+    """
+    import os
+
+    manifest_path = os.environ.get("ARBORIST_MANIFEST")
+    if not manifest_path:
+        console.print("[red]Error:[/red] ARBORIST_MANIFEST environment variable not set")
+        console.print("This command should be run from a DAGU DAG step")
+        raise SystemExit(1)
+
+    try:
+        manifest = load_manifest(Path(manifest_path))
+    except FileNotFoundError:
+        console.print(f"[red]Error:[/red] Manifest not found: {manifest_path}")
+        raise SystemExit(1)
+    except Exception as e:
+        console.print(f"[red]Error loading manifest:[/red] {e}")
+        raise SystemExit(1)
+
+    if not ctx.obj.get("quiet"):
+        console.print(f"[cyan]Cleaning up branches for spec {manifest.spec_id}...[/cyan]")
+        console.print(f"[dim]Tasks: {len(manifest.tasks)}[/dim]")
+        if force:
+            console.print(f"[yellow]Force mode enabled[/yellow]")
+
+    cleaned = []
+    errors = []
+
+    # Clean up each task in reverse order (children before parents)
+    for task_info in reversed(manifest.tasks):
+        worktree_path = get_worktree_path(manifest.spec_id, task_info.task_id)
+
+        if not ctx.obj.get("quiet"):
+            console.print(f"[dim]Cleaning up {task_info.task_id}...[/dim]")
+
+        result = cleanup_task(task_info.branch, worktree_path, delete_branch=True)
+
+        if result.success:
+            cleaned.append(task_info.task_id)
+        else:
+            if force:
+                # Force cleanup: remove worktree and branch with -D
+                git_root = get_git_root()
+                try:
+                    if worktree_path.exists():
+                        subprocess.run(
+                            ["git", "worktree", "remove", str(worktree_path), "--force"],
+                            cwd=git_root,
+                            check=True,
+                            capture_output=True,
+                        )
+                    if branch_exists(task_info.branch):
+                        subprocess.run(
+                            ["git", "branch", "-D", task_info.branch],
+                            cwd=git_root,
+                            check=True,
+                            capture_output=True,
+                        )
+                    cleaned.append(task_info.task_id)
+                except subprocess.CalledProcessError as e:
+                    errors.append(f"{task_info.task_id}: {e.stderr.decode() if e.stderr else str(e)}")
+            else:
+                errors.append(f"{task_info.task_id}: {result.message}")
+
+    # Also clean up the base branch if requested
+    if branch_exists(manifest.base_branch):
+        if not ctx.obj.get("quiet"):
+            console.print(f"[dim]Cleaning up base branch {manifest.base_branch}...[/dim]")
+        try:
+            git_root = get_git_root()
+            if force:
+                subprocess.run(
+                    ["git", "branch", "-D", manifest.base_branch],
+                    cwd=git_root,
+                    check=True,
+                    capture_output=True,
+                )
+            else:
+                subprocess.run(
+                    ["git", "branch", "-d", manifest.base_branch],
+                    cwd=git_root,
+                    check=True,
+                    capture_output=True,
+                )
+            cleaned.append("base")
+        except subprocess.CalledProcessError as e:
+            errors.append(f"base branch: {e.stderr.decode() if e.stderr else str(e)}")
+
+    if errors:
+        console.print(f"[yellow]Cleaned up {len(cleaned)} tasks with {len(errors)} errors:[/yellow]")
+        for err in errors:
+            console.print(f"  [red]Error:[/red] {err}")
+        raise SystemExit(1)
+    else:
+        console.print(f"[green]OK:[/green] Cleaned up {len(cleaned)} tasks and branches")
 
 
-@dag.command("build")
+@spec.command("dag-build")
 @click.argument("directory", required=False, type=click.Path(exists=True))
 @click.option(
     "--runner",
@@ -875,7 +959,7 @@ def dag() -> None:
     help="Timeout for AI inference in seconds (default: 120)",
 )
 @click.pass_context
-def dag_build(
+def spec_dag_build(
     ctx: click.Context,
     directory: str | None,
     runner: str | None,
@@ -1078,13 +1162,13 @@ def dag_build(
             console.print(f"[yellow]WARN:[/yellow] Could not validate DAG: {e}")
 
 
-@dag.command("show")
+@spec.command("dag-show")
 @click.argument("dag_name", required=False)
 @click.option("--deps", is_flag=True, help="Show dependency graph")
 @click.option("--blocking", is_flag=True, help="Show what each step blocks")
 @click.option("--yaml", "show_yaml", is_flag=True, help="Show raw YAML content")
 @click.pass_context
-def dag_show(
+def spec_dag_show(
     ctx: click.Context,
     dag_name: str | None,
     deps: bool,
