@@ -31,12 +31,12 @@ REQUIREMENTS:
 1. Output valid DAGU YAML with:
    - name: "{dag_name}" (underscores, no dashes)
    - description: Brief project description
-   - env: ARBORIST_MANIFEST pointing to manifest JSON (see below)
-   - steps: List of workflow steps
+   - env: Single ARBORIST_MANIFEST entry (see below)
+   - steps: List of workflow steps IN TOPOLOGICAL ORDER
 
-2. Add env section:
+2. Add env section with EXACTLY ONE entry (DAGU requires KEY=value format):
    env:
-     - ARBORIST_MANIFEST: ${{DAG_DIR}}/{dag_name}.json
+     - ARBORIST_MANIFEST=${{DAG_DIR}}/{dag_name}.json
 
 3. Analyze the task hierarchy:
    - Identify all tasks (T001, T002, etc.)
@@ -45,10 +45,9 @@ REQUIREMENTS:
    - Tasks with no dependencies that others depend on are "parent" tasks
    - Tasks at the end of dependency chains are "leaf" tasks
 
-4. First step MUST be branches-setup:
+4. First step MUST be branches-setup (no depends key needed):
    - name: branches-setup
-   - command: arborist branches create-all
-   - depends: []
+     command: arborist spec branch-create-all
 
 5. For LEAF tasks (no children depend on them), create a step:
    - name: "TXXX-slug" (max 40 chars, slug from description)
@@ -83,8 +82,158 @@ REQUIREMENTS:
 
 9. Do NOT add phase-complete or all-complete steps - just the task steps.
 
+10. CRITICAL - TOPOLOGICAL ORDERING: Steps MUST be listed so that every step's
+    dependencies appear BEFORE that step in the YAML. Order should be:
+    - branches-setup (first, no deps)
+    - All setup steps in dependency order (T001-setup, T002-setup, etc.)
+    - All leaf task steps (after their parent setup steps)
+    - All complete steps in REVERSE order (T003-complete before T002-complete before T001-complete)
+    - Final tasks that depend on complete steps
+
 CRITICAL: Output ONLY the YAML content. No markdown fences. No explanation. Start directly with "name:" on the first line.
 '''
+
+
+def _fix_env_format(dag_data: dict) -> list[str]:
+    """Fix env entries to use KEY=value format and remove duplicates.
+
+    Returns list of issues that were fixed.
+    """
+    fixes = []
+    if "env" not in dag_data:
+        return fixes
+
+    seen_keys = set()
+    fixed_env = []
+
+    for entry in dag_data["env"]:
+        # Handle dict format like {KEY: value}
+        if isinstance(entry, dict):
+            for key, value in entry.items():
+                if key not in seen_keys:
+                    fixed_env.append(f"{key}={value}")
+                    seen_keys.add(key)
+                    fixes.append(f"Converted env dict {key}: {value} to {key}={value}")
+                else:
+                    fixes.append(f"Removed duplicate env key: {key}")
+        # Handle string format
+        elif isinstance(entry, str):
+            # Check if it's already KEY=value format
+            if "=" in entry and ": " not in entry.split("=")[0]:
+                key = entry.split("=")[0].strip()
+                if key not in seen_keys:
+                    fixed_env.append(entry)
+                    seen_keys.add(key)
+                else:
+                    fixes.append(f"Removed duplicate env key: {key}")
+            # Check if it's KEY: value format (wrong)
+            elif ": " in entry:
+                parts = entry.split(": ", 1)
+                if len(parts) == 2:
+                    key, value = parts
+                    if key not in seen_keys:
+                        fixed_env.append(f"{key}={value}")
+                        seen_keys.add(key)
+                        fixes.append(f"Converted env '{entry}' to '{key}={value}'")
+                    else:
+                        fixes.append(f"Removed duplicate env key: {key}")
+            else:
+                fixed_env.append(entry)
+
+    dag_data["env"] = fixed_env
+    return fixes
+
+
+def _topological_sort_steps(steps: list[dict]) -> tuple[list[dict], list[str]]:
+    """Sort steps in topological order (dependencies before dependents).
+
+    Returns (sorted_steps, issues_fixed).
+    """
+    issues = []
+
+    # Build dependency graph
+    step_names = {s["name"] for s in steps}
+    step_by_name = {s["name"]: s for s in steps}
+
+    # Build adjacency list (step -> steps that depend on it)
+    dependents: dict[str, list[str]] = {name: [] for name in step_names}
+    in_degree: dict[str, int] = {name: 0 for name in step_names}
+
+    for step in steps:
+        deps = step.get("depends", [])
+        if isinstance(deps, str):
+            deps = [deps]
+        for dep in deps:
+            if dep in step_names:
+                dependents[dep].append(step["name"])
+                in_degree[step["name"]] += 1
+            # Ignore missing deps - they might be external
+
+    # Kahn's algorithm for topological sort
+    queue = [name for name, degree in in_degree.items() if degree == 0]
+    sorted_names = []
+
+    while queue:
+        # Sort queue to ensure deterministic ordering
+        queue.sort()
+        node = queue.pop(0)
+        sorted_names.append(node)
+
+        for dependent in dependents[node]:
+            in_degree[dependent] -= 1
+            if in_degree[dependent] == 0:
+                queue.append(dependent)
+
+    # Check for cycles
+    if len(sorted_names) != len(steps):
+        remaining = set(step_names) - set(sorted_names)
+        issues.append(f"Cycle detected involving steps: {remaining}")
+        # Return original order if cycle detected
+        return steps, issues
+
+    # Check if reordering was needed
+    original_order = [s["name"] for s in steps]
+    if original_order != sorted_names:
+        issues.append(f"Reordered {len(steps)} steps to topological order")
+
+    sorted_steps = [step_by_name[name] for name in sorted_names]
+    return sorted_steps, issues
+
+
+def _remove_empty_depends(dag_data: dict) -> list[str]:
+    """Remove empty depends arrays (DAGU prefers no key over empty array)."""
+    fixes = []
+    for step in dag_data.get("steps", []):
+        if "depends" in step and step["depends"] == []:
+            del step["depends"]
+            fixes.append(f"Removed empty depends from step '{step['name']}'")
+    return fixes
+
+
+def validate_and_fix_dag(dag_data: dict) -> tuple[dict, list[str]]:
+    """Validate and fix common issues in generated DAG data.
+
+    Args:
+        dag_data: Parsed YAML dict
+
+    Returns:
+        (fixed_dag_data, list of fixes applied)
+    """
+    all_fixes = []
+
+    # Fix env format and duplicates
+    all_fixes.extend(_fix_env_format(dag_data))
+
+    # Remove empty depends arrays
+    all_fixes.extend(_remove_empty_depends(dag_data))
+
+    # Topologically sort steps
+    if "steps" in dag_data:
+        sorted_steps, sort_fixes = _topological_sort_steps(dag_data["steps"])
+        dag_data["steps"] = sorted_steps
+        all_fixes.extend(sort_fixes)
+
+    return dag_data, all_fixes
 
 
 class DagGenerator:
@@ -149,6 +298,21 @@ class DagGenerator:
                 error=f"Invalid YAML: {e}",
                 raw_output=result.output,
             )
+
+        # Validate and fix common issues
+        fixed_dag, fixes = validate_and_fix_dag(parsed)
+
+        # Check for unfixable issues (like cycles)
+        for fix in fixes:
+            if "Cycle detected" in fix:
+                return GenerationResult(
+                    success=False,
+                    error=fix,
+                    raw_output=result.output,
+                )
+
+        # Re-serialize the fixed YAML
+        yaml_content = yaml.dump(fixed_dag, default_flow_style=False, sort_keys=False)
 
         return GenerationResult(
             success=True,
@@ -255,7 +419,7 @@ def build_simple_dag(
         "name": dag_name,
         "description": description or f"DAG for {spec_id}",
         "env": [
-            {"ARBORIST_MANIFEST": f"${{DAG_DIR}}/{spec_id}.json"},
+            f"ARBORIST_MANIFEST=${{DAG_DIR}}/{spec_id}.json",
         ],
         "steps": [],
     }
@@ -263,7 +427,7 @@ def build_simple_dag(
     # Add branches setup step (creates all branches from manifest)
     dag["steps"].append({
         "name": "branches-setup",
-        "command": "arborist branches create-all",
+        "command": "arborist spec branch-create-all",
     })
 
     # Build steps for each task

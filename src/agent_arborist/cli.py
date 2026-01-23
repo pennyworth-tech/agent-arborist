@@ -412,7 +412,7 @@ def task_pre_sync(ctx: click.Context, task_id: str) -> None:
     """Create worktree and sync from parent for a task.
 
     This command reads branch info from the ARBORIST_MANIFEST environment variable.
-    Branches must already exist (run 'arborist branches create-all' first).
+    Branches must already exist (run 'arborist spec branch-create-all' first).
     """
     import os
 
@@ -1256,8 +1256,30 @@ def spec_dag_build(
         dag_data["env"] = []
 
     # Add manifest path - use DAG_DIR variable that DAGU provides
-    manifest_env = f"ARBORIST_MANIFEST: ${{DAG_DIR}}/{manifest_path.name}"
-    dag_data["env"].append(manifest_env)
+    # NOTE: DAGU requires KEY=value format, not KEY: value
+    # Check if ARBORIST_MANIFEST already exists (AI may have added it)
+    manifest_env = f"ARBORIST_MANIFEST=${{DAG_DIR}}/{manifest_path.name}"
+    has_manifest = any(
+        isinstance(e, str) and e.startswith("ARBORIST_MANIFEST=")
+        for e in dag_data["env"]
+    )
+    if has_manifest:
+        # Replace existing manifest with correct path
+        dag_data["env"] = [
+            manifest_env if (isinstance(e, str) and e.startswith("ARBORIST_MANIFEST=")) else e
+            for e in dag_data["env"]
+        ]
+        # Remove duplicates (keep first)
+        seen = set()
+        unique_env = []
+        for e in dag_data["env"]:
+            key = e.split("=")[0] if isinstance(e, str) and "=" in e else e
+            if key not in seen:
+                seen.add(key)
+                unique_env.append(e)
+        dag_data["env"] = unique_env
+    else:
+        dag_data["env"].append(manifest_env)
 
     # If echo_only, inject --echo-for-testing into all arborist commands
     if echo_only:

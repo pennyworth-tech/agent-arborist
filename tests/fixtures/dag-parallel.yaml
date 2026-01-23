@@ -1,7 +1,7 @@
 name: parallel_test_dag
 description: Test DAG with parallel tasks
 env:
-  - ARBORIST_MANIFEST: ${DAG_DIR}/dag-parallel.json
+  - ARBORIST_MANIFEST=${DAG_DIR}/dag-parallel.json
 steps:
   - name: T001-init
     command: echo "Initializing"
