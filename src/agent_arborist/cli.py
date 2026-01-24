@@ -1542,6 +1542,7 @@ def dag() -> None:
 @click.option("--dry-run", is_flag=True, help="Simulate execution without running commands")
 @click.option("--params", "-p", help="Parameters to pass to the DAG (key=value pairs)")
 @click.option("--run-id", "-r", help="Specify a run ID (auto-generated if not set)")
+@click.option("--timeout", default=86400, help="Execution timeout in seconds (default: 86400)")
 @click.pass_context
 def dag_run(
     ctx: click.Context,
@@ -1549,6 +1550,7 @@ def dag_run(
     dry_run: bool,
     params: str | None,
     run_id: str | None,
+    timeout: int,
 ) -> None:
     """Execute a DAG.
 
@@ -1572,6 +1574,7 @@ def dag_run(
             params=params or "none",
             run_id=run_id or "auto",
             dagu_home=str(dagu_home) if dagu_home else "none",
+            timeout=str(timeout),
         )
         return
 
@@ -1637,7 +1640,7 @@ def dag_run(
             env=env,
             capture_output=True,
             text=True,
-            timeout=600,  # 10 minute timeout
+            timeout=timeout,
         )
 
         if result.returncode == 0:
