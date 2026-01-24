@@ -987,17 +987,35 @@ def spec_branch_cleanup_all(ctx: click.Context, force: bool) -> None:
     )
     branches = [b.strip().lstrip("*+ ") for b in result.stdout.strip().split("\n") if b.strip()]
 
-    # Find worktrees directory for this spec
+    # Find worktrees using git worktree list (more reliable than directory listing)
+    # This catches worktrees even if arborist_home is different or directory structure varies
+    worktree_result = subprocess.run(
+        ["git", "worktree", "list", "--porcelain"],
+        cwd=git_root,
+        capture_output=True,
+        text=True,
+    )
+    worktrees = []
+    current_worktree = None
+    for line in worktree_result.stdout.strip().split("\n"):
+        if line.startswith("worktree "):
+            current_worktree = {"path": Path(line[9:])}
+        elif line.startswith("branch refs/heads/") and current_worktree:
+            branch_name = line[18:]
+            # Check if this worktree's branch matches our pattern
+            if branch_name.startswith(branch_pattern):
+                current_worktree["branch"] = branch_name
+                worktrees.append(current_worktree)
+            current_worktree = None
+        elif line == "" and current_worktree:
+            current_worktree = None
+
+    # Also find worktrees directory for this spec (for cleanup)
     try:
         arborist_home = get_arborist_home()
         worktrees_dir = arborist_home / "worktrees" / spec_id
     except ArboristHomeError:
         worktrees_dir = None
-
-    # Get list of worktree subdirs
-    worktrees = []
-    if worktrees_dir and worktrees_dir.exists():
-        worktrees = [d for d in worktrees_dir.iterdir() if d.is_dir()]
 
     if not branches and not worktrees:
         console.print(f"[dim]No branches or worktrees found for spec {spec_id}[/dim]")
@@ -1016,7 +1034,8 @@ def spec_branch_cleanup_all(ctx: click.Context, force: bool) -> None:
     errors = []
 
     # Remove worktrees first (must be done before deleting branches)
-    for worktree_path in worktrees:
+    for worktree_info in worktrees:
+        worktree_path = worktree_info["path"]
         if not ctx.obj.get("quiet"):
             console.print(f"[dim]Removing worktree {worktree_path.name}...[/dim]")
         try:
