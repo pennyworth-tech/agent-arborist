@@ -149,6 +149,11 @@ class TestInitArboristHome:
         dags_dir = result / DAGU_DIR_NAME / "dags"
         assert dags_dir.is_dir()
 
+    def test_creates_dagu_data_subdirectory(self, git_repo):
+        result = init_arborist_home()
+        data_dir = result / DAGU_DIR_NAME / "data"
+        assert data_dir.is_dir()
+
     def test_fails_if_not_in_git_repo(self, non_git_dir):
         with pytest.raises(ArboristHomeError) as exc_info:
             init_arborist_home()
