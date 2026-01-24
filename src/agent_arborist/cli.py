@@ -985,7 +985,7 @@ def spec_branch_cleanup_all(ctx: click.Context, force: bool) -> None:
         capture_output=True,
         text=True,
     )
-    branches = [b.strip().lstrip("* ") for b in result.stdout.strip().split("\n") if b.strip()]
+    branches = [b.strip().lstrip("*+ ") for b in result.stdout.strip().split("\n") if b.strip()]
 
     # Find worktrees directory for this spec
     try:
