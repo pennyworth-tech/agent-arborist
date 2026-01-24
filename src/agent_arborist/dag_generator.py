@@ -26,12 +26,11 @@ class GenerationResult:
 
 
 # Prompt for subdag-based task execution with deterministic branch manifest
-DAG_GENERATION_PROMPT = '''You are a workflow automation expert. Analyze the task specification and output a DAGU DAG with subdags as multi-document YAML.
+DAG_GENERATION_PROMPT = '''You are a workflow automation expert. Analyze the task specification directory and output a DAGU DAG with subdags as multi-document YAML.
 
-TASK SPECIFICATION:
----
-{spec_content}
----
+TASK SPECIFICATION DIRECTORY: {spec_dir}
+
+Review all files in this directory to understand the tasks, their dependencies, and any additional context. Look for task markdown files (tasks*.md), requirements, and other relevant documentation.
 
 OUTPUT FORMAT:
 Generate a multi-document YAML (separated by ---) with:
@@ -281,22 +280,20 @@ class DagGenerator:
 
     def generate(
         self,
-        spec_content: str,
+        spec_dir: Path,
         dag_name: str,
         timeout: int = 120,
-        spec_dir: Path | None = None,
     ) -> GenerationResult:
-        """Generate a DAGU DAG with subdags from task spec content using AI.
+        """Generate a DAGU DAG with subdags from task spec directory using AI.
 
         Args:
-            spec_content: The task specification content
+            spec_dir: Directory containing task specification files
             dag_name: Name for the DAG
             timeout: Timeout for AI inference
-            spec_dir: Optional directory for AI to explore (for richer context)
         """
         # Build the prompt
         prompt = DAG_GENERATION_PROMPT.format(
-            spec_content=spec_content,
+            spec_dir=spec_dir.resolve(),
             dag_name=dag_name.replace("-", "_"),
         )
 

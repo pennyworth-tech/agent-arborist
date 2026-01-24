@@ -1219,12 +1219,9 @@ def spec_dag_build(
             console.print("Install the runner or use --no-ai for deterministic parsing")
             raise SystemExit(1)
 
-        # Read spec content
-        spec_content = task_file.read_text()
-
-        # Generate using AI
+        # Generate using AI - pass the spec directory for AI to explore
         generator = DagGenerator(runner=runner_instance)
-        result = generator.generate(spec_content, dag_name, timeout=timeout)
+        result = generator.generate(spec_dir, dag_name, timeout=timeout)
 
         if not result.success:
             console.print(f"[red]Error generating DAG:[/red] {result.error}")
