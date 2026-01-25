@@ -1334,9 +1334,18 @@ def spec_dag_build(
             console.print("Install the runner or use --no-ai for deterministic parsing")
             raise SystemExit(1)
 
+        # Compute manifest path for the generator
+        dagu_home = ctx.obj.get("dagu_home")
+        if output:
+            manifest_path_for_gen = str(Path(output).with_suffix(".json").resolve())
+        elif dagu_home:
+            manifest_path_for_gen = str((Path(dagu_home) / "dags" / f"{dag_name}.json").resolve())
+        else:
+            manifest_path_for_gen = f"{dag_name}.json"
+
         # Generate using AI - pass the spec directory for AI to explore
         generator = DagGenerator(runner=runner_instance)
-        result = generator.generate(spec_dir, dag_name, timeout=timeout)
+        result = generator.generate(spec_dir, dag_name, timeout=timeout, manifest_path=manifest_path_for_gen)
 
         if not result.success:
             console.print(f"[red]Error generating DAG:[/red] {result.error}")

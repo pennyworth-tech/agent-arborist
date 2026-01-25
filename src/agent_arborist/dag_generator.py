@@ -25,86 +25,54 @@ class GenerationResult:
     raw_output: str | None = None
 
 
-# Prompt for subdag-based task execution with deterministic branch manifest
-DAG_GENERATION_PROMPT = '''You are a workflow automation expert. Analyze the task specification directory and output a DAGU DAG with subdags as multi-document YAML.
+# Step 1: AI analyzes spec and outputs simple task structure
+TASK_ANALYSIS_PROMPT = '''Analyze the task specification and output a simple JSON structure describing the tasks.
 
 TASK SPECIFICATION DIRECTORY: {spec_dir}
 
-Review all files in this directory to understand the tasks, their dependencies, and any additional context. Look for task markdown files (tasks*.md), requirements, and other relevant documentation.
+Review all files in this directory to understand the tasks, their dependencies, and any groupings.
 
-OUTPUT FORMAT:
-Generate a multi-document YAML (separated by ---) with:
-1. Root DAG (first document)
-2. One subdag per task (subsequent documents)
-
-ROOT DAG STRUCTURE:
-```yaml
-name: "{dag_name}"
-description: Brief project description
-env:
-  - ARBORIST_MANIFEST={dag_name}.json
-steps:
-  - name: branches-setup
-    command: arborist spec branch-create-all
-  - name: call-T001
-    call: T001
-    depends: [branches-setup]
-  - name: call-T005  # Next root task (if exists)
-    call: T005
-    depends: [call-T001]  # Linear chain at root level
-```
-
-LEAF SUBDAG (tasks with no children):
-```yaml
----
-name: T002
-steps:
-  - name: pre-sync
-    command: arborist task pre-sync T002
-  - name: run
-    command: arborist task run T002
-    depends: [pre-sync]
-  - name: run-test
-    command: arborist task run-test T002
-    depends: [run]
-  - name: post-merge
-    command: arborist task post-merge T002
-    depends: [run-test]
-  - name: post-cleanup
-    command: arborist task post-cleanup T002
-    depends: [post-merge]
-```
-
-PARENT SUBDAG (tasks with children):
-```yaml
----
-name: T001
-steps:
-  - name: pre-sync
-    command: arborist task pre-sync T001
-  - name: call-T002
-    call: T002
-    depends: [pre-sync]
-  - name: call-T003  # Multiple children run in parallel
-    call: T003
-    depends: [pre-sync]
-  - name: complete
-    command: |
-      arborist task run-test T001 &&
-      arborist task post-merge T001 &&
-      arborist task post-cleanup T001
-    depends: [call-T002, call-T003]
+OUTPUT FORMAT - JSON only:
+```json
+{{
+  "description": "Brief project description",
+  "tasks": [
+    {{
+      "id": "T001",
+      "description": "What this task does",
+      "depends_on": [],
+      "parallel_with": []
+    }},
+    {{
+      "id": "T002",
+      "description": "What this task does",
+      "depends_on": ["T001"],
+      "parallel_with": []
+    }},
+    {{
+      "id": "T003",
+      "description": "Can run parallel with T004",
+      "depends_on": ["T002"],
+      "parallel_with": ["T004"]
+    }},
+    {{
+      "id": "T004",
+      "description": "Can run parallel with T003",
+      "depends_on": ["T002"],
+      "parallel_with": ["T003"]
+    }}
+  ]
+}}
 ```
 
 RULES:
-1. Root DAG calls root-level tasks (no parent) in LINEAR sequence by task ID
-2. Parent subdags call children in PARALLEL (all depend on pre-sync)
-3. Leaf subdags have exactly 5 steps: pre-sync, run, run-test, post-merge, post-cleanup
-4. Task hierarchy is inferred from dependencies (first dependency = parent)
-5. Tasks marked [P] are parallel siblings (same parent)
-6. Sort subdags by task ID (T001, T002, T003...)
+1. Each task needs an ID (T001, T002, etc.) and description
+2. "depends_on" lists tasks that MUST complete before this task starts
+3. "parallel_with" lists tasks that can run at the same time (same dependencies)
+4. Tasks are executed in order: first those with no dependencies, then those whose dependencies are met
+5. If tasks share the same dependencies and can run together, mark them parallel_with each other
 
-CRITICAL: Output ONLY the YAML content. No markdown fences. No explanation. Start with "name:" on line 1.
+CRITICAL: Output ONLY valid JSON. No markdown fences. No explanation. Start with {{ on line 1.
 '''
 
 
@@ -272,6 +240,127 @@ def validate_and_fix_multi_doc(documents: list[dict]) -> tuple[list[dict], list[
     return fixed_docs, all_fixes
 
 
+@dataclass
+class TaskInfo:
+    """Simple task info from AI analysis."""
+    id: str
+    description: str
+    depends_on: list[str]
+    parallel_with: list[str]
+
+
+def build_dag_from_tasks(
+    dag_name: str,
+    description: str,
+    tasks: list[TaskInfo],
+    manifest_path: str,
+) -> str:
+    """Build full DAGU DAG YAML from simple task list.
+
+    Step 2 & 3: Add the standard task pattern and boilerplate.
+    """
+    dag_name_safe = dag_name.replace("-", "_")
+
+    # Build root DAG steps
+    root_steps = [
+        {"name": "branches-setup", "command": "arborist spec branch-create-all"}
+    ]
+
+    # Group tasks by their dependencies to find parallel groups
+    # Tasks with same depends_on can potentially run in parallel
+    dep_groups: dict[tuple, list[TaskInfo]] = {}
+    for task in tasks:
+        key = tuple(sorted(task.depends_on))
+        if key not in dep_groups:
+            dep_groups[key] = []
+        dep_groups[key].append(task)
+
+    # Build execution order - topological sort
+    completed: set[str] = set()
+    task_by_id = {t.id: t for t in tasks}
+    ordered_groups: list[list[TaskInfo]] = []
+
+    while len(completed) < len(tasks):
+        # Find tasks whose dependencies are all completed
+        ready = []
+        for task in tasks:
+            if task.id in completed:
+                continue
+            if all(dep in completed for dep in task.depends_on):
+                ready.append(task)
+
+        if not ready:
+            # Circular dependency - just add remaining
+            ready = [t for t in tasks if t.id not in completed]
+
+        # Group ready tasks that are parallel_with each other
+        parallel_groups: list[list[TaskInfo]] = []
+        used = set()
+        for task in ready:
+            if task.id in used:
+                continue
+            group = [task]
+            used.add(task.id)
+            for other in ready:
+                if other.id in used:
+                    continue
+                if task.id in other.parallel_with or other.id in task.parallel_with:
+                    group.append(other)
+                    used.add(other.id)
+            parallel_groups.append(group)
+
+        ordered_groups.extend(parallel_groups)
+        for task in ready:
+            completed.add(task.id)
+
+    # Build root DAG call steps
+    prev_deps = ["branches-setup"]
+    for group in ordered_groups:
+        group_step_names = []
+        for task in sorted(group, key=lambda t: t.id):
+            step = {
+                "name": f"call-{task.id}",
+                "call": task.id,
+                "depends": prev_deps.copy(),
+            }
+            root_steps.append(step)
+            group_step_names.append(f"call-{task.id}")
+        prev_deps = group_step_names
+
+    # Build root DAG document
+    root_dag = {
+        "name": dag_name_safe,
+        "description": description,
+        "env": [f"ARBORIST_MANIFEST={manifest_path}"],
+        "steps": root_steps,
+    }
+
+    # Build subdag for each task with standard pattern
+    subdags = []
+    for task in sorted(tasks, key=lambda t: t.id):
+        subdag = {
+            "name": task.id,
+            "steps": [
+                {"name": "pre-sync", "command": f"arborist task pre-sync {task.id}"},
+                {"name": "run", "command": f"arborist task run {task.id}", "depends": ["pre-sync"]},
+                {"name": "commit", "command": f"arborist task commit {task.id}", "depends": ["run"]},
+                {"name": "run-test", "command": f"arborist task run-test {task.id}", "depends": ["commit"]},
+                {"name": "post-merge", "command": f"arborist task post-merge {task.id}", "depends": ["run-test"]},
+                {"name": "post-cleanup", "command": f"arborist task post-cleanup {task.id}", "depends": ["post-merge"]},
+            ],
+            "env": [f"ARBORIST_MANIFEST={manifest_path}"],
+        }
+        subdags.append(subdag)
+
+    # Serialize to multi-document YAML
+    documents = [root_dag] + subdags
+    yaml_parts = []
+    for doc in documents:
+        yaml_parts.append(yaml.dump(doc, default_flow_style=False, sort_keys=False))
+
+    return "---\n".join(yaml_parts)
+
+
 class DagGenerator:
     """Generates DAGU DAGs using AI inference."""
 
@@ -283,21 +372,22 @@ class DagGenerator:
         spec_dir: Path,
         dag_name: str,
         timeout: int = 120,
+        manifest_path: str | None = None,
     ) -> GenerationResult:
-        """Generate a DAGU DAG with subdags from task spec directory using AI.
+        """Generate a DAGU DAG from task spec directory using AI.
+
+        Two-step process:
+        1. AI analyzes spec and outputs simple task JSON
+        2. Code builds full DAG YAML with standard patterns
 
         Args:
             spec_dir: Directory containing task specification files
             dag_name: Name for the DAG
             timeout: Timeout for AI inference
+            manifest_path: Path to manifest JSON (for env var)
         """
-        # Build the prompt
-        prompt = DAG_GENERATION_PROMPT.format(
-            spec_dir=spec_dir.resolve(),
-            dag_name=dag_name.replace("-", "_"),
-        )
-
-        # Run the AI (optionally in the spec directory for context)
+        # Step 1: AI analyzes and outputs simple task structure
+        prompt = TASK_ANALYSIS_PROMPT.format(spec_dir=spec_dir.resolve())
         result = self.runner.run(prompt, timeout=timeout, cwd=spec_dir)
 
         if not result.success:
@@ -307,66 +397,101 @@ class DagGenerator:
                 raw_output=result.output,
             )
 
-        # Extract YAML from output
-        yaml_content = self._extract_yaml(result.output)
-
-        if not yaml_content:
+        # Extract JSON from output
+        task_json = self._extract_json(result.output)
+        if not task_json:
             return GenerationResult(
                 success=False,
-                error="Could not extract valid YAML from AI output",
+                error="Could not extract valid JSON from AI output",
                 raw_output=result.output,
             )
 
-        # Parse multi-document YAML
+        # Parse JSON
+        import json
         try:
-            documents = list(yaml.safe_load_all(yaml_content))
-            if not documents:
-                return GenerationResult(
-                    success=False,
-                    error="No YAML documents found",
-                    raw_output=result.output,
-                )
-
-            # First document should be root DAG
-            root = documents[0]
-            if not isinstance(root, dict) or "steps" not in root:
-                return GenerationResult(
-                    success=False,
-                    error="Root DAG missing required 'steps' field",
-                    raw_output=result.output,
-                )
-
-        except yaml.YAMLError as e:
+            data = json.loads(task_json)
+        except json.JSONDecodeError as e:
             return GenerationResult(
                 success=False,
-                error=f"Invalid YAML: {e}",
+                error=f"Invalid JSON: {e}",
                 raw_output=result.output,
             )
 
-        # Validate and fix all documents
-        fixed_docs, fixes = validate_and_fix_multi_doc(documents)
+        # Validate structure
+        if "tasks" not in data or not isinstance(data["tasks"], list):
+            return GenerationResult(
+                success=False,
+                error="JSON missing 'tasks' array",
+                raw_output=result.output,
+            )
 
-        # Check for unfixable issues (like cycles)
-        for fix in fixes:
-            if "Cycle detected" in fix:
-                return GenerationResult(
-                    success=False,
-                    error=fix,
-                    raw_output=result.output,
-                )
+        # Convert to TaskInfo objects
+        tasks = []
+        for t in data["tasks"]:
+            if "id" not in t:
+                continue
+            tasks.append(TaskInfo(
+                id=t["id"],
+                description=t.get("description", t["id"]),
+                depends_on=t.get("depends_on", []),
+                parallel_with=t.get("parallel_with", []),
+            ))
 
-        # Re-serialize as multi-document YAML
-        yaml_parts = []
-        for doc in fixed_docs:
-            yaml_parts.append(yaml.dump(doc, default_flow_style=False, sort_keys=False))
+        if not tasks:
+            return GenerationResult(
+                success=False,
+                error="No valid tasks found in JSON",
+                raw_output=result.output,
+            )
 
-        yaml_content = "---\n".join(yaml_parts)
+        # Step 2 & 3: Build full DAG YAML
+        manifest = manifest_path or f"{dag_name}.json"
+        description = data.get("description", f"DAG for {dag_name}")
+
+        yaml_content = build_dag_from_tasks(dag_name, description, tasks, manifest)
 
         return GenerationResult(
             success=True,
             yaml_content=yaml_content,
             raw_output=result.output,
         )
+
+    def _extract_json(self, output: str) -> str | None:
+        """Extract JSON content from AI output."""
+        import json
+
+        # Try to find JSON in code blocks first
+        code_block_pattern = r"```(?:json)?\s*\n(.*?)```"
+        matches = re.findall(code_block_pattern, output, re.DOTALL)
+        if matches:
+            return matches[0].strip()
+
+        # Try to find content starting with {
+        lines = output.strip().split("\n")
+        json_start = None
+        for i, line in enumerate(lines):
+            if line.strip().startswith("{"):
+                json_start = i
+                break
+
+        if json_start is not None:
+            # Find the matching closing brace
+            content = "\n".join(lines[json_start:])
+            # Try to parse incrementally to find valid JSON
+            brace_count = 0
+            end_idx = 0
+            for i, char in enumerate(content):
+                if char == "{":
+                    brace_count += 1
+                elif char == "}":
+                    brace_count -= 1
+                    if brace_count == 0:
+                        end_idx = i + 1
+                        break
+            if end_idx > 0:
+                return content[:end_idx]
+
+        return None
 
     def _extract_yaml(self, output: str) -> str | None:
         """Extract YAML content from AI output."""
