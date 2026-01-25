@@ -237,6 +237,39 @@ class TestDagEchoForTesting:
         assert "spec_id=001-my-spec" in result.output
         assert "dag_name=001-my-spec" in result.output
 
+    def test_echo_dag_run_list(self):
+        """Echo test for dag run-list command."""
+        runner = CliRunner()
+        result = runner.invoke(main, ["--echo-for-testing", "dag", "run-list"])
+        assert result.exit_code == 0
+        assert "ECHO: dag run-list" in result.output
+        assert "limit=20" in result.output
+
+    def test_echo_dag_run_list_with_filters(self):
+        """Echo test for dag run-list with filters."""
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            ["--echo-for-testing", "dag", "run-list", "--dag-name", "test", "--status", "success"],
+        )
+        assert result.exit_code == 0
+        assert "dag_name=test" in result.output
+        assert "status=success" in result.output
+
+    def test_echo_dag_run_show_expand_subdags(self):
+        """Echo test for dag run-show with --expand-subdags."""
+        runner = CliRunner()
+        result = runner.invoke(main, ["--echo-for-testing", "dag", "run-show", "my-dag", "--expand-subdags"])
+        assert result.exit_code == 0
+        assert "expand_subdags=True" in result.output
+
+    def test_echo_dag_run_show_json(self):
+        """Echo test for dag run-show with --json."""
+        runner = CliRunner()
+        result = runner.invoke(main, ["--echo-for-testing", "dag", "run-show", "my-dag", "--json"])
+        assert result.exit_code == 0
+        assert "json=True" in result.output
+
 
 # -----------------------------------------------------------------------------
 # Error handling tests

@@ -1,0 +1,15 @@
+name: test_mixed_status
+description: DAG with mixed step statuses for testing filters
+steps:
+  - name: setup
+    command: echo "setup"
+  - name: success-step
+    command: echo "success"
+    depends: [setup]
+  - name: failed-step
+    command: exit 1
+    depends: [setup]
+    continueOnError: true
+  - name: another-success
+    command: echo "another success"
+    depends: [success-step]
