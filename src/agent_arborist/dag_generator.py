@@ -527,13 +527,11 @@ class DagGenerator:
         timeout: int = 120,
     ) -> GenerationResult:
         """Generate a DAGU DAG from a task spec file."""
-        spec_content = spec_path.read_text()
-
         if dag_name is None:
             dag_name = spec_path.stem.replace("tasks-", "").replace("tasks", "spec")
 
-        # Pass the spec directory for context
-        return self.generate(spec_content, dag_name, timeout, spec_dir=spec_path.parent)
+        # Pass the spec directory - generate() reads files itself
+        return self.generate(spec_path.parent, dag_name, timeout)
 
     def generate_from_directory(
         self,
