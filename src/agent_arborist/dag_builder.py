@@ -140,8 +140,8 @@ class SubDagBuilder:
     def _build_leaf_subdag(self, task_id: str) -> SubDag:
         """Build a leaf subdag with individual command nodes.
 
-        Leaf subdags have 5 steps in sequence:
-        pre-sync -> run -> run-test -> post-merge -> post-cleanup
+        Leaf subdags have 6 steps in sequence:
+        pre-sync -> run -> commit -> run-test -> post-merge -> post-cleanup
         """
         steps = [
             SubDagStep(
@@ -154,9 +154,14 @@ class SubDagBuilder:
                 depends=["pre-sync"],
             ),
             SubDagStep(
+                name="commit",
+                command=f"arborist task commit {task_id}",
+                depends=["run"],
+            ),
+            SubDagStep(
                 name="run-test",
                 command=f"arborist task run-test {task_id}",
-                depends=["run"],
+                depends=["commit"],
             ),
             SubDagStep(
                 name="post-merge",

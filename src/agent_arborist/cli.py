@@ -36,6 +36,7 @@ from agent_arborist.dag_generator import DagGenerator
 from agent_arborist.git_tasks import (
     get_worktree_path,
     find_parent_branch,
+    find_worktree_for_branch,
     merge_to_parent,
     cleanup_task,
     run_tests,
@@ -59,6 +60,7 @@ from agent_arborist.task_state import (
     load_task_tree,
     update_task_status,
     get_task_status_summary,
+    build_task_tree_from_yaml,
 )
 
 console = Console()
@@ -578,6 +580,89 @@ Do NOT commit - that will be handled by the task workflow.
         raise SystemExit(1)
 
 
+@task.command("commit")
+@click.argument("task_id")
+@click.pass_context
+def task_commit(ctx: click.Context, task_id: str) -> None:
+    """Commit staged changes for a task with proper message format.
+
+    For leaf tasks: task-leaf(T004): <description>
+    For parent tasks: task-merge(T002): <description>
+    """
+    import os
+    import subprocess
+
+    manifest_path = os.environ.get("ARBORIST_MANIFEST")
+    if not manifest_path:
+        console.print("[red]Error:[/red] ARBORIST_MANIFEST environment variable not set")
+        raise SystemExit(1)
+
+    try:
+        manifest = load_manifest(Path(manifest_path))
+    except Exception as e:
+        console.print(f"[red]Error loading manifest:[/red] {e}")
+        raise SystemExit(1)
+
+    task_info = manifest.get_task(task_id)
+    if not task_info:
+        console.print(f"[red]Error:[/red] Task {task_id} not found in manifest")
+        raise SystemExit(1)
+
+    # Load task tree for description
+    tree = load_task_tree(manifest.spec_id)
+    task_node = tree.get_task(task_id) if tree else None
+    task_description = task_node.description if task_node else task_id
+
+    # Get worktree path
+    worktree_path = get_worktree_path(manifest.spec_id, task_id)
+
+    if ctx.obj.get("echo_for_testing"):
+        echo_command(
+            "task commit",
+            task_id=task_id,
+            spec_id=manifest.spec_id,
+            worktree=str(worktree_path),
+        )
+        return
+
+    if not worktree_path.exists():
+        console.print(f"[red]Error:[/red] Worktree not found at {worktree_path}")
+        raise SystemExit(1)
+
+    # Determine commit type: leaf vs parent (merge)
+    is_leaf = not task_info.children
+    commit_type = "task-leaf" if is_leaf else "task-merge"
+    commit_msg = f"{commit_type}({task_id}): {task_description}"
+
+    # Check if there are staged changes
+    status_result = subprocess.run(
+        ["git", "diff", "--cached", "--quiet"],
+        cwd=worktree_path,
+        capture_output=True,
+    )
+
+    if status_result.returncode == 0:
+        # No staged changes
+        console.print(f"[yellow]Warning:[/yellow] No staged changes to commit for {task_id}")
+        return
+
+    # Commit the changes
+    try:
+        subprocess.run(
+            ["git", "commit", "-m", commit_msg],
+            cwd=worktree_path,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        console.print(f"[green]OK:[/green] Committed: {commit_msg}")
+    except subprocess.CalledProcessError as e:
+        console.print(f"[red]Error:[/red] Commit failed")
+        if e.stderr:
+            console.print(f"[dim]{e.stderr}[/dim]")
+        raise SystemExit(1)
+
+
 @task.command("run-test")
 @click.argument("task_id")
 @click.option("--cmd", help="Override test command (auto-detected if not specified)")
@@ -660,13 +745,16 @@ def task_run_test(ctx: click.Context, task_id: str, cmd: str | None) -> None:
 
 @task.command("post-merge")
 @click.argument("task_id")
-@click.option("--no-resolve", is_flag=True, help="Don't attempt AI conflict resolution")
+@click.option("--timeout", "-t", default=300, help="Timeout in seconds for AI merge")
 @click.pass_context
-def task_post_merge(ctx: click.Context, task_id: str, no_resolve: bool) -> None:
-    """Merge task branch to parent branch.
+def task_post_merge(ctx: click.Context, task_id: str, timeout: int) -> None:
+    """Merge task branch to parent branch using AI.
 
-    By default, attempts AI-powered conflict resolution if conflicts occur.
-    Use --no-resolve to fail on conflicts instead.
+    AI performs a squash merge with proper commit message format:
+    - Leaf tasks: task-leaf(T004): description
+    - Parent tasks: task-merge(T002): description
+
+    AI handles conflict resolution if needed.
     """
     import os
 
@@ -686,9 +774,37 @@ def task_post_merge(ctx: click.Context, task_id: str, no_resolve: bool) -> None:
         console.print(f"[red]Error:[/red] Task {task_id} not found in manifest")
         raise SystemExit(1)
 
+    # Load task tree for description
+    tree = load_task_tree(manifest.spec_id)
+    task_node = tree.get_task(task_id) if tree else None
+    task_description = task_node.description if task_node else task_id
+
+    # Determine if leaf or parent task
+    is_leaf = not task_info.children
+    commit_type = "task-leaf" if is_leaf else "task-merge"
+
     # Get branch names from manifest
     task_branch = task_info.branch
     parent_branch = task_info.parent_branch
+
+    # Get or create worktree for parent branch
+    parent_worktree = find_worktree_for_branch(parent_branch)
+    created_worktree = False
+
+    if not parent_worktree:
+        # Create temporary worktree for parent
+        parent_worktree = get_worktree_path(manifest.spec_id, f"{task_id}_merge")
+        parent_worktree.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            subprocess.run(
+                ["git", "worktree", "add", str(parent_worktree), parent_branch],
+                capture_output=True, check=True
+            )
+            created_worktree = True
+        except subprocess.CalledProcessError as e:
+            console.print(f"[red]Error:[/red] Failed to create worktree for {parent_branch}")
+            console.print(f"[dim]{e.stderr.decode() if e.stderr else ''}[/dim]")
+            raise SystemExit(1)
 
     if ctx.obj.get("echo_for_testing"):
         echo_command(
@@ -697,93 +813,73 @@ def task_post_merge(ctx: click.Context, task_id: str, no_resolve: bool) -> None:
             spec_id=manifest.spec_id,
             branch=task_branch,
             parent=parent_branch,
-            no_resolve=str(no_resolve),
+            commit_type=commit_type,
+            worktree=str(parent_worktree),
         )
         return
 
     if not ctx.obj.get("quiet"):
-        console.print(f"[cyan]Merging {task_branch} → {parent_branch}[/cyan]")
+        console.print(f"[cyan]Merging {task_branch} → {parent_branch} (squash)[/cyan]")
 
-    result = merge_to_parent(task_branch, parent_branch)
+    # Build prompt for AI to do the merge
+    merge_prompt = f"""Perform a squash merge of branch '{task_branch}' into the current branch '{parent_branch}'.
+
+IMPORTANT INSTRUCTIONS:
+1. Run: git merge --squash {task_branch}
+2. If there are conflicts, resolve them carefully by examining both versions
+3. After resolving any conflicts, stage all changes with: git add -A
+4. Commit with EXACTLY this message format:
+   {commit_type}({task_id}): {task_description}
+
+The commit message must start with "{commit_type}({task_id}):" - this is required.
+
+If the merge succeeds with no conflicts, just stage and commit.
+If there are conflicts, resolve them intelligently by merging the intent of both changes.
+
+Do NOT push. Just complete the merge and commit locally.
+"""
+
+    # Get runner
+    runner_type = get_default_runner()
+    runner_instance = get_runner(runner_type)
+
+    if not runner_instance.is_available():
+        console.print(f"[red]Error:[/red] {runner_type} not available")
+        raise SystemExit(1)
+
+    if not ctx.obj.get("quiet"):
+        console.print(f"[dim]Running {runner_type} in {parent_worktree}[/dim]")
+
+    # Run AI in parent worktree
+    result = runner_instance.run(merge_prompt, timeout=timeout, cwd=parent_worktree)
+
+    # Cleanup temporary worktree if we created it
+    if created_worktree:
+        try:
+            subprocess.run(
+                ["git", "worktree", "remove", str(parent_worktree), "--force"],
+                capture_output=True, check=False
+            )
+        except Exception:
+            pass
 
     if result.success:
-        console.print(f"[green]OK:[/green] {result.message}")
-        update_task_status(manifest.spec_id, task_id, "complete")
-        return
-
-    # Handle conflicts
-    if result.conflicts:
-        console.print(f"[yellow]Conflicts in {len(result.conflicts)} files:[/yellow]")
-        for f in result.conflicts:
-            console.print(f"  - {f}")
-
-        if no_resolve:
-            abort_merge()
-            console.print("[red]Merge aborted due to conflicts[/red]")
-            raise SystemExit(1)
-
-        # Attempt AI conflict resolution
-        console.print("\n[cyan]Attempting AI conflict resolution...[/cyan]")
-
-        default_runner = get_default_runner()
-        runner_instance = get_runner(default_runner)
-        if not runner_instance.is_available():
-            abort_merge()
-            console.print(f"[red]Error:[/red] {default_runner} not available for conflict resolution")
-            raise SystemExit(1)
-
-        git_root = get_git_root()
-        resolved_all = True
-
-        for conflict_file in result.conflicts:
-            conflict_path = git_root / conflict_file
-            if not conflict_path.exists():
-                continue
-
-            conflict_content = conflict_path.read_text()
-
-            resolve_prompt = f"""Resolve this git merge conflict in {conflict_file}.
-
-The file contains conflict markers (<<<<<<, ======, >>>>>>).
-Analyze both versions and produce the correctly merged result.
-
-Output ONLY the resolved file content, no explanation.
-
-Conflicted file:
-```
-{conflict_content}
-```"""
-
-            resolve_result = runner_instance.run(resolve_prompt, timeout=60)
-
-            if resolve_result.success and resolve_result.output:
-                # Write resolved content
-                conflict_path.write_text(resolve_result.output.strip())
-                subprocess.run(["git", "add", conflict_file], cwd=git_root, check=True)
-                console.print(f"  [green]Resolved:[/green] {conflict_file}")
+        console.print(f"[green]OK:[/green] Merged {task_branch} → {parent_branch}")
+        if result.output and not ctx.obj.get("quiet"):
+            # Show abbreviated output
+            lines = result.output.strip().split('\n')
+            if len(lines) > 10:
+                console.print(f"[dim]{chr(10).join(lines[:5])}[/dim]")
+                console.print(f"[dim]... ({len(lines) - 10} more lines) ...[/dim]")
+                console.print(f"[dim]{chr(10).join(lines[-5:])}[/dim]")
             else:
-                console.print(f"  [red]Failed:[/red] {conflict_file}")
-                resolved_all = False
-
-        if resolved_all:
-            # Complete the merge
-            subprocess.run(
-                ["git", "commit", "--no-edit"],
-                cwd=git_root,
-                check=True,
-                capture_output=True,
-            )
-            console.print(f"[green]OK:[/green] Merge completed with AI-resolved conflicts")
-            update_task_status(manifest.spec_id, task_id, "complete")
-        else:
-            abort_merge()
-            console.print("[red]Error:[/red] Could not resolve all conflicts")
-            update_task_status(manifest.spec_id, task_id, "failed", error="Merge conflicts")
-            raise SystemExit(1)
+                console.print(f"[dim]{result.output[:500]}[/dim]")
+        update_task_status(manifest.spec_id, task_id, "complete")
     else:
-        console.print(f"[red]Error:[/red] {result.message}")
+        console.print(f"[red]Error:[/red] Merge failed")
         if result.error:
-            console.print(f"[dim]{result.error}[/dim]")
+            console.print(f"[dim]{result.error[:500]}[/dim]")
+        update_task_status(manifest.spec_id, task_id, "failed", error="Merge failed")
         raise SystemExit(1)
 
 
@@ -1277,9 +1373,9 @@ def spec_dag_build(
     # Get current branch for base naming
     source_branch = get_current_branch()
 
-    # Build task tree from spec
-    from agent_arborist.task_state import build_task_tree_from_spec
-    task_tree = build_task_tree_from_spec(dag_name, task_file)
+    # Build task tree from generated YAML (not from spec file)
+    # This ensures manifest matches what AI generated
+    task_tree = build_task_tree_from_yaml(dag_name, dag_yaml)
 
     # Generate manifest
     manifest = generate_manifest(dag_name, task_tree, source_branch)
