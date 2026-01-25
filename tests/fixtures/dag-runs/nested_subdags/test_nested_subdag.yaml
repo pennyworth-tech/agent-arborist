@@ -1,0 +1,8 @@
+name: test_nested_subdag
+description: Nested sub-DAG
+steps:
+  - name: nested-step1
+    command: echo "nested step1"
+  - name: nested-step2
+    command: echo "nested step2"
+    depends: [nested-step1]

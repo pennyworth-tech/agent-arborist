@@ -1,0 +1,8 @@
+name: test_subdag3
+description: Third sub-DAG
+steps:
+  - name: sub-step1
+    command: echo "subdag3 step1"
+  - name: sub-step2
+    command: echo "subdag3 step2"
+    depends: [sub-step1]
