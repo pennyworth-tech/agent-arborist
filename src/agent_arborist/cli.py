@@ -819,13 +819,13 @@ def task_post_merge(ctx: click.Context, task_id: str, timeout: int) -> None:
     task_node = tree.get_task(task_id) if tree else None
     task_description = task_node.description if task_node else task_id
 
-    # Determine if leaf or parent task
-    is_leaf = not task_info.children
-    commit_type = "task-leaf" if is_leaf else "task-merge"
-
     # Get branch names from manifest
     task_branch = task_info.branch
     parent_branch = task_info.parent_branch
+
+    # Get runner info for commit message footer
+    runner_type = get_default_runner()
+    resolved_model = get_default_model()
 
     # Get or create worktree for parent branch
     parent_worktree = find_worktree_for_branch(parent_branch)
@@ -853,7 +853,6 @@ def task_post_merge(ctx: click.Context, task_id: str, timeout: int) -> None:
             spec_id=manifest.spec_id,
             branch=task_branch,
             parent=parent_branch,
-            commit_type=commit_type,
             worktree=str(parent_worktree),
         )
         return
@@ -864,23 +863,28 @@ def task_post_merge(ctx: click.Context, task_id: str, timeout: int) -> None:
     # Build prompt for AI to do the merge
     merge_prompt = f"""Perform a squash merge of branch '{task_branch}' into the current branch '{parent_branch}'.
 
-IMPORTANT INSTRUCTIONS:
+STEPS:
 1. Run: git merge --squash {task_branch}
 2. If there are conflicts, resolve them carefully by examining both versions
 3. After resolving any conflicts, stage all changes with: git add -A
-4. Commit with EXACTLY this message format:
-   {commit_type}({task_id}): {task_description}
+4. Create a SINGLE commit with this EXACT format:
 
-The commit message must start with "{commit_type}({task_id}):" - this is required.
+git commit -m "task({task_id}): <one-line summary of what was merged>
 
-If the merge succeeds with no conflicts, just stage and commit.
-If there are conflicts, resolve them intelligently by merging the intent of both changes.
+- <detail about changes merged>
+- <another detail if needed>
+
+(merged by {runner_type} / {resolved_model} from {task_branch})"
+
+IMPORTANT:
+- The first line MUST be: task({task_id}): followed by a brief summary
+- Use bullet points for details in the body
+- Include the footer line showing this was a merge
+- If the merge has no changes (branches identical), just report that - no commit needed
 
 Do NOT push. Just complete the merge and commit locally.
 """
 
-    # Get runner
-    runner_type = get_default_runner()
     runner_instance = get_runner(runner_type)
 
     if not runner_instance.is_available():
