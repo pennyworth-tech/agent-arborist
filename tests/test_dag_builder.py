@@ -161,18 +161,19 @@ class TestSubDagBuilder:
         subdag = builder._build_leaf_subdag("T003")
 
         assert subdag.name == "T003"
-        assert len(subdag.steps) == 5
+        assert len(subdag.steps) == 6
 
         # Verify step names and order
         step_names = [s.name for s in subdag.steps]
-        assert step_names == ["pre-sync", "run", "run-test", "post-merge", "post-cleanup"]
+        assert step_names == ["pre-sync", "run", "commit", "run-test", "post-merge", "post-cleanup"]
 
         # Verify dependencies
         assert subdag.steps[0].depends == []  # pre-sync
         assert subdag.steps[1].depends == ["pre-sync"]  # run
-        assert subdag.steps[2].depends == ["run"]  # run-test
-        assert subdag.steps[3].depends == ["run-test"]  # post-merge
-        assert subdag.steps[4].depends == ["post-merge"]  # post-cleanup
+        assert subdag.steps[2].depends == ["run"]  # commit
+        assert subdag.steps[3].depends == ["commit"]  # run-test
+        assert subdag.steps[4].depends == ["run-test"]  # post-merge
+        assert subdag.steps[5].depends == ["post-merge"]  # post-cleanup
 
         # Verify commands
         assert "arborist task pre-sync T003" in subdag.steps[0].command
@@ -279,7 +280,7 @@ class TestSubDagBuilder:
         # T003 is leaf (no calls)
         t003 = next(s for s in subdags if s.name == "T003")
         assert all(step.call is None for step in t003.steps)
-        assert len(t003.steps) == 5
+        assert len(t003.steps) == 6
 
     def test_build_complete_bundle(self, parallel_tree):
         spec = TaskSpec(
@@ -428,8 +429,8 @@ class TestBuildDagFromFixtures:
         # tasks-todo-app.md has 18 tasks
         assert len(documents) == 19  # 1 root + 18 subdags
 
-    def test_leaf_subdag_has_five_steps(self, fixtures_dir):
-        """Verify leaf subdags have exactly 5 steps."""
+    def test_leaf_subdag_has_six_steps(self, fixtures_dir):
+        """Verify leaf subdags have exactly 6 steps."""
         spec = parse_task_spec(fixtures_dir / "tasks-hello-world.md")
         yaml_content = build_dag(spec, "hello-world")
 
@@ -440,10 +441,10 @@ class TestBuildDagFromFixtures:
             steps = doc.get("steps", [])
             has_call = any("call" in step for step in steps)
             if not has_call:
-                # This is a leaf - should have 5 steps
-                assert len(steps) == 5
+                # This is a leaf - should have 6 steps
+                assert len(steps) == 6
                 step_names = [s["name"] for s in steps]
-                assert step_names == ["pre-sync", "run", "run-test", "post-merge", "post-cleanup"]
+                assert step_names == ["pre-sync", "run", "commit", "run-test", "post-merge", "post-cleanup"]
                 break
 
     def test_root_dag_has_branches_setup(self, fixtures_dir):

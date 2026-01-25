@@ -76,7 +76,7 @@ class TestClaudeRunner:
         # Verify CLI args
         mock_run.assert_called_once()
         call_args = mock_run.call_args
-        assert call_args[0][0] == ["/usr/bin/claude", "-p", "tell me a joke"]
+        assert call_args[0][0] == ["/usr/bin/claude", "--dangerously-skip-permissions", "-p", "tell me a joke"]
 
     @patch("subprocess.run")
     @patch("shutil.which")
@@ -156,7 +156,7 @@ class TestGeminiRunner:
         runner.run("prompt")
 
         call_args = mock_run.call_args
-        assert call_args[0][0] == ["/usr/bin/gemini", "prompt"]
+        assert call_args[0][0] == ["/usr/bin/gemini", "--yolo", "prompt"]
 
 
 class TestGetRunner:
