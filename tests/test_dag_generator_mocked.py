@@ -152,12 +152,12 @@ steps:
 class TestDagGeneratorWithMockRunner:
     """Tests for DagGenerator using mocked runners."""
 
-    def test_generates_valid_multi_doc_yaml(self):
+    def test_generates_valid_multi_doc_yaml(self, tmp_path):
         """Test successful generation of multi-document YAML."""
         runner = MockRunner(VALID_MULTI_DOC_RESPONSE)
         generator = DagGenerator(runner=runner)
 
-        result = generator.generate("spec content", "test_dag")
+        result = generator.generate(tmp_path, "test_dag")
 
         assert result.success
         assert result.yaml_content is not None
@@ -176,12 +176,12 @@ class TestDagGeneratorWithMockRunner:
         assert documents[1]["name"] == "T001"
         assert documents[2]["name"] == "T002"
 
-    def test_fixes_dict_env_format(self):
+    def test_fixes_dict_env_format(self, tmp_path):
         """Test that dict env format is fixed to KEY=value."""
         runner = MockRunner(RESPONSE_WITH_DICT_ENV)
         generator = DagGenerator(runner=runner)
 
-        result = generator.generate("spec content", "test")
+        result = generator.generate(tmp_path, "test")
 
         assert result.success
         documents = list(yaml.safe_load_all(result.yaml_content))
@@ -192,12 +192,12 @@ class TestDagGeneratorWithMockRunner:
         assert "=" in root["env"][0]
         assert "ARBORIST_MANIFEST=" in root["env"][0]
 
-    def test_fixes_step_order(self):
+    def test_fixes_step_order(self, tmp_path):
         """Test that steps are reordered topologically."""
         runner = MockRunner(RESPONSE_WITH_WRONG_ORDER)
         generator = DagGenerator(runner=runner)
 
-        result = generator.generate("spec content", "test")
+        result = generator.generate(tmp_path, "test")
 
         assert result.success
         documents = list(yaml.safe_load_all(result.yaml_content))
@@ -208,33 +208,33 @@ class TestDagGeneratorWithMockRunner:
         assert step_names.index("step1") < step_names.index("step2")
         assert step_names.index("step2") < step_names.index("step3")
 
-    def test_detects_cycle_error(self):
+    def test_detects_cycle_error(self, tmp_path):
         """Test that cycles are detected and reported."""
         runner = MockRunner(RESPONSE_WITH_CYCLE)
         generator = DagGenerator(runner=runner)
 
-        result = generator.generate("spec content", "test")
+        result = generator.generate(tmp_path, "test")
 
         assert not result.success
         assert "Cycle detected" in result.error
 
-    def test_extracts_yaml_from_code_block(self):
+    def test_extracts_yaml_from_code_block(self, tmp_path):
         """Test that YAML is extracted from markdown code blocks."""
         runner = MockRunner(RESPONSE_IN_CODE_BLOCK)
         generator = DagGenerator(runner=runner)
 
-        result = generator.generate("spec content", "test")
+        result = generator.generate(tmp_path, "test")
 
         assert result.success
         documents = list(yaml.safe_load_all(result.yaml_content))
         assert documents[0]["name"] == "test_dag"
 
-    def test_removes_empty_depends(self):
+    def test_removes_empty_depends(self, tmp_path):
         """Test that empty depends arrays are removed."""
         runner = MockRunner(RESPONSE_WITH_EMPTY_DEPENDS)
         generator = DagGenerator(runner=runner)
 
-        result = generator.generate("spec content", "test")
+        result = generator.generate(tmp_path, "test")
 
         assert result.success
         documents = list(yaml.safe_load_all(result.yaml_content))
@@ -244,32 +244,32 @@ class TestDagGeneratorWithMockRunner:
         step1 = next(s for s in root["steps"] if s["name"] == "step1")
         assert "depends" not in step1
 
-    def test_runner_failure_returns_error(self):
+    def test_runner_failure_returns_error(self, tmp_path):
         """Test that runner failure is properly reported."""
         runner = MockRunner("", success=False, error="Runner timeout")
         generator = DagGenerator(runner=runner)
 
-        result = generator.generate("spec content", "test")
+        result = generator.generate(tmp_path, "test")
 
         assert not result.success
         assert "Runner timeout" in result.error
 
-    def test_invalid_yaml_returns_error(self):
+    def test_invalid_yaml_returns_error(self, tmp_path):
         """Test that invalid YAML is reported."""
         runner = MockRunner("not: valid: yaml: [[[")
         generator = DagGenerator(runner=runner)
 
-        result = generator.generate("spec content", "test")
+        result = generator.generate(tmp_path, "test")
 
         assert not result.success
         assert "Invalid YAML" in result.error or "YAML" in result.error
 
-    def test_missing_steps_returns_error(self):
+    def test_missing_steps_returns_error(self, tmp_path):
         """Test that missing steps field is reported."""
         runner = MockRunner("name: test\ndescription: no steps")
         generator = DagGenerator(runner=runner)
 
-        result = generator.generate("spec content", "test")
+        result = generator.generate(tmp_path, "test")
 
         assert not result.success
         assert "steps" in result.error.lower()
@@ -462,9 +462,9 @@ class TestBuildSimpleDag:
         t001 = next(d for d in documents if d["name"] == "T001")
         assert any(s.get("call") == "T002" for s in t001["steps"])
 
-        # T002 should be leaf (5 steps, no calls)
+        # T002 should be leaf (6 steps, no calls)
         t002 = next(d for d in documents if d["name"] == "T002")
-        assert len(t002["steps"]) == 5
+        assert len(t002["steps"]) == 6
         assert all(s.get("call") is None for s in t002["steps"])
 
     def test_build_simple_dag_parallel_children(self):

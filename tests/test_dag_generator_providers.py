@@ -58,14 +58,14 @@ def fixtures_dir():
 
 @pytest.fixture
 def hello_world_spec(fixtures_dir):
-    """Hello world task spec content."""
-    return (fixtures_dir / "tasks-hello-world.md").read_text()
+    """Path to hello world task spec directory."""
+    return fixtures_dir
 
 
 @pytest.fixture
 def calculator_spec(fixtures_dir):
-    """Calculator task spec content."""
-    return (fixtures_dir / "tasks-calculator.md").read_text()
+    """Path to calculator task spec directory."""
+    return fixtures_dir
 
 
 def create_runner(runner_type: str, model: str | None = None) -> Runner:
@@ -410,7 +410,6 @@ class TestCerebrasProvider:
             assert_dag_structure(doc)
 
 
-@pytest.mark.skip(reason="MiniMax tests temporarily disabled")
 class TestMinimaxProvider:
     """Tests for MiniMax (minimax-coding-plan/MiniMax-M2.1) provider DAG generation."""
 
