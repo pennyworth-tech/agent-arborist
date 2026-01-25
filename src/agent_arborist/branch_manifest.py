@@ -72,25 +72,44 @@ def generate_manifest(
         created_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     )
 
-    # Generate branch names for each task
-    for task_id, task in task_tree.tasks.items():
-        if task.parent_id:
-            # Child task: base_T001_T004
-            branch = f"{base_branch}_{task.parent_id}_{task_id}"
-            parent_branch = f"{base_branch}_{task.parent_id}"
-        else:
-            # Root task: base_T001
-            branch = f"{base_branch}_{task_id}"
-            parent_branch = base_branch
+    # Process tasks in topological order so parent branches are computed first
+    # Build a simple topological order: roots first, then children
+    processed: dict[str, TaskBranchInfo] = {}
+    remaining = dict(task_tree.tasks)
 
-        manifest.tasks[task_id] = TaskBranchInfo(
-            task_id=task_id,
-            branch=branch,
-            parent_branch=parent_branch,
-            parent_task=task.parent_id,
-            children=list(task.children),
-        )
+    while remaining:
+        # Find tasks whose parent (if any) is already processed
+        ready = [
+            tid for tid, task in remaining.items()
+            if task.parent_id is None or task.parent_id in processed
+        ]
 
+        if not ready:
+            # Circular dependency or missing parent - just process remaining
+            ready = list(remaining.keys())
+
+        for task_id in ready:
+            task = remaining.pop(task_id)
+
+            if task.parent_id:
+                # Child task: parent_branch + _task_id
+                parent_info = processed[task.parent_id]
+                parent_branch = parent_info.branch
+                branch = f"{parent_branch}_{task_id}"
+            else:
+                # Root task: base_T001
+                branch = f"{base_branch}_{task_id}"
+                parent_branch = base_branch
+
+            processed[task_id] = TaskBranchInfo(
+                task_id=task_id,
+                branch=branch,
+                parent_branch=parent_branch,
+                parent_task=task.parent_id,
+                children=list(task.children),
+            )
+
+    manifest.tasks = processed
     return manifest
 
 

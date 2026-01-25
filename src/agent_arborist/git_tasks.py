@@ -48,6 +48,30 @@ def branch_exists(branch: str, cwd: Path | None = None) -> bool:
     return result.returncode == 0
 
 
+def find_worktree_for_branch(branch: str, cwd: Path | None = None) -> Path | None:
+    """Find existing worktree path for a branch, if any.
+
+    Returns the worktree path if one exists for the branch, None otherwise.
+    """
+    result = _run_git("worktree", "list", "--porcelain", cwd=cwd, check=False)
+    if result.returncode != 0:
+        return None
+
+    # Parse porcelain output: blocks separated by blank lines
+    # Each block has: worktree <path>\nHEAD <sha>\nbranch <ref>\n
+    current_path = None
+    for line in result.stdout.split("\n"):
+        if line.startswith("worktree "):
+            current_path = Path(line[9:])
+        elif line.startswith("branch refs/heads/"):
+            worktree_branch = line[18:]  # Strip "branch refs/heads/"
+            if worktree_branch == branch and current_path:
+                return current_path
+            current_path = None
+
+    return None
+
+
 def find_parent_branch(task_branch: str, cwd: Path | None = None) -> str:
     """Walk up hierarchy to find first existing branch.
 
@@ -155,21 +179,31 @@ def merge_to_parent(
 ) -> MergeResult:
     """Merge task branch into parent with --no-ff.
 
-    Uses a temporary worktree for the parent branch to avoid changing
-    the main directory's checked-out branch.
+    Uses an existing worktree for the parent branch if available,
+    otherwise creates a temporary one. This allows child tasks to
+    merge back to a parent whose worktree is still active.
     """
     import tempfile
     import shutil
 
     git_root = cwd or get_git_root()
 
-    # Create a temporary worktree for the parent branch
-    temp_dir = tempfile.mkdtemp(prefix="arborist_merge_")
-    parent_worktree = Path(temp_dir) / "parent"
+    # Check if a worktree already exists for the parent branch
+    existing_worktree = find_worktree_for_branch(parent_branch, cwd=git_root)
+    using_existing = existing_worktree is not None
+
+    if using_existing:
+        parent_worktree = existing_worktree
+        temp_dir = None
+    else:
+        # Create a temporary worktree for the parent branch
+        temp_dir = tempfile.mkdtemp(prefix="arborist_merge_")
+        parent_worktree = Path(temp_dir) / "parent"
 
     try:
-        # Create worktree for parent branch
-        _run_git("worktree", "add", str(parent_worktree), parent_branch, cwd=git_root)
+        if not using_existing:
+            # Create worktree for parent branch
+            _run_git("worktree", "add", str(parent_worktree), parent_branch, cwd=git_root)
 
         # Attempt merge in the worktree
         result = _run_git(
@@ -200,15 +234,16 @@ def merge_to_parent(
     except subprocess.CalledProcessError as e:
         return MergeResult(success=False, message="Merge failed", error=e.stderr)
     finally:
-        # Clean up the temporary worktree
-        try:
-            _run_git("worktree", "remove", str(parent_worktree), "--force", cwd=git_root, check=False)
-        except Exception:
-            pass
-        try:
-            shutil.rmtree(temp_dir, ignore_errors=True)
-        except Exception:
-            pass
+        # Only clean up if we created a temporary worktree
+        if not using_existing and temp_dir:
+            try:
+                _run_git("worktree", "remove", str(parent_worktree), "--force", cwd=git_root, check=False)
+            except Exception:
+                pass
+            try:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+            except Exception:
+                pass
 
 
 def get_conflict_files(cwd: Path | None = None) -> list[str]:
