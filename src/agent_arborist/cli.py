@@ -33,6 +33,7 @@ from agent_arborist.home import (
 from agent_arborist.task_spec import parse_task_spec
 from agent_arborist.dag_builder import DagConfig, DagBuilder
 from agent_arborist.dag_generator import DagGenerator
+from agent_arborist import dagu_runs
 from agent_arborist.git_tasks import (
     get_worktree_path,
     find_parent_branch,
@@ -88,6 +89,103 @@ def echo_command(cmd: str, **kwargs: str | None) -> None:
             parts.append(f"{key}={value}")
 
     print(" | ".join(parts) if len(parts) > 1 else parts[0])
+
+
+def _print_dag_tree(dag_run: dagu_runs.DagRun, console: Console, prefix: str = "", is_last: bool = True) -> None:
+    """Print a DAG run and its children as a tree.
+
+    Args:
+        dag_run: The DAG run to print
+        console: Rich console for output
+        prefix: Prefix for tree drawing characters
+        is_last: Whether this is the last child at this level
+    """
+    from agent_arborist import dagu_runs
+
+    attempt = dag_run.latest_attempt
+    if not attempt:
+        return
+
+    # Print this DAG's steps
+    for i, step in enumerate(attempt.steps):
+        is_last_step = i == len(attempt.steps) - 1
+        has_children = step.child_dag_name and dag_run.children
+
+        # Determine tree characters
+        if is_last_step:
+            connector = "└──" if not prefix else prefix + "└──"
+            child_prefix = prefix + "    "
+        else:
+            connector = "├──" if not prefix else prefix + "├──"
+            child_prefix = prefix + "│   "
+
+        # Format status
+        status_name = step.status.to_name()
+        if step.status == dagu_runs.DaguStatus.SUCCESS:
+            status_str = f"[green]{status_name}[/green]"
+        elif step.status == dagu_runs.DaguStatus.FAILED:
+            status_str = f"[red]{status_name}[/red]"
+        elif step.status == dagu_runs.DaguStatus.RUNNING:
+            status_str = f"[yellow]{status_name}[/yellow]"
+        else:
+            status_str = status_name
+
+        # Format duration
+        duration_str = dagu_runs._format_duration(step.started_at, step.finished_at)
+
+        # Print step
+        line = f"{connector} {step.name} {status_str} ({duration_str})"
+        console.print(line)
+
+        # If this is a call step with children, print them
+        if step.child_dag_name:
+            # Find matching children
+            matching_children = [c for c in dag_run.children if c.dag_name == step.child_dag_name]
+
+            for child_idx, child in enumerate(matching_children):
+                is_last_child = child_idx == len(matching_children) - 1
+
+                # Determine child prefix
+                if is_last_step:
+                    child_connector = child_prefix + "└──"
+                    grandchild_prefix = child_prefix + "    "
+                else:
+                    child_connector = child_prefix + "├──"
+                    grandchild_prefix = child_prefix + "│   "
+
+                # Print child DAG name
+                child_attempt = child.latest_attempt
+                child_status = child_attempt.status.to_name() if child_attempt else "unknown"
+                child_duration = dagu_runs._format_duration(
+                    child_attempt.started_at, child_attempt.finished_at
+                ) if child_attempt else "N/A"
+
+                console.print(f"{child_connector} {child.dag_name} {child_status} ({child_duration})")
+
+                # Recursively print child's steps
+                for step_idx, child_step in enumerate(child_attempt.steps if child_attempt else []):
+                    is_last_grandchild = step_idx == len((child_attempt.steps if child_attempt else [])) - 1
+
+                    if is_last_grandchild:
+                        step_connector = grandchild_prefix + "└──"
+                    else:
+                        step_connector = grandchild_prefix + "├──"
+
+                    child_step_status = child_step.status.to_name()
+                    if child_step.status == dagu_runs.DaguStatus.SUCCESS:
+                        child_status_str = f"[green]{child_step_status}[/green]"
+                    elif child_step.status == dagu_runs.DaguStatus.FAILED:
+                        child_status_str = f"[red]{child_step_status}[/red]"
+                    elif child_step.status == dagu_runs.DaguStatus.RUNNING:
+                        child_status_str = f"[yellow]{child_step_status}[/yellow]"
+                    else:
+                        child_status_str = child_step_status
+
+                    child_step_duration = dagu_runs._format_duration(
+                        child_step.started_at, child_step.finished_at
+                    )
+
+                    console.print(f"{step_connector} {child_step.name} {child_status_str} ({child_step_duration})")
 
 
 @click.group()
@@ -1936,6 +2034,8 @@ def dag_run_status(
 @click.option("--run-id", "-r", help="Specific run ID (default: most recent)")
 @click.option("--logs", is_flag=True, help="Include step logs in output")
 @click.option("--step", "-s", help="Show details for a specific step")
+@click.option("--expand-subdags", "-e", is_flag=True, help="Expand sub-DAG tree hierarchy")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
 @click.pass_context
 def dag_run_show(
     ctx: click.Context,
@@ -1943,12 +2043,15 @@ def dag_run_show(
     run_id: str | None,
     logs: bool,
     step: str | None,
+    expand_subdags: bool,
+    as_json: bool,
 ) -> None:
     """Show details of a DAG run.
 
     DAG_NAME is the name of the DAG (default: current spec-id).
 
     Displays step-by-step execution details, timing, and optionally logs.
+    With --expand-subdags, shows the full hierarchy of sub-DAG executions.
     """
     spec_id = ctx.obj.get("spec_id")
     dagu_home = ctx.obj.get("dagu_home")
@@ -1964,6 +2067,8 @@ def dag_run_show(
             run_id=run_id or "latest",
             logs=str(logs),
             step=step or "all",
+            expand_subdags=str(expand_subdags),
+            json=str(as_json),
             dagu_home=str(dagu_home) if dagu_home else "none",
         )
         return
@@ -1991,6 +2096,119 @@ def dag_run_show(
     if not dagu_path:
         console.print("[red]Error:[/red] dagu not found in PATH")
         raise SystemExit(1)
+
+    # If using new options, use data layer instead of dagu CLI
+    if expand_subdags or as_json:
+        import json
+
+        # If no run_id specified, get the latest run
+        if not run_id:
+            runs = dagu_runs.list_dag_runs(Path(dagu_home), dag_name=resolved_dag_name, limit=1)
+            if not runs:
+                console.print(f"[dim]No runs found for DAG: {resolved_dag_name}[/dim]")
+                return
+            run_id = runs[0].run_id
+
+        # Load the DAG run with optional sub-DAG expansion
+        dag_run = dagu_runs.load_dag_run(
+            Path(dagu_home), resolved_dag_name, run_id, expand_subdags=expand_subdags
+        )
+
+        if not dag_run:
+            console.print(f"[red]Error:[/red] DAG run not found: {resolved_dag_name} ({run_id})")
+            raise SystemExit(1)
+
+        attempt = dag_run.latest_attempt
+        if not attempt:
+            console.print(f"[dim]No attempt data available for run: {run_id}[/dim]")
+            return
+
+        if as_json:
+            # Output as JSON
+            json_data = {
+                "dag_name": dag_run.dag_name,
+                "run_id": dag_run.run_id,
+                "status": attempt.status.to_name(),
+                "started_at": attempt.started_at.isoformat() if attempt.started_at else None,
+                "finished_at": attempt.finished_at.isoformat() if attempt.finished_at else None,
+            }
+
+            # Add duration
+            if attempt.started_at and attempt.finished_at:
+                duration_seconds = (attempt.finished_at - attempt.started_at).total_seconds()
+                json_data["duration_seconds"] = duration_seconds
+
+            # Add steps
+            json_data["steps"] = []
+            for step in attempt.steps:
+                step_data = {
+                    "name": step.name,
+                    "status": step.status.to_name(),
+                    "started_at": step.started_at.isoformat() if step.started_at else None,
+                    "finished_at": step.finished_at.isoformat() if step.finished_at else None,
+                }
+                if step.child_dag_name:
+                    step_data["child_dag_name"] = step.child_dag_name
+                    step_data["child_run_ids"] = step.child_run_ids
+                json_data["steps"].append(step_data)
+
+            # Add children if expanded
+            if expand_subdags:
+                json_data["children"] = []
+                for child in dag_run.children:
+                    child_attempt = child.latest_attempt
+                    child_data = {
+                        "dag_name": child.dag_name,
+                        "run_id": child.run_id,
+                        "status": child_attempt.status.to_name() if child_attempt else "unknown",
+                        "started_at": child_attempt.started_at.isoformat() if child_attempt and child_attempt.started_at else None,
+                        "finished_at": child_attempt.finished_at.isoformat() if child_attempt and child_attempt.finished_at else None,
+                        "parent_dag_name": child.parent_dag_name,
+                        "parent_dag_id": child.parent_dag_id,
+                        "root_dag_name": child.root_dag_name,
+                        "root_dag_id": child.root_dag_id,
+                    }
+
+                    # Add child steps
+                    if child_attempt:
+                        child_data["steps"] = []
+                        for step in child_attempt.steps:
+                            child_step_data = {
+                                "name": step.name,
+                                "status": step.status.to_name(),
+                                "started_at": step.started_at.isoformat() if step.started_at else None,
+                                "finished_at": step.finished_at.isoformat() if step.finished_at else None,
+                            }
+                            child_data["steps"].append(child_step_data)
+
+                    json_data["children"].append(child_data)
+
+            console.print(json.dumps(json_data, indent=2))
+        else:
+            # Output as tree with expanded sub-DAGs
+            console.print(f"[bold cyan]{dag_run.dag_name}[/bold cyan]")
+            console.print(f"[dim]Run ID:[/dim] {dag_run.run_id}")
+
+            # Format status
+            status_name = attempt.status.to_name()
+            if attempt.status == dagu_runs.DaguStatus.SUCCESS:
+                status_display = f"[green]{status_name}[/green]"
+            elif attempt.status == dagu_runs.DaguStatus.FAILED:
+                status_display = f"[red]{status_name}[/red]"
+            elif attempt.status == dagu_runs.DaguStatus.RUNNING:
+                status_display = f"[yellow]{status_name}[/yellow]"
+            else:
+                status_display = status_name
+
+            duration_str = dagu_runs._format_duration(attempt.started_at, attempt.finished_at)
+            console.print(f"[dim]Status:[/dim] {status_display}")
+            console.print(f"[dim]Duration:[/dim] {duration_str}")
+
+            # Show sub-DAG hierarchy
+            console.print("\n[bold]Sub-DAG Hierarchy:[/bold]")
+            _print_dag_tree(dag_run, console=console, prefix="")
+
+        return
 
     # Build environment
     env = os.environ.copy()
@@ -2077,6 +2295,132 @@ def dag_run_show(
     except Exception as e:
         console.print(f"[red]Error:[/red] {e}")
         raise SystemExit(1)
+
+
+@dag.command("run-list")
+@click.option("--limit", "-n", default=20, help="Limit number of results")
+@click.option("--dag-name", "-d", help="Filter by specific DAG name")
+@click.option(
+    "--status",
+    "-s",
+    type=click.Choice(
+        ["pending", "running", "failed", "skipped", "success"], case_sensitive=False
+    ),
+    help="Filter by status",
+)
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+@click.pass_context
+def dag_run_list(
+    ctx: click.Context,
+    limit: int,
+    dag_name: str | None,
+    status: str | None,
+    as_json: bool,
+) -> None:
+    """List DAG runs with status, timing, and run IDs.
+
+    Shows historical DAG executions from the local Dagu data directory.
+    Can filter by DAG name and status. Output as table or JSON.
+    """
+    import json
+
+    dagu_home = ctx.obj.get("dagu_home")
+
+    if ctx.obj.get("echo_for_testing"):
+        echo_command(
+            "dag run-list",
+            dagu_home=str(dagu_home) if dagu_home else "none",
+            limit=str(limit),
+            dag_name=dag_name or "all",
+            status=status or "all",
+            json=str(as_json),
+        )
+        return
+
+    # Check DAGU_HOME is set
+    if not dagu_home:
+        console.print("[red]Error:[/red] DAGU_HOME not set")
+        console.print("Run 'arborist init' first to initialize the project")
+        raise SystemExit(1)
+
+    # Convert status string to enum if provided
+    status_filter = None
+    if status:
+        status_filter = dagu_runs.DaguStatus.from_name(status)
+        if status_filter is None:
+            console.print(f"[red]Error:[/red] Invalid status: {status}")
+            raise SystemExit(1)
+
+    # Load runs
+    runs = dagu_runs.list_dag_runs(
+        Path(dagu_home), dag_name=dag_name, status=status_filter, limit=limit
+    )
+
+    if not runs:
+        console.print("[dim]No DAG runs found[/dim]")
+        return
+
+    if as_json:
+        # Output as JSON
+        json_runs = []
+        for run in runs:
+            attempt = run.latest_attempt
+            json_run = {
+                "dag_name": run.dag_name,
+                "run_id": run.run_id,
+                "status": attempt.status.to_name() if attempt else "unknown",
+                "started_at": attempt.started_at.isoformat() if attempt and attempt.started_at else None,
+                "finished_at": attempt.finished_at.isoformat() if attempt and attempt.finished_at else None,
+            }
+            # Calculate duration
+            if attempt and attempt.started_at and attempt.finished_at:
+                duration_seconds = (attempt.finished_at - attempt.started_at).total_seconds()
+                json_run["duration_seconds"] = duration_seconds
+            json_runs.append(json_run)
+
+        console.print(json.dumps(json_runs, indent=2))
+    else:
+        # Output as table
+        table = Table(title="DAG Runs")
+        table.add_column("DAG", style="cyan")
+        table.add_column("Run ID", style="dim")
+        table.add_column("Status", style="bold")
+        table.add_column("Started")
+        table.add_column("Duration")
+
+        for run in runs:
+            attempt = run.latest_attempt
+            if not attempt:
+                continue
+
+            # Format status with color
+            status_name = attempt.status.to_name()
+            if attempt.status == dagu_runs.DaguStatus.SUCCESS:
+                status_display = f"[green]{status_name}[/green]"
+            elif attempt.status == dagu_runs.DaguStatus.FAILED:
+                status_display = f"[red]{status_name}[/red]"
+            elif attempt.status == dagu_runs.DaguStatus.RUNNING:
+                status_display = f"[yellow]{status_name}[/yellow]"
+            else:
+                status_display = status_name
+
+            # Format start time
+            if attempt.started_at:
+                started_str = attempt.started_at.strftime("%Y-%m-%d %H:%M")
+            else:
+                started_str = "N/A"
+
+            # Format duration
+            duration_str = dagu_runs._format_duration(
+                attempt.started_at, attempt.finished_at
+            )
+
+            # Truncate run ID for display
+            run_id_short = run.run_id[:8] if len(run.run_id) > 8 else run.run_id
+
+            table.add_row(run.dag_name, run_id_short, status_display, started_str, duration_str)
+
+        console.print(table)
 
 
 @dag.command("dashboard")

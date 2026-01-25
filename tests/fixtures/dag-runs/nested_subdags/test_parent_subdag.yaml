@@ -1,0 +1,11 @@
+name: test_parent_subdag
+description: Intermediate sub-DAG that calls another sub-DAG
+steps:
+  - name: parent-step1
+    command: echo "parent step1"
+  - name: call-nested
+    call: test_nested_subdag
+    depends: [parent-step1]
+  - name: parent-step2
+    command: echo "parent step2"
+    depends: [call-nested]

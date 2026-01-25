@@ -1,0 +1,19 @@
+name: test_with_subdags
+description: Parent DAG with parallel sub-DAG calls
+env:
+  - TEST_MODE=subdags
+steps:
+  - name: setup
+    command: echo "parent setup"
+  - name: call-subdag1
+    call: test_subdag1
+    depends: [setup]
+  - name: call-subdag2
+    call: test_subdag2
+    depends: [setup]
+  - name: call-subdag3
+    call: test_subdag3
+    depends: [setup]
+  - name: finalize
+    command: echo "parent finalize"
+    depends: [call-subdag1, call-subdag2, call-subdag3]

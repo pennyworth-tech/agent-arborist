@@ -1,0 +1,8 @@
+name: test_nested
+description: DAG with nested sub-DAG calls
+steps:
+  - name: setup
+    command: echo "setup"
+  - name: call-parent-subdag
+    call: test_parent_subdag
+    depends: [setup]

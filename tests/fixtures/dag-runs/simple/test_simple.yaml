@@ -1,0 +1,16 @@
+name: test_simple
+description: Simple linear test DAG
+env:
+  - TEST_MODE=simple
+steps:
+  - name: setup
+    command: echo "setup"
+  - name: step1
+    command: echo "step1"
+    depends: [setup]
+  - name: step2
+    command: echo "step2"
+    depends: [step1]
+  - name: teardown
+    command: echo "teardown"
+    depends: [step2]
