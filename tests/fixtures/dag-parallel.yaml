@@ -16,6 +16,7 @@ name: T001
 steps:
   - name: pre-sync
     command: arborist task pre-sync T001
+    output: T001_PRE_SYNC_RESULT
   - name: c-T002
     call: T002
     depends: [pre-sync]
@@ -31,62 +32,91 @@ steps:
       arborist task post-merge T001 &&
       arborist task post-cleanup T001
     depends: [c-T002, c-T003, c-T004]
+    output: T001_COMPLETE_RESULT
 ---
 name: T002
 steps:
   - name: pre-sync
     command: arborist task pre-sync T002
+    output: T002_PRE_SYNC_RESULT
   - name: run
     command: arborist task run T002
     depends: [pre-sync]
+    output: T002_RUN_RESULT
+  - name: commit
+    command: arborist task commit T002
+    depends: [run]
+    output: T002_COMMIT_RESULT
   - name: run-test
     command: arborist task run-test T002
-    depends: [run]
+    depends: [commit]
+    output: T002_RUN_TEST_RESULT
   - name: post-merge
     command: arborist task post-merge T002
     depends: [run-test]
+    output: T002_POST_MERGE_RESULT
   - name: post-cleanup
     command: arborist task post-cleanup T002
     depends: [post-merge]
+    output: T002_POST_CLEANUP_RESULT
 ---
 name: T003
 steps:
   - name: pre-sync
     command: arborist task pre-sync T003
+    output: T003_PRE_SYNC_RESULT
   - name: run
     command: arborist task run T003
     depends: [pre-sync]
+    output: T003_RUN_RESULT
+  - name: commit
+    command: arborist task commit T003
+    depends: [run]
+    output: T003_COMMIT_RESULT
   - name: run-test
     command: arborist task run-test T003
-    depends: [run]
+    depends: [commit]
+    output: T003_RUN_TEST_RESULT
   - name: post-merge
     command: arborist task post-merge T003
     depends: [run-test]
+    output: T003_POST_MERGE_RESULT
   - name: post-cleanup
     command: arborist task post-cleanup T003
     depends: [post-merge]
+    output: T003_POST_CLEANUP_RESULT
 ---
 name: T004
 steps:
   - name: pre-sync
     command: arborist task pre-sync T004
+    output: T004_PRE_SYNC_RESULT
   - name: run
     command: arborist task run T004
     depends: [pre-sync]
+    output: T004_RUN_RESULT
+  - name: commit
+    command: arborist task commit T004
+    depends: [run]
+    output: T004_COMMIT_RESULT
   - name: run-test
     command: arborist task run-test T004
-    depends: [run]
+    depends: [commit]
+    output: T004_RUN_TEST_RESULT
   - name: post-merge
     command: arborist task post-merge T004
     depends: [run-test]
+    output: T004_POST_MERGE_RESULT
   - name: post-cleanup
     command: arborist task post-cleanup T004
     depends: [post-merge]
+    output: T004_POST_CLEANUP_RESULT
 ---
 name: T005
 steps:
   - name: pre-sync
     command: arborist task pre-sync T005
+    output: T005_PRE_SYNC_RESULT
   - name: c-T006
     call: T006
     depends: [pre-sync]
@@ -96,20 +126,30 @@ steps:
       arborist task post-merge T005 &&
       arborist task post-cleanup T005
     depends: [c-T006]
+    output: T005_COMPLETE_RESULT
 ---
 name: T006
 steps:
   - name: pre-sync
     command: arborist task pre-sync T006
+    output: T006_PRE_SYNC_RESULT
   - name: run
     command: arborist task run T006
     depends: [pre-sync]
+    output: T006_RUN_RESULT
+  - name: commit
+    command: arborist task commit T006
+    depends: [run]
+    output: T006_COMMIT_RESULT
   - name: run-test
     command: arborist task run-test T006
-    depends: [run]
+    depends: [commit]
+    output: T006_RUN_TEST_RESULT
   - name: post-merge
     command: arborist task post-merge T006
     depends: [run-test]
+    output: T006_POST_MERGE_RESULT
   - name: post-cleanup
     command: arborist task post-cleanup T006
     depends: [post-merge]
+    output: T006_POST_CLEANUP_RESULT

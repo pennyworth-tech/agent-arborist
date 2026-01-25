@@ -24,6 +24,7 @@ class SubDagStep:
     command: str | None = None  # Command to execute (None if calling subdag)
     call: str | None = None  # Subdag name to call (None if command step)
     depends: list[str] = field(default_factory=list)
+    output: str | None = None  # Dagu output variable name for stdout capture
 
 
 @dataclass
@@ -142,36 +143,49 @@ class SubDagBuilder:
 
         Leaf subdags have 6 steps in sequence:
         pre-sync -> run -> commit -> run-test -> post-merge -> post-cleanup
+
+        Each step captures its JSON output via Dagu's output: field.
         """
+
+        def output_var(step: str) -> str:
+            """Generate output variable name for a step."""
+            return f"{task_id}_{step.upper().replace('-', '_')}_RESULT"
+
         steps = [
             SubDagStep(
                 name="pre-sync",
                 command=f"arborist task pre-sync {task_id}",
+                output=output_var("pre-sync"),
             ),
             SubDagStep(
                 name="run",
                 command=f"arborist task run {task_id}",
                 depends=["pre-sync"],
+                output=output_var("run"),
             ),
             SubDagStep(
                 name="commit",
                 command=f"arborist task commit {task_id}",
                 depends=["run"],
+                output=output_var("commit"),
             ),
             SubDagStep(
                 name="run-test",
                 command=f"arborist task run-test {task_id}",
                 depends=["commit"],
+                output=output_var("run-test"),
             ),
             SubDagStep(
                 name="post-merge",
                 command=f"arborist task post-merge {task_id}",
                 depends=["run-test"],
+                output=output_var("post-merge"),
             ),
             SubDagStep(
                 name="post-cleanup",
                 command=f"arborist task post-cleanup {task_id}",
                 depends=["post-merge"],
+                output=output_var("post-cleanup"),
             ),
         ]
 
@@ -185,12 +199,18 @@ class SubDagBuilder:
         - calls to all children (parallel - all depend on pre-sync)
         - complete step (depends on all children)
         """
+
+        def output_var(step: str) -> str:
+            """Generate output variable name for a step."""
+            return f"{task_id}_{step.upper().replace('-', '_')}_RESULT"
+
         steps: list[SubDagStep] = []
 
         # Pre-sync step
         steps.append(SubDagStep(
             name="pre-sync",
             command=f"arborist task pre-sync {task_id}",
+            output=output_var("pre-sync"),
         ))
 
         # Get children sorted by ID
@@ -220,6 +240,7 @@ arborist task post-cleanup {task_id}"""
             name="complete",
             command=complete_command,
             depends=child_call_names,
+            output=output_var("complete"),
         ))
 
         return SubDag(name=task_id, steps=steps)
@@ -234,6 +255,8 @@ arborist task post-cleanup {task_id}"""
             d["call"] = step.call
         if step.depends:
             d["depends"] = step.depends
+        if step.output is not None:
+            d["output"] = step.output
 
         return d
 
