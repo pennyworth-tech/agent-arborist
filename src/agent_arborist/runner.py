@@ -106,7 +106,7 @@ class ClaudeRunner(Runner):
             )
 
         try:
-            cmd = [path, "-p", prompt]
+            cmd = [path, "--dangerously-skip-permissions", "-p", prompt]
             if self.model:
                 cmd.extend(["--model", self.model])
 
@@ -168,6 +168,7 @@ class OpencodeRunner(Runner):
 
         try:
             # OpenCode uses 'run' subcommand for non-interactive mode
+            # TODO: skip permissions can be set in target repo opencode.json file
             cmd = [path, "run"]
             if self.model:
                 cmd.extend(["-m", self.model])
@@ -231,7 +232,7 @@ class GeminiRunner(Runner):
 
         try:
             # Gemini CLI uses positional prompt argument
-            cmd = [path]
+            cmd = [path, "--yolo"]
             if self.model:
                 cmd.extend(["-m", self.model])
             cmd.append(prompt)
