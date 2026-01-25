@@ -63,6 +63,15 @@ from agent_arborist.task_state import (
     get_task_status_summary,
     build_task_tree_from_yaml,
 )
+from agent_arborist.step_results import (
+    StepResult,
+    PreSyncResult,
+    RunResult,
+    CommitResult,
+    RunTestResult,
+    PostMergeResult,
+    PostCleanupResult,
+)
 
 console = Console()
 
@@ -89,6 +98,168 @@ def echo_command(cmd: str, **kwargs: str | None) -> None:
             parts.append(f"{key}={value}")
 
     print(" | ".join(parts) if len(parts) > 1 else parts[0])
+
+
+def output_result(result: StepResult, ctx: click.Context) -> None:
+    """Output step result in appropriate format.
+
+    JSON goes to stdout (for Dagu capture).
+    Text format uses rich console for human-readable output.
+    """
+    output_format = ctx.obj.get("output_format", "json")
+
+    if output_format == "json":
+        # JSON output to stdout for Dagu capture
+        print(result.to_json())
+    else:
+        # Human-readable text using rich console
+        _output_text_result(result, ctx)
+
+
+def _count_changed_files(worktree_path: Path) -> int:
+    """Count files changed in worktree since last commit."""
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--name-only", "HEAD~1"],
+            cwd=worktree_path,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            return len([f for f in result.stdout.strip().split("\n") if f])
+    except Exception:
+        pass
+    return 0
+
+
+def _get_last_commit_message(worktree_path: Path, task_id: str) -> str | None:
+    """Get last commit message if it matches expected task format."""
+    try:
+        result = subprocess.run(
+            ["git", "log", "-1", "--format=%s"],
+            cwd=worktree_path,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            msg = result.stdout.strip()
+            if msg.startswith(f"task({task_id}):"):
+                return msg
+    except Exception:
+        pass
+    return None
+
+
+def _get_head_sha(worktree_path: Path) -> str | None:
+    """Get the HEAD commit SHA."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=worktree_path,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return None
+
+
+def _count_staged_files(worktree_path: Path) -> int:
+    """Count files staged for commit."""
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--cached", "--name-only"],
+            cwd=worktree_path,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            return len([f for f in result.stdout.strip().split("\n") if f])
+    except Exception:
+        pass
+    return 0
+
+
+def _output_text_result(result: StepResult, ctx: click.Context) -> None:
+    """Output result in human-readable text format."""
+    quiet = ctx.obj.get("quiet", False)
+
+    if isinstance(result, PreSyncResult):
+        if result.success:
+            console.print(f"[green]OK:[/green] Task synced at {result.worktree_path}")
+            if not quiet:
+                console.print(f"  Branch: {result.branch}")
+                console.print(f"  Parent: {result.parent_branch}")
+        else:
+            console.print(f"[red]Error:[/red] Pre-sync failed")
+            if result.error:
+                console.print(f"[dim]{result.error}[/dim]")
+
+    elif isinstance(result, RunResult):
+        if result.success:
+            console.print(f"[green]OK:[/green] Task executed successfully")
+            if not quiet:
+                console.print(f"  Files changed: {result.files_changed}")
+                console.print(f"  Duration: {result.duration_seconds:.1f}s")
+                if result.commit_message:
+                    console.print(f"  Commit: {result.commit_message}")
+        else:
+            console.print(f"[red]Error:[/red] Task execution failed")
+            if result.error:
+                console.print(f"[dim]{result.error}[/dim]")
+
+    elif isinstance(result, CommitResult):
+        if result.success:
+            console.print(f"[green]OK:[/green] Commit created")
+            if not quiet and result.commit_sha:
+                console.print(f"  SHA: {result.commit_sha[:8]}")
+                console.print(f"  Message: {result.message}")
+        else:
+            console.print(f"[red]Error:[/red] Commit failed")
+            if result.error:
+                console.print(f"[dim]{result.error}[/dim]")
+
+    elif isinstance(result, RunTestResult):
+        if result.success:
+            console.print(f"[green]OK:[/green] Tests passed")
+            if not quiet:
+                if result.test_count is not None:
+                    console.print(f"  Total: {result.test_count}")
+                if result.passed is not None:
+                    console.print(f"  Passed: {result.passed}")
+        else:
+            console.print(f"[red]Error:[/red] Tests failed")
+            if result.failed is not None:
+                console.print(f"  Failed: {result.failed}")
+            if result.error:
+                console.print(f"[dim]{result.error}[/dim]")
+
+    elif isinstance(result, PostMergeResult):
+        if result.success:
+            console.print(f"[green]OK:[/green] Merged {result.source_branch} -> {result.merged_into}")
+            if not quiet and result.commit_sha:
+                console.print(f"  SHA: {result.commit_sha[:8]}")
+        else:
+            console.print(f"[red]Error:[/red] Merge failed")
+            if result.conflicts:
+                console.print(f"  Conflicts: {', '.join(result.conflicts)}")
+            if result.error:
+                console.print(f"[dim]{result.error}[/dim]")
+
+    elif isinstance(result, PostCleanupResult):
+        if result.success:
+            console.print(f"[green]OK:[/green] Cleanup complete")
+            if not quiet:
+                if result.worktree_removed:
+                    console.print("  Worktree removed")
+                if result.branch_deleted:
+                    console.print("  Branch deleted")
+        else:
+            console.print(f"[yellow]Warning:[/yellow] Cleanup incomplete")
+            if result.error:
+                console.print(f"[dim]{result.error}[/dim]")
 
 
 def _print_dag_tree(dag_run: dagu_runs.DagRun, console: Console, prefix: str = "", is_last: bool = True) -> None:
@@ -192,9 +363,16 @@ def _print_dag_tree(dag_run: dagu_runs.DagRun, console: Console, prefix: str = "
 @click.option("--quiet", "-q", is_flag=True, help="Suppress non-essential output")
 @click.option("--home", envvar="ARBORIST_HOME", help="Override arborist home directory")
 @click.option("--spec", "-s", envvar="ARBORIST_SPEC", help="Spec name (auto-detected from git branch if not set)")
+@click.option(
+    "--format", "-f", "output_format",
+    type=click.Choice(["json", "text"]),
+    default="json",
+    envvar="ARBORIST_OUTPUT_FORMAT",
+    help="Output format: json (default) or text"
+)
 @click.option("--echo-for-testing", is_flag=True, hidden=True, help="Echo command info and exit (for testing)")
 @click.pass_context
-def main(ctx: click.Context, quiet: bool, home: str | None, spec: str | None, echo_for_testing: bool) -> None:
+def main(ctx: click.Context, quiet: bool, home: str | None, spec: str | None, output_format: str, echo_for_testing: bool) -> None:
     """Agent Arborist - Automated Task Tree Executor.
 
     Orchestrate DAG workflows with Claude Code and Dagu.
@@ -203,6 +381,7 @@ def main(ctx: click.Context, quiet: bool, home: str | None, spec: str | None, ec
     ctx.obj["quiet"] = quiet
     ctx.obj["home_override"] = home
     ctx.obj["spec_override"] = spec
+    ctx.obj["output_format"] = output_format
     ctx.obj["echo_for_testing"] = echo_for_testing
 
     # Set DAGU_HOME if arborist is initialized
@@ -558,22 +737,27 @@ def task_pre_sync(ctx: click.Context, task_id: str) -> None:
         )
         return
 
-    if not ctx.obj.get("quiet"):
-        console.print(f"[cyan]Syncing task {task_id}...[/cyan]")
-        console.print(f"[dim]Branch: {task_info.branch}[/dim]")
-        console.print(f"[dim]Parent: {task_info.parent_branch}[/dim]")
-
     # Sync the task (create worktree and sync from parent)
     result = sync_task(task_info.branch, task_info.parent_branch, worktree_path)
 
+    # Build step result
+    step_result = PreSyncResult(
+        success=result.success,
+        worktree_path=str(worktree_path),
+        branch=task_info.branch,
+        parent_branch=task_info.parent_branch,
+        created_worktree=worktree_path.exists(),
+        synced_from_parent=result.success,
+        error=result.error if not result.success else None,
+    )
+
+    # Output result
+    output_result(step_result, ctx)
+
     if result.success:
-        console.print(f"[green]OK:[/green] {result.message}")
         # Update state
         update_task_status(manifest.spec_id, task_id, "running", branch=task_info.branch, worktree=str(worktree_path))
     else:
-        console.print(f"[red]Error:[/red] {result.message}")
-        if result.error:
-            console.print(f"[dim]{result.error}[/dim]")
         raise SystemExit(1)
 
 
@@ -666,6 +850,8 @@ IMPORTANT:
 - Make exactly ONE commit with all your changes
 """
 
+    import time
+
     # Get runner (model comes from environment default)
     runner_instance = get_runner(runner_type)
 
@@ -673,21 +859,31 @@ IMPORTANT:
         console.print(f"[red]Error:[/red] {runner_type} not found in PATH")
         raise SystemExit(1)
 
-    if not ctx.obj.get("quiet"):
-        console.print(f"[cyan]Running task {task_id} with {runner_type}...[/cyan]")
-        console.print(f"[dim]Worktree: {worktree_path}[/dim]")
-
     # Run the AI in the worktree directory
+    start_time = time.time()
     result = runner_instance.run(prompt, timeout=timeout, cwd=worktree_path)
+    duration = time.time() - start_time
 
-    if result.success:
-        console.print(f"[green]OK:[/green] Task {task_id} completed")
-        if result.output and not ctx.obj.get("quiet"):
-            console.print(f"\n[dim]Output:[/dim]\n{result.output[:1000]}")
-    else:
-        console.print(f"[red]Error:[/red] Task failed")
-        if result.error:
-            console.print(f"[dim]{result.error}[/dim]")
+    # Gather metrics for output
+    files_changed = _count_changed_files(worktree_path)
+    commit_message = _get_last_commit_message(worktree_path, task_id)
+
+    # Build step result
+    step_result = RunResult(
+        success=result.success,
+        files_changed=files_changed,
+        commit_message=commit_message,
+        summary=result.output[:500] if result.output else "",
+        runner=runner_type,
+        model=resolved_model,
+        duration_seconds=round(duration, 2),
+        error=result.error if not result.success else None,
+    )
+
+    # Output result
+    output_result(step_result, ctx)
+
+    if not result.success:
         update_task_status(manifest.spec_id, task_id, "failed", error=result.error)
         raise SystemExit(1)
 
@@ -769,18 +965,21 @@ def task_commit(ctx: click.Context, task_id: str) -> None:
     # Check if AI already committed with proper format
     ai_committed = last_msg.startswith(f"task({task_id}):")
 
-    if ai_committed and not has_staged and not has_unstaged:
-        console.print(f"[green]OK:[/green] AI committed: {last_msg[:60]}...")
-        return
+    was_fallback = False
+    commit_msg = last_msg
+    error_msg = None
 
-    # If there are changes, we need to commit them
-    if has_staged or has_unstaged:
+    if ai_committed and not has_staged and not has_unstaged:
+        # AI committed successfully, nothing more to do
+        pass
+    elif has_staged or has_unstaged:
         # Stage any unstaged changes
         if has_unstaged:
             subprocess.run(["git", "add", "-A"], cwd=worktree_path, check=True)
 
         # Create fallback commit message
         commit_msg = f"task({task_id}): {task_description}\n\n(fallback commit - AI did not commit)"
+        was_fallback = True
 
         try:
             subprocess.run(
@@ -790,15 +989,33 @@ def task_commit(ctx: click.Context, task_id: str) -> None:
                 text=True,
                 check=True,
             )
-            console.print(f"[yellow]OK:[/yellow] Fallback commit: task({task_id}): {task_description}")
         except subprocess.CalledProcessError as e:
-            console.print(f"[red]Error:[/red] Commit failed")
-            if e.stderr:
-                console.print(f"[dim]{e.stderr}[/dim]")
+            error_msg = e.stderr if e.stderr else "Commit failed"
+            step_result = CommitResult(
+                success=False,
+                commit_sha=None,
+                message=commit_msg,
+                files_staged=_count_staged_files(worktree_path),
+                was_fallback=was_fallback,
+                error=error_msg,
+            )
+            output_result(step_result, ctx)
             raise SystemExit(1)
     else:
-        # No changes and no AI commit - nothing to do
-        console.print(f"[dim]No changes to commit for {task_id}[/dim]")
+        # No changes and no AI commit - success with no changes
+        pass
+
+    # Build step result
+    step_result = CommitResult(
+        success=True,
+        commit_sha=_get_head_sha(worktree_path),
+        message=commit_msg,
+        files_staged=_count_staged_files(worktree_path) if was_fallback else 0,
+        was_fallback=was_fallback,
+    )
+
+    # Output result
+    output_result(step_result, ctx)
 
 
 @task.command("run-test")
@@ -864,20 +1081,29 @@ def task_run_test(ctx: click.Context, task_id: str, cmd: str | None) -> None:
     # Detect or use provided test command
     test_cmd = cmd or detect_test_command(worktree_path)
     if not test_cmd:
-        console.print("[dim]No test command detected, skipping tests[/dim]")
+        # No tests - success with no tests
+        step_result = RunTestResult(
+            success=True,
+            test_command=None,
+            output_summary="No test command detected, skipping tests",
+        )
+        output_result(step_result, ctx)
         return
-
-    if not ctx.obj.get("quiet"):
-        console.print(f"[cyan]Running tests: {test_cmd}[/cyan]")
 
     result = run_tests(worktree_path, test_cmd)
 
-    if result.success:
-        console.print(f"[green]OK:[/green] {result.message}")
-    else:
-        console.print(f"[red]FAIL:[/red] {result.message}")
-        if result.error:
-            console.print(f"[dim]{result.error[:500]}[/dim]")
+    # Build step result
+    step_result = RunTestResult(
+        success=result.success,
+        test_command=test_cmd,
+        output_summary=result.message[:500] if result.message else "",
+        error=result.error if not result.success else None,
+    )
+
+    # Output result
+    output_result(step_result, ctx)
+
+    if not result.success:
         raise SystemExit(1)
 
 
@@ -1005,22 +1231,23 @@ Do NOT push. Just complete the merge and commit locally.
         except Exception:
             pass
 
+    # Build step result
+    step_result = PostMergeResult(
+        success=result.success,
+        merged_into=parent_branch,
+        source_branch=task_branch,
+        commit_sha=_get_head_sha(parent_worktree) if result.success and not created_worktree else None,
+        conflicts=[],  # AI should have resolved any conflicts
+        conflict_resolved=False,
+        error=result.error if not result.success else None,
+    )
+
+    # Output result
+    output_result(step_result, ctx)
+
     if result.success:
-        console.print(f"[green]OK:[/green] Merged {task_branch} → {parent_branch}")
-        if result.output and not ctx.obj.get("quiet"):
-            # Show abbreviated output
-            lines = result.output.strip().split('\n')
-            if len(lines) > 10:
-                console.print(f"[dim]{chr(10).join(lines[:5])}[/dim]")
-                console.print(f"[dim]... ({len(lines) - 10} more lines) ...[/dim]")
-                console.print(f"[dim]{chr(10).join(lines[-5:])}[/dim]")
-            else:
-                console.print(f"[dim]{result.output[:500]}[/dim]")
         update_task_status(manifest.spec_id, task_id, "complete")
     else:
-        console.print(f"[red]Error:[/red] Merge failed")
-        if result.error:
-            console.print(f"[dim]{result.error[:500]}[/dim]")
         update_task_status(manifest.spec_id, task_id, "failed", error="Merge failed")
         raise SystemExit(1)
 
@@ -1063,23 +1290,27 @@ def task_post_cleanup(ctx: click.Context, task_id: str, keep_branch: bool) -> No
         )
         return
 
-    if not ctx.obj.get("quiet"):
-        console.print(f"[cyan]Cleaning up task {task_id}...[/cyan]")
-
     result = cleanup_task(task_branch, worktree_path, delete_branch=not keep_branch)
 
+    # Build step result
+    step_result = PostCleanupResult(
+        success=result.success,
+        worktree_removed=not worktree_path.exists(),
+        branch_deleted=not keep_branch and not branch_exists(task_branch),
+        cleaned_up=result.success,
+        error=result.error if not result.success else None,
+    )
+
+    # Output result
+    output_result(step_result, ctx)
+
     if result.success:
-        console.print(f"[green]OK:[/green] {result.message}")
         # Clear worktree from state
         tree = load_task_tree(manifest.spec_id)
         if tree:
             task_node = tree.get_task(task_id)
             if task_node:
                 update_task_status(manifest.spec_id, task_id, task_node.status, worktree=None)
-    else:
-        console.print(f"[yellow]WARN:[/yellow] {result.message}")
-        if result.error:
-            console.print(f"[dim]{result.error}[/dim]")
 
 
 # -----------------------------------------------------------------------------
