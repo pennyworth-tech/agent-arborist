@@ -298,7 +298,7 @@ class TestValidateAndFixMultiDoc:
         documents = [
             {
                 "name": "root",
-                "steps": [{"name": "call-T001", "call": "T001"}],
+                "steps": [{"name": "c-T001", "call": "T001"}],
             },
             {
                 "name": "T001",

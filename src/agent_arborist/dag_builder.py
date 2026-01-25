@@ -98,11 +98,11 @@ class SubDagBuilder:
         prev_step = "branches-setup"
         for task_id in root_task_ids:
             steps.append(SubDagStep(
-                name=f"call-{task_id}",
+                name=f"c-{task_id}",
                 call=task_id,
                 depends=[prev_step],
             ))
-            prev_step = f"call-{task_id}"
+            prev_step = f"c-{task_id}"
 
         # Create root DAG
         spec_id = self.config.spec_id or self.config.name
@@ -203,7 +203,7 @@ class SubDagBuilder:
 
         # Add parallel calls to all children (all depend on pre-sync)
         for child_id in child_ids:
-            call_name = f"call-{child_id}"
+            call_name = f"c-{child_id}"
             child_call_names.append(call_name)
             steps.append(SubDagStep(
                 name=call_name,

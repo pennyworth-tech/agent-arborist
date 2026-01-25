@@ -24,7 +24,7 @@ class TestSubDagStep:
         assert step.depends == []
 
     def test_call_step(self):
-        step = SubDagStep(name="call-T001", call="T001", depends=["pre-sync"])
+        step = SubDagStep(name="c-T001", call="T001", depends=["pre-sync"])
         assert step.call == "T001"
         assert step.command is None
         assert step.depends == ["pre-sync"]
@@ -186,13 +186,13 @@ class TestSubDagBuilder:
 
         assert subdag.name == "T001"
 
-        # Should have: pre-sync, call-T002, call-T003, complete
+        # Should have: pre-sync, c-T002, c-T003, complete
         assert len(subdag.steps) == 4
 
         step_names = [s.name for s in subdag.steps]
         assert "pre-sync" in step_names
-        assert "call-T002" in step_names
-        assert "call-T003" in step_names
+        assert "c-T002" in step_names
+        assert "c-T003" in step_names
         assert "complete" in step_names
 
         # Verify pre-sync has no deps
@@ -200,16 +200,16 @@ class TestSubDagBuilder:
         assert pre_sync.depends == []
 
         # Verify calls depend on pre-sync (parallel)
-        call_t002 = next(s for s in subdag.steps if s.name == "call-T002")
+        call_t002 = next(s for s in subdag.steps if s.name == "c-T002")
         assert call_t002.call == "T002"
         assert call_t002.depends == ["pre-sync"]
 
-        call_t003 = next(s for s in subdag.steps if s.name == "call-T003")
+        call_t003 = next(s for s in subdag.steps if s.name == "c-T003")
         assert call_t003.depends == ["pre-sync"]
 
         # Verify complete depends on all calls
         complete = next(s for s in subdag.steps if s.name == "complete")
-        assert set(complete.depends) == {"call-T002", "call-T003"}
+        assert set(complete.depends) == {"c-T002", "c-T003"}
 
     def test_build_root_dag(self, linear_tree):
         config = DagConfig(name="test_dag", spec_id="test-spec")
@@ -221,7 +221,7 @@ class TestSubDagBuilder:
         assert root.is_root is True
         assert "ARBORIST_MANIFEST=test-spec.json" in root.env
 
-        # Should have: branches-setup, call-T001
+        # Should have: branches-setup, c-T001
         assert len(root.steps) == 2
 
         # Verify branches-setup
@@ -229,8 +229,8 @@ class TestSubDagBuilder:
         assert root.steps[0].command == "arborist spec branch-create-all"
         assert root.steps[0].depends == []
 
-        # Verify call-T001
-        assert root.steps[1].name == "call-T001"
+        # Verify c-T001
+        assert root.steps[1].name == "c-T001"
         assert root.steps[1].call == "T001"
         assert root.steps[1].depends == ["branches-setup"]
 
@@ -248,15 +248,15 @@ class TestSubDagBuilder:
 
         root = builder._build_root_dag(tree)
 
-        # Should have: branches-setup, call-T001, call-T005 (in linear sequence)
+        # Should have: branches-setup, c-T001, c-T005 (in linear sequence)
         assert len(root.steps) == 3
 
-        # Linear chain: branches-setup -> call-T001 -> call-T005
-        assert root.steps[1].name == "call-T001"
+        # Linear chain: branches-setup -> c-T001 -> c-T005
+        assert root.steps[1].name == "c-T001"
         assert root.steps[1].depends == ["branches-setup"]
 
-        assert root.steps[2].name == "call-T005"
-        assert root.steps[2].depends == ["call-T001"]
+        assert root.steps[2].name == "c-T005"
+        assert root.steps[2].depends == ["c-T001"]
 
     def test_build_all_subdags(self, linear_tree):
         config = DagConfig(name="test", spec_id="test")

@@ -5,24 +5,24 @@ env:
 steps:
   - name: branches-setup
     command: arborist spec branch-create-all
-  - name: call-T001
+  - name: c-T001
     call: T001
     depends: [branches-setup]
-  - name: call-T005
+  - name: c-T005
     call: T005
-    depends: [call-T001]
+    depends: [c-T001]
 ---
 name: T001
 steps:
   - name: pre-sync
     command: arborist task pre-sync T001
-  - name: call-T002
+  - name: c-T002
     call: T002
     depends: [pre-sync]
-  - name: call-T003
+  - name: c-T003
     call: T003
     depends: [pre-sync]
-  - name: call-T004
+  - name: c-T004
     call: T004
     depends: [pre-sync]
   - name: complete
@@ -30,7 +30,7 @@ steps:
       arborist task run-test T001 &&
       arborist task post-merge T001 &&
       arborist task post-cleanup T001
-    depends: [call-T002, call-T003, call-T004]
+    depends: [c-T002, c-T003, c-T004]
 ---
 name: T002
 steps:
@@ -87,7 +87,7 @@ name: T005
 steps:
   - name: pre-sync
     command: arborist task pre-sync T005
-  - name: call-T006
+  - name: c-T006
     call: T006
     depends: [pre-sync]
   - name: complete
@@ -95,7 +95,7 @@ steps:
       arborist task run-test T005 &&
       arborist task post-merge T005 &&
       arborist task post-cleanup T005
-    depends: [call-T006]
+    depends: [c-T006]
 ---
 name: T006
 steps:

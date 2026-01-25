@@ -319,12 +319,12 @@ def build_dag_from_tasks(
         group_step_names = []
         for task in sorted(group, key=lambda t: t.id):
             step = {
-                "name": f"call-{task.id}",
+                "name": f"c-{task.id}",
                 "call": task.id,
                 "depends": prev_deps.copy(),
             }
             root_steps.append(step)
-            group_step_names.append(f"call-{task.id}")
+            group_step_names.append(f"c-{task.id}")
         prev_deps = group_step_names
 
     # Build root DAG document
@@ -626,11 +626,11 @@ def build_simple_dag(
     prev_step = "branches-setup"
     for task_id in sorted(tree.root_tasks):
         root_steps.append(SubDagStep(
-            name=f"call-{task_id}",
+            name=f"c-{task_id}",
             call=task_id,
             depends=[prev_step],
         ))
-        prev_step = f"call-{task_id}"
+        prev_step = f"c-{task_id}"
 
     root = SubDag(
         name=dag_name,
