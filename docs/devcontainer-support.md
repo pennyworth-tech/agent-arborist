@@ -153,8 +153,8 @@ RUN apt-get update && apt-get install -y \
 # Claude CLI
 RUN npm install -g @anthropic-ai/claude-code
 
-# OpenCode CLI (optional)
-RUN curl -fsSL https://raw.githubusercontent.com/opencode-ai/opencode/main/install.sh | bash \
+# OpenCode CLI (optional) - use opencode-ai npm package
+RUN npm install -g opencode-ai@latest \
     || echo "OpenCode not installed"
 
 # Gemini CLI (optional)
@@ -162,10 +162,102 @@ RUN pip3 install --break-system-packages google-generativeai \
     || echo "Gemini not installed"
 
 # Git config for worktree operations
-RUN git config --global --add safe.directory '*'
+RUN git config --global --add safe.directory /workspace
 
 WORKDIR /workspace
 ```
+
+---
+
+## Runner Installation Best Practices
+
+When adding runner CLIs to your devcontainer, follow these recommendations for reproducible and reliable builds.
+
+### Version Pinning
+
+**Recommended**: Pin runner versions for reproducible builds:
+
+```dockerfile
+# Pin specific versions
+RUN npm install -g @anthropic-ai/claude-code@1.2.3
+RUN npm install -g opencode-ai@2.1.0
+
+# Or use version ranges
+RUN npm install -g opencode-ai@^2.0.0
+```
+
+**Why**: Ensures consistent behavior across team members and CI/CD pipelines. Without pinning, different team members may get different runner versions, leading to inconsistent results.
+
+### Installation Methods by Runner
+
+#### Claude CLI
+```dockerfile
+# NPM (recommended for version control)
+RUN npm install -g @anthropic-ai/claude-code@latest
+
+# Or via install script (always latest)
+RUN curl -fsSL https://claude.ai/install | bash
+```
+
+#### OpenCode CLI
+```dockerfile
+# NPM (recommended - use opencode-ai package)
+RUN npm install -g opencode-ai@latest
+
+# Or via install script
+RUN curl -fsSL https://opencode.ai/install | bash
+```
+
+**Important**: Use `opencode-ai` (not `opencode-cli`) from npm.
+
+#### Gemini CLI
+```dockerfile
+# Python pip
+RUN pip3 install --break-system-packages google-generativeai
+
+# Or without --break-system-packages if using venv
+RUN python3 -m venv /opt/venv && \
+    /opt/venv/bin/pip install google-generativeai
+```
+
+### Installation Verification
+
+Always verify installation in Dockerfile:
+
+```dockerfile
+RUN opencode --version || echo "WARNING: OpenCode installation may have failed"
+RUN claude --version || echo "WARNING: Claude installation may have failed"
+```
+
+This catches installation failures at build time rather than runtime.
+
+### Multi-Runner Support
+
+Include multiple runners for flexibility:
+
+```dockerfile
+# Install all runners (team can choose per-task)
+RUN npm install -g @anthropic-ai/claude-code@latest
+RUN npm install -g opencode-ai@latest
+RUN pip3 install --break-system-packages google-generativeai
+
+# Verify all
+RUN claude --version && opencode --version && python3 -c "import google.generativeai"
+```
+
+### Minimal vs Full Installation
+
+**Minimal (Single Runner)**:
+- Faster builds (~2-3 minutes)
+- Smaller images (~500MB)
+- Recommended for CI/CD pipelines
+- Example: `tests/fixtures/devcontainers/minimal-opencode/`
+
+**Full (All Runners)**:
+- Slower builds (~5-7 minutes)
+- Larger images (~2GB)
+- Recommended for local development
+- Maximum flexibility per task
 
 ---
 
@@ -224,6 +316,119 @@ ln -s /path/to/shared/devcontainer .devcontainer
 | `src/agent_arborist/git_tasks.py` | Add `.env` file inheritance, devcontainer detection |
 | `src/agent_arborist/cli.py` | Add `--container-mode` flag |
 | `src/agent_arborist/checks.py` | Add `check_devcontainer()`, `check_docker()` |
+
+---
+
+## Container Lifecycle Management
+
+### Automatic Cleanup
+
+Arborist **always stops containers** after task completion, regardless of success or failure:
+
+```yaml
+steps:
+  - name: container-up
+    command: devcontainer up --workspace-folder "${ARBORIST_WORKTREE}"
+
+  # ... task steps ...
+
+  - name: container-down
+    command: docker stop $(docker ps -q --filter label=devcontainer.local_folder="${ARBORIST_WORKTREE}") 2>/dev/null || true
+    depends: [post-merge]  # Runs even if previous steps fail (Dagu behavior)
+```
+
+**Why no debug flag?**
+- Containers are stopped automatically to prevent resource leaks
+- Simplifies workflow - no need to remember cleanup flags
+- Consistent behavior across all execution modes
+
+### Container Reuse
+
+Arborist does NOT reuse containers between tasks:
+- Each task execution starts a fresh container
+- Prevents state leakage between tasks
+- Ensures reproducible builds
+
+### Debugging Failed Containers
+
+If a task fails, the container is stopped but not removed. To inspect:
+
+```bash
+# Find stopped containers
+docker ps -a --filter label=devcontainer.local_folder
+
+# Start a stopped container for debugging
+docker start <container_id>
+docker exec -it <container_id> /bin/bash
+
+# Remove when done
+docker rm <container_id>
+```
+
+### Manual Container Management
+
+For development/testing:
+
+```bash
+# Keep container running (manual mode)
+devcontainer up --workspace-folder .arborist/worktrees/spec1/T001
+
+# Your work here...
+
+# Stop when done
+docker stop $(docker ps -q --filter label=devcontainer.local_folder=$(pwd)/.arborist/worktrees/spec1/T001)
+```
+
+---
+
+## Test Fixtures
+
+Arborist includes test fixtures to validate devcontainer support:
+
+### Minimal OpenCode Fixture
+
+**Location**: `tests/fixtures/devcontainers/minimal-opencode/`
+
+A minimal devcontainer with OpenCode CLI for integration testing:
+
+```
+tests/fixtures/devcontainers/minimal-opencode/
+├── .devcontainer/
+│   ├── Dockerfile         # Node 18 + opencode-ai
+│   └── devcontainer.json  # Workspace config
+├── .env.example           # API key template
+├── README.md              # Setup instructions
+└── test_spec.md           # Simple test tasks
+```
+
+**Features**:
+- Node 18 slim base image
+- OpenCode CLI (`opencode-ai` npm package)
+- Pre-configured for zai-coding-plan/glm-4.7 model
+- Minimal footprint for fast testing
+
+**Usage**:
+```bash
+cd tests/fixtures/devcontainers/minimal-opencode
+cp .env.example .env
+# Add your ZAI_API_KEY to .env
+devcontainer up --workspace-folder .
+```
+
+### Running Integration Tests
+
+```bash
+# All container integration tests
+pytest -m integration tests/test_container_runner.py
+
+# Only OpenCode container tests
+pytest -m opencode tests/test_container_runner.py
+
+# Only mechanics tests (no API calls)
+pytest -m "integration and not opencode" tests/test_container_runner.py
+```
+
+See `tests/test_container_runner.py` for test implementation.
 
 ---
 
