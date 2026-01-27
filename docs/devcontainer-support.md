@@ -58,7 +58,7 @@ Arborist can optionally run tasks inside the **target project's devcontainer** i
 │                  │ │                  │ │                  │
 │  Volume mount:   │ │  Volume mount:   │ │  Volume mount:   │
 │  worktrees/T001/ │ │  worktrees/T002/ │ │  worktrees/T003/ │
-│  → /workspace    │ │  → /workspace    │ │  → /workspace    │
+│  → /workspaces/<project-name> │ │  → /workspaces/<project-name> │ │  → /workspaces/<project-name> │
 │                  │ │                  │ │                  │
 │  Target's tools  │ │  Target's tools  │ │  Target's tools  │
 │  + runners       │ │  + runners       │ │  + runners       │
@@ -123,13 +123,13 @@ The target project should have something like:
   "build": {
     "dockerfile": "Dockerfile"
   },
-  "workspaceFolder": "/workspace",
+  "workspaceFolder": "/workspaces/my-project",
   "remoteEnv": {
     "ANTHROPIC_API_KEY": "${localEnv:ANTHROPIC_API_KEY}",
     "OPENAI_API_KEY": "${localEnv:OPENAI_API_KEY}",
     "GOOGLE_API_KEY": "${localEnv:GOOGLE_API_KEY}"
   },
-  "postCreateCommand": "git config --global --add safe.directory /workspace",
+  "postCreateCommand": "git config --global --add safe.directory /workspaces/my-project",
   "features": {
     "ghcr.io/devcontainers/features/node:1": {}
   }
@@ -162,9 +162,9 @@ RUN pip3 install --break-system-packages google-generativeai \
     || echo "Gemini not installed"
 
 # Git config for worktree operations
-RUN git config --global --add safe.directory /workspace
+RUN git config --global --add safe.directory /workspaces/my-project
 
-WORKDIR /workspace
+WORKDIR /workspaces/my-project
 ```
 
 ---
@@ -1212,7 +1212,8 @@ cat > /tmp/test-target/.devcontainer/devcontainer.json << 'EOF'
 {
   "name": "test",
   "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
-  "postCreateCommand": "git config --global --add safe.directory /workspace"
+  "workspaceFolder": "/workspaces/test",
+  "postCreateCommand": "git config --global --add safe.directory /workspaces/test"
 }
 EOF
 
@@ -1334,7 +1335,7 @@ Each worktree gets its own container instance:
 │ Volume:      │  │ Volume:      │  │ Volume:      │
 │ worktrees/   │  │ worktrees/   │  │ worktrees/   │
 │ T001/        │  │ T002/        │  │ T003/        │
-│ → /workspace │  │ → /workspace │  │ → /workspace │
+│ → /workspaces/<project-name> │  │ → /workspaces/<project-name> │  │ → /workspaces/<project-name> │
 └──────────────┘  └──────────────┘  └──────────────┘
 ```
 

@@ -67,10 +67,10 @@ The `test_spec.md` file contains a minimal task specification used by integratio
 - **Base Image**: node:18-slim
 - **Runner**: OpenCode CLI (`opencode-ai` npm package)
 - **Default Model**: zai-coding-plan/glm-4.7
-- **Workspace**: /workspace
+- **Workspace**: /workspaces/agent-arborist
 
 ## Notes
 
 - API keys are inherited from local environment via `remoteEnv` in devcontainer.json
-- Git safe.directory is scoped to `/workspace` (not wildcard `*`)
+- Git safe.directory is scoped to `/workspaces/agent-arborist` (not wildcard `*`)
 - Container is stopped after each test run for isolation
