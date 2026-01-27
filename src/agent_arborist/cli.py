@@ -33,6 +33,7 @@ from agent_arborist.home import (
 from agent_arborist.task_spec import parse_task_spec
 from agent_arborist.dag_builder import DagConfig, DagBuilder
 from agent_arborist.dag_generator import DagGenerator
+from agent_arborist.container_runner import ContainerMode
 from agent_arborist import dagu_runs
 from agent_arborist.git_tasks import (
     get_worktree_path,
@@ -1588,6 +1589,12 @@ def spec_branch_cleanup_all(ctx: click.Context, force: bool) -> None:
     help="Timeout for AI inference in seconds (default: 120)",
 )
 @click.option(
+    "--container-mode",
+    type=click.Choice(["auto", "enabled", "disabled"]),
+    default="auto",
+    help="Container execution mode: auto (detect .devcontainer), enabled (require), disabled (never)",
+)
+@click.option(
     "--echo-only",
     is_flag=True,
     hidden=True,
@@ -1604,6 +1611,7 @@ def spec_dag_build(
     show: bool,
     no_ai: bool,
     timeout: int,
+    container_mode: str,
     echo_only: bool,
 ) -> None:
     """Build a DAGU DAG from a task spec directory using AI inference.
@@ -1685,10 +1693,22 @@ def spec_dag_build(
         if not ctx.obj.get("quiet"):
             console.print(f"[dim]Found {len(task_spec.tasks)} tasks in {len(task_spec.phases)} phases[/dim]")
 
+        # Determine container mode
+        container_mode_enum = ContainerMode(container_mode)
+
+        # Get repo path for devcontainer detection
+        try:
+            repo_path = get_git_root()
+        except ArboristHomeError:
+            repo_path = None
+
         dag_name_safe = dag_name.replace("-", "_")
         config = DagConfig(
             name=dag_name_safe,
             description=task_spec.project,
+            spec_id=dag_name,
+            container_mode=container_mode_enum,
+            repo_path=repo_path,
         )
         builder = DagBuilder(config)
         dag_yaml = builder.build_yaml(task_spec)
@@ -1716,8 +1736,21 @@ def spec_dag_build(
         else:
             manifest_path_for_gen = f"{dag_name}.json"
 
+        # Determine container mode
+        container_mode_enum = ContainerMode(container_mode)
+
+        # Get repo path for devcontainer detection
+        try:
+            repo_path = get_git_root()
+        except ArboristHomeError:
+            repo_path = None
+
         # Generate using AI - pass the spec directory for AI to explore
-        generator = DagGenerator(runner=runner_instance)
+        generator = DagGenerator(
+            runner=runner_instance,
+            container_mode=container_mode_enum,
+            repo_path=repo_path,
+        )
         result = generator.generate(spec_dir, dag_name, timeout=timeout, manifest_path=manifest_path_for_gen)
 
         if not result.success:

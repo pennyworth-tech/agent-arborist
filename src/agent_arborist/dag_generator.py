@@ -13,6 +13,14 @@ from pathlib import Path
 from typing import Any
 
 from agent_arborist.runner import Runner, get_runner, RunnerType, DEFAULT_RUNNER
+from agent_arborist.container_runner import (
+    ContainerMode,
+    should_use_container,
+    devcontainer_up_command,
+    devcontainer_down_command,
+    devcontainer_exec_command,
+)
+from agent_arborist.home import get_arborist_home
 
 
 @dataclass
@@ -254,12 +262,25 @@ def build_dag_from_tasks(
     description: str,
     tasks: list[TaskInfo],
     manifest_path: str,
+    container_mode: ContainerMode = ContainerMode.AUTO,
+    repo_path: Path | None = None,
 ) -> str:
     """Build full DAGU DAG YAML from simple task list.
 
     Step 2 & 3: Add the standard task pattern and boilerplate.
+
+    Args:
+        dag_name: Name for the DAG
+        description: DAG description
+        tasks: List of tasks with dependencies
+        manifest_path: Path to manifest JSON file
+        container_mode: Container execution mode
+        repo_path: Path to repo for devcontainer detection
     """
     dag_name_safe = dag_name.replace("-", "_")
+
+    # Check if we should use containers
+    use_containers = should_use_container(container_mode, repo_path)
 
     # Build root DAG steps
     root_steps = [
@@ -335,20 +356,89 @@ def build_dag_from_tasks(
         "steps": root_steps,
     }
 
+    # Helper to wrap commands in devcontainer exec if needed
+    def wrap_cmd(cmd: str) -> str:
+        if use_containers:
+            return devcontainer_exec_command(cmd)
+        return cmd
+
     # Build subdag for each task with standard pattern
     subdags = []
     for task in sorted(tasks, key=lambda t: t.id):
+        steps = []
+
+        # Pre-sync (not wrapped - runs on host to create worktree)
+        steps.append({
+            "name": "pre-sync",
+            "command": f"arborist task pre-sync {task.id}",
+        })
+
+        # Container lifecycle: Start container (AFTER worktree exists)
+        if use_containers:
+            steps.append({
+                "name": "container-up",
+                "command": devcontainer_up_command(),
+                "depends": ["pre-sync"],
+            })
+
+        # Run (wrapped - executes inside container)
+        steps.append({
+            "name": "run",
+            "command": wrap_cmd(f"arborist task run {task.id}"),
+            "depends": ["container-up"] if use_containers else ["pre-sync"],
+        })
+
+        # Commit (wrapped - runs inside container)
+        steps.append({
+            "name": "commit",
+            "command": wrap_cmd(f"arborist task commit {task.id}"),
+            "depends": ["run"],
+        })
+
+        # Run-test (wrapped - runs inside container)
+        steps.append({
+            "name": "run-test",
+            "command": wrap_cmd(f"arborist task run-test {task.id}"),
+            "depends": ["commit"],
+        })
+
+        # Post-merge (not wrapped - merges branches on host)
+        steps.append({
+            "name": "post-merge",
+            "command": f"arborist task post-merge {task.id}",
+            "depends": ["run-test"],
+        })
+
+        # Container lifecycle: Stop container
+        if use_containers:
+            steps.append({
+                "name": "container-down",
+                "command": devcontainer_down_command(),
+                "depends": ["post-merge"],
+            })
+
+        # Post-cleanup (not wrapped - removes worktree on host)
+        steps.append({
+            "name": "post-cleanup",
+            "command": f"arborist task post-cleanup {task.id}",
+            "depends": ["container-down"] if use_containers else ["post-merge"],
+        })
+
+        # Compute worktree path for ARBORIST_WORKTREE env var
+        try:
+            arborist_home = get_arborist_home()
+            worktree_path = arborist_home / "worktrees" / dag_name / task.id
+            env_vars = [
+                f"ARBORIST_MANIFEST={manifest_path}",
+                f"ARBORIST_WORKTREE={worktree_path}",
+            ]
+        except Exception:
+            env_vars = [f"ARBORIST_MANIFEST={manifest_path}"]
+
         subdag = {
             "name": task.id,
-            "steps": [
-                {"name": "pre-sync", "command": f"arborist task pre-sync {task.id}"},
-                {"name": "run", "command": f"arborist task run {task.id}", "depends": ["pre-sync"]},
-                {"name": "commit", "command": f"arborist task commit {task.id}", "depends": ["run"]},
-                {"name": "run-test", "command": f"arborist task run-test {task.id}", "depends": ["commit"]},
-                {"name": "post-merge", "command": f"arborist task post-merge {task.id}", "depends": ["run-test"]},
-                {"name": "post-cleanup", "command": f"arborist task post-cleanup {task.id}", "depends": ["post-merge"]},
-            ],
-            "env": [f"ARBORIST_MANIFEST={manifest_path}"],
+            "steps": steps,
+            "env": env_vars,
         }
         subdags.append(subdag)
 
@@ -364,8 +454,16 @@ def build_dag_from_tasks(
 class DagGenerator:
     """Generates DAGU DAGs using AI inference."""
 
-    def __init__(self, runner: Runner | None = None, runner_type: RunnerType = DEFAULT_RUNNER):
+    def __init__(
+        self,
+        runner: Runner | None = None,
+        runner_type: RunnerType = DEFAULT_RUNNER,
+        container_mode: ContainerMode = ContainerMode.AUTO,
+        repo_path: Path | None = None,
+    ):
         self.runner = runner or get_runner(runner_type)
+        self.container_mode = container_mode
+        self.repo_path = repo_path
 
     def generate(
         self,
@@ -378,7 +476,7 @@ class DagGenerator:
 
         Two-step process:
         1. AI analyzes spec and outputs simple task JSON
-        2. Code builds full DAG YAML with standard patterns
+        2. Code builds full DAG YAML with standard patterns (with container support)
 
         Args:
             spec_dir: Directory containing task specification files
@@ -444,11 +542,18 @@ class DagGenerator:
                 raw_output=result.output,
             )
 
-        # Step 2 & 3: Build full DAG YAML
+        # Step 2 & 3: Build full DAG YAML (with container support)
         manifest = manifest_path or f"{dag_name}.json"
         description = data.get("description", f"DAG for {dag_name}")
 
-        yaml_content = build_dag_from_tasks(dag_name, description, tasks, manifest)
+        yaml_content = build_dag_from_tasks(
+            dag_name,
+            description,
+            tasks,
+            manifest,
+            container_mode=self.container_mode,
+            repo_path=self.repo_path,
+        )
 
         return GenerationResult(
             success=True,
