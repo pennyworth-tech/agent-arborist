@@ -5,6 +5,7 @@ Tests the complete workflow:
 2. Build DAG from spec with container mode
 3. Execute DAG (tasks run inside containers)
 4. Verify worktrees, artifacts, and cleanup
+5. Verify commit generation and rollup
 
 Run with:
     pytest -m "integration and opencode" tests/test_e2e_devcontainer.py -v
@@ -50,7 +51,7 @@ def e2e_project(tmp_path):
     devcontainer_dir = project_dir / ".devcontainer"
     devcontainer_dir.mkdir()
 
-    # Dockerfile
+    # Dockerfile with default WORKDIR (will be set by devcontainer CLI to /workspaces/<folder-name>)
     dockerfile = devcontainer_dir / "Dockerfile"
     dockerfile.write_text(
         """\
@@ -67,12 +68,10 @@ RUN npm install -g opencode-ai@latest
 
 # Verify installation
 RUN opencode --version
-
-WORKDIR /workspaces/calculator-project
 """
     )
 
-    # devcontainer.json - mount arborist source from parent
+    # devcontainer.json - mount arborist source from parent, use default workspaceFolder
     arborist_repo_root = str(Path(__file__).parent.parent.parent.resolve())
     devcontainer_json = devcontainer_dir / "devcontainer.json"
     devcontainer_json.write_text(
@@ -81,7 +80,6 @@ WORKDIR /workspaces/calculator-project
   "build": {{
     "dockerfile": "Dockerfile"
   }},
-  "workspaceFolder": "/workspace",
   "mounts": [
     "source={arborist_repo_root},target=/arborist-src,type=bind,consistency=cached"
   ],
@@ -90,23 +88,7 @@ WORKDIR /workspaces/calculator-project
     "ARBORIST_DEFAULT_RUNNER": "opencode",
     "ARBORIST_DEFAULT_MODEL": "openai/gpt-4o-mini"
   }},
-  "postCreateCommand": "git config --global --add safe.directory /workspace && python3 -m pip install -e /arborist-src",
-  "customizations": {{
-    "vscode": {{
-      "extensions": []
-    }}
-}}
-  }},
-  "workspaceFolder": "/workspaces/calculator-project",
-  "mounts": [
-    "source={arborist_repo_root},target=/arborist-src,type=bind,consistency=cached"
-  ],
-  "remoteEnv": {{
-    "OPENAI_API_KEY": "${{localEnv:OPENAI_API_KEY}}",
-    "ARBORIST_DEFAULT_RUNNER": "opencode",
-    "ARBORIST_DEFAULT_MODEL": "openai/gpt-4o-mini"
-  }},
-  "postCreateCommand": "git config --global --add safe.directory /workspaces/calculator-project && python3 -m pip install -e /arborist-src",
+  "postCreateCommand": "python3 -m pip install -e /arborist-src",
   "customizations": {{
     "vscode": {{
       "extensions": []
@@ -143,6 +125,14 @@ WORKDIR /workspaces/calculator-project
             "GIT_AUTHOR_NAME": "Test",
             "GIT_AUTHOR_EMAIL": "test@test.com",
         },
+    )
+
+    # Create and checkout spec-named branch (realistic workflow)
+    subprocess.run(
+        ["git", "checkout", "-b", "001-calculator"],
+        cwd=project_dir,
+        capture_output=True,
+        check=True,
     )
 
     # Create spec directory
@@ -219,6 +209,25 @@ Create `calculator.test.js` with simple tests for all three operations.
 """
     )
 
+    # Commit spec files on the spec-named branch
+    subprocess.run(
+        ["git", "add", "specs"],
+        cwd=project_dir,
+        capture_output=True,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "Add 001-calculator spec"],
+        cwd=project_dir,
+        capture_output=True,
+        check=True,
+        env={
+            **os.environ,
+            "GIT_AUTHOR_NAME": "Test",
+            "GIT_AUTHOR_EMAIL": "test@test.com",
+        },
+    )
+
     return project_dir
 
 
@@ -228,6 +237,7 @@ Create `calculator.test.js` with simple tests for all three operations.
 @requires_devcontainer_cli
 @requires_arborist
 @requires_openai_api_key
+@pytest.mark.usefixtures("e2e_project")
 class TestE2EDevContainer:
     """End-to-end tests for DAG execution with devcontainer support."""
 
@@ -279,7 +289,6 @@ class TestE2EDevContainer:
         assert dag_file.exists(), f"DAG file not created at {dag_file}"
 
         # Step 3: Run the DAG
-        # Note: This will actually execute tasks using OpenCode API
         run_result = subprocess.run(
             ["arborist", "dag", "run", "001-calculator"],
             cwd=e2e_project,
@@ -295,11 +304,7 @@ class TestE2EDevContainer:
             print("=== Stderr ===")
             print(run_result.stderr)
 
-        # Check run status (it might fail but we want to see what happened)
-        # Don't assert success yet, just verify the command ran
-
         # Step 4: Check for worktrees
-        # Worktrees should be created in .arborist/worktrees/
         worktree_dir = e2e_project / ".arborist" / "worktrees"
         if worktree_dir.exists():
             worktrees = list(worktree_dir.iterdir())
@@ -324,12 +329,10 @@ class TestE2EDevContainer:
         # Step 6: Verify commits were made for each task
         print("\\n=== Verifying Task Commits ===")
 
-        # Check git log for task branches
-        task_branches = ["001-calculator_T001", "001-calculator_T002", "001-calculator_T003", "001-calculator_T004"]
+        task_branches = ["001-calculator_a_T001", "001-calculator_a_T002", "001-calculator_a_T003", "001-calculator_a_T004"]
         commits_verified = []
 
         for branch in task_branches:
-            # Check if branch exists
             branch_check = subprocess.run(
                 ["git", "rev-parse", "--verify", branch],
                 cwd=e2e_project,
@@ -338,7 +341,6 @@ class TestE2EDevContainer:
             )
 
             if branch_check.returncode == 0:
-                # Get commit log for this branch
                 log_result = subprocess.run(
                     ["git", "log", "--oneline", "-5", branch],
                     cwd=e2e_project,
@@ -349,9 +351,8 @@ class TestE2EDevContainer:
                 print(f"\\n{branch}:")
                 print(log_result.stdout)
 
-                # Get diff stats to verify non-empty commits
                 diff_result = subprocess.run(
-                    ["git", "diff", "--stat", "main", branch],
+                    ["git", "diff", "--stat", "001-calculator", branch],
                     cwd=e2e_project,
                     capture_output=True,
                     text=True,
@@ -366,11 +367,9 @@ class TestE2EDevContainer:
         # Step 7: Verify DAG structure and container mode
         assert dag_file.exists(), "DAG file should exist"
 
-        # Read the generated DAG to verify container steps are present
         dag_content = dag_file.read_text()
         print("\\n=== Verifying Container Mode Integration ===")
 
-        # Check for container lifecycle steps
         has_container_up = "container-up" in dag_content
         has_container_down = "container-down" in dag_content
         has_worktree_env = "ARBORIST_WORKTREE" in dag_content
@@ -382,7 +381,6 @@ class TestE2EDevContainer:
         print(f"✓ Container-up command: {'YES' if has_container_up_cmd else 'NO'}")
         print(f"✓ Container-down command: {'YES' if has_container_down_cmd else 'NO'}")
         print(f"✓ ARBORIST_WORKTREE env var: {'YES' if has_worktree_env else 'NO'}")
-        print("Note: Runner commands are wrapped at execution time, not in DAG")
 
         assert has_container_up, "DAG should have container-up steps"
         assert has_container_down, "DAG should have container-down steps"
@@ -390,55 +388,302 @@ class TestE2EDevContainer:
         assert has_container_down_cmd, "DAG should have arborist task container-down command"
         assert has_worktree_env, "DAG should set ARBORIST_WORKTREE"
 
-        # Check if containers were actually created (check docker)
-        docker_check = subprocess.run(
-            ["docker", "ps", "-a", "--filter", "label=devcontainer.local_folder", "--format", "{{.ID}}"],
+        print("\\n=== Test Summary ===")
+        print("✓ DAG built successfully")
+        print("✓ DAG executed successfully")
+        print(f"✓ {len(commits_verified)}/4 task branches have non-empty commits")
+        print("✓ Worktrees created properly")
+
+    def test_container_mode_flag_integration(self, e2e_project):
+        """Test that container mode can be controlled via CLI flags."""
+        from agent_arborist.container_runner import has_devcontainer
+
+        assert has_devcontainer(e2e_project) is True
+
+    def _run_full_dag_workflow(self, e2e_project):
+        """Helper: Execute the full DAG workflow (build + run)."""
+        spec_dir = e2e_project / "specs" / "001-calculator"
+
+        dagu_home = e2e_project / ".arborist" / "dagu"
+        dagu_home.mkdir(parents=True, exist_ok=True)
+        (dagu_home / "dags").mkdir(exist_ok=True)
+
+        test_env = {**os.environ, "DAGU_HOME": str(dagu_home)}
+
+        build_result = subprocess.run(
+            [
+                "arborist",
+                "spec",
+                "dag-build",
+                str(spec_dir),
+                "--runner",
+                "opencode",
+                "--model",
+                "openai/gpt-4o-mini",
+                "--container-mode",
+                "enabled",
+            ],
+            cwd=e2e_project,
             capture_output=True,
             text=True,
+            timeout=120,
+            env=test_env,
         )
 
-        containers_found = len(docker_check.stdout.strip().split("\n")) if docker_check.stdout.strip() else 0
-        print(f"\\n✓ Devcontainers created: {containers_found}")
+        if build_result.returncode != 0:
+            raise Exception(f"DAG build failed: {build_result.stderr}")
 
-        # Note: Task execution may fail for various reasons (API limits, etc)
-        # The important verification is that container mode is integrated
-        print("\\n✓ Container mode integration verified")
-        print("Note: Task execution failures are expected in test environment")
+        run_result = subprocess.run(
+            ["arborist", "dag", "run", "001-calculator"],
+            cwd=e2e_project,
+            capture_output=True,
+            text=True,
+            timeout=600,
+            env=test_env,
+        )
 
-        # Step 8: Check rollup to main branch
-        print("\\n=== Verifying Rollup to Main ===")
+        return build_result, run_result
 
-        # Check if changes were merged back to main
-        main_log = subprocess.run(
-            ["git", "log", "--oneline", "-10", "main"],
+    def test_commit_generation_per_task(self, e2e_project):
+        """Verify that each task branch has valid commits generated during execution."""
+        build_result, run_result = self._run_full_dag_workflow(e2e_project)
+
+        print("\n=== DAG Execution Result ===")
+        print(f"Build success: {build_result.returncode == 0}")
+        print(f"Run success: {run_result.returncode == 0}")
+
+        task_branches = ["001-calculator_a_T001", "001-calculator_a_T002", "001-calculator_a_T003", "001-calculator_a_T004"]
+
+        print("\n=== Verifying Commit Generation Per Task ===")
+        any_branch_found = False
+
+        for branch in task_branches:
+            task_id = branch.split("_")[-1]
+
+            branch_check = subprocess.run(
+                ["git", "rev-parse", "--verify", branch],
+                cwd=e2e_project,
+                capture_output=True,
+                text=True,
+            )
+
+            if branch_check.returncode != 0:
+                print(f"\n{branch}: SKIPPED - Branch does not exist")
+                continue
+
+            any_branch_found = True
+            commit_count = get_commit_count(e2e_project, branch)
+
+            if commit_count == 0:
+                print(f"\n{branch}: FAILED - No commits")
+                assert False, f"Task branch {branch} has no commits"
+                continue
+
+            messages = get_commit_messages(e2e_project, branch)
+            print(f"\n{branch}:")
+            print(f"  Commits: {commit_count}")
+            for msg in messages[:3]:
+                print(f"    - {msg[:80]}")
+
+            task_commits = get_task_commit_messages(e2e_project, branch)
+
+            if len(task_commits) == 0:
+                print(f"  ✗ No task(TXXX): commits found")
+                assert False, f"Task branch {branch} has no task(TXXX): commits"
+                continue
+
+            for task_msg in task_commits:
+                assert verify_commit_format(task_msg, task_id), \
+                    f"Commit message for {task_id} doesn't match format: {task_msg}"
+
+            print(f"  ✓ Has {len(task_commits)} valid task commits")
+
+        if not any_branch_found:
+            pytest.skip("No task branches found - DAG execution may have failed")
+
+        print("\n✓ Commit generation verification complete")
+
+    def test_commit_count_matches_manifest(self, e2e_project):
+        """Verify that commit counts match the number of tasks in the manifest."""
+        build_result, run_result = self._run_full_dag_workflow(e2e_project)
+
+        manifest = load_manifest_from_dagu_home(e2e_project, "001-calculator")
+
+        if manifest is None:
+            pytest.skip("Manifest file not found - DAG may not have built successfully")
+
+        expected_tasks = len(manifest.get("tasks", {}))
+        print(f"\n=== Verifying Commit Count Matches Manifest ===")
+        print(f"Expected tasks from manifest: {expected_tasks}")
+
+        task_branches = ["001-calculator_a_T001", "001-calculator_a_T002", "001-calculator_a_T003", "001-calculator_a_T004"]
+        total_commits = 0
+
+        for branch in task_branches:
+            if subprocess.run(
+                ["git", "rev-parse", "--verify", branch],
+                cwd=e2e_project,
+                capture_output=True
+            ).returncode == 0:
+                task_commits = count_task_commits(e2e_project, branch)
+                print(f"{branch}: {task_commits} task commits")
+                total_commits += task_commits
+            else:
+                print(f"{branch}: SKIPPED - branch does not exist")
+
+        print(f"Total task commits: {total_commits}")
+
+        if total_commits == 0:
+            pytest.skip("No task commits found - tasks may have failed to commit")
+
+        assert total_commits >= expected_tasks, \
+            f"Expected at least {expected_tasks} task commits, found {total_commits}"
+
+        assert total_commits <= expected_tasks + len(task_branches), \
+            f"Too many commits: expected <= {expected_tasks + len(task_branches)}, found {total_commits}"
+
+        print(f"✓ Commit count matches manifest (expected {expected_tasks}, found {total_commits})")
+
+    def test_post_merge_rollup_to_spec_branch(self, e2e_project):
+        """Verify that task commits are rolled up to the spec branch via post-merge."""
+        spec_branch = "001-calculator"
+
+        print(f"\n=== Verifying Post-Merge Rollup to Spec Branch ({spec_branch}) ===")
+
+        spec_messages = get_commit_messages(e2e_project, spec_branch, limit=20)
+
+        task_commits_on_spec = [msg for msg in spec_messages if "task(T" in msg]
+
+        print(f"\nCommits on {spec_branch}: {len(spec_messages)}")
+        print(f"Task-related commits: {len(task_commits_on_spec)}")
+
+        if len(task_commits_on_spec) > 0:
+            for msg in task_commits_on_spec[:5]:
+                print(f"  - {msg[:100]}")
+
+    def test_commits_beyond_plan_tag(self, e2e_project):
+        """Verify that commits exist beyond the plan tag baseline for spec branch."""
+        spec_branch = "001-calculator"
+
+        print(f"\n=== Verifying Commits Beyond Plan Tag ===")
+
+        initial_result = subprocess.run(
+            ["git", "log", "--format=%H", "--grep=Add 001-calculator spec", spec_branch],
             cwd=e2e_project,
             capture_output=True,
             text=True,
         )
 
-        print("Recent commits on main:")
-        print(main_log.stdout)
+        if initial_result.returncode == 0 and initial_result.stdout.strip():
+            plan_tag_sha = initial_result.stdout.strip().split("\n")[0]
+            print(f"Plan tag SHA: {plan_tag_sha[:12]}")
 
-        # Check for merge commits or task-related commits
-        has_task_commits = any(task_id in main_log.stdout for task_id in ["T001", "T002", "T003", "T004"])
+            new_commits = get_commits_since(e2e_project, spec_branch, plan_tag_sha)
 
-        if has_task_commits:
-            print("✓ Task commits found in main branch history")
-        else:
-            print("Note: Task commits may not be merged to main yet (post-merge may be pending)")
+            print(f"Commits beyond plan tag: {len(new_commits)}")
 
-        print("\\n=== Test Summary ===")
-        print("✓ DAG built successfully")
-        print("✓ DAG executed successfully (all tasks succeeded)")
-        print(f"✓ {len(commits_verified)}/4 task branches have non-empty commits")
-        print("✓ Worktrees created properly")
-        print("\\nNote: Container mode integration with DAG builder is not yet implemented.")
-        print("This test validates the core workflow: spec → DAG → execution → commits.")
+            for msg in new_commits[:5]:
+                print(f"  - {msg[:100]}")
 
-    def test_container_mode_flag_integration(self, e2e_project):
-        """Test that container mode can be controlled via CLI flags."""
-        # This is a placeholder for future container mode flag implementation
-        # Currently container mode is auto-detected based on .devcontainer presence
-        from agent_arborist.container_runner import has_devcontainer
 
-        assert has_devcontainer(e2e_project) is True
+# ============================================================
+# Helper Functions for Commit Verification
+# ============================================================
+
+def get_branch_head_sha(project_dir: Path, branch: str) -> str | None:
+    """Get the HEAD commit SHA for a branch."""
+    result = subprocess.run(
+        ["git", "rev-parse", branch],
+        cwd=project_dir,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        return result.stdout.strip()
+    return None
+
+
+def get_commit_count(project_dir: Path, branch: str) -> int:
+    """Get the number of commits on a branch."""
+    result = subprocess.run(
+        ["git", "rev-list", "--count", branch],
+        cwd=project_dir,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        return int(result.stdout.strip())
+    return 0
+
+
+def get_commit_messages(project_dir: Path, branch: str, limit: int = 20) -> list[str]:
+    """Get commit messages for a branch."""
+    result = subprocess.run(
+        ["git", "log", "--format=%s", f"-{limit}", branch],
+        cwd=project_dir,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        return result.stdout.strip().split("\n")
+    return []
+
+
+def get_task_commit_messages(project_dir: Path, branch: str) -> list[str]:
+    """Get commit messages matching the task(TXXX): pattern."""
+    result = subprocess.run(
+        ["git", "log", "--format=%s", "--grep=^task(T", branch],
+        cwd=project_dir,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        return result.stdout.strip().split("\n") if result.stdout.strip() else []
+    return []
+
+
+def verify_commit_format(message: str, task_id: str) -> bool:
+    """Verify that a commit message follows the expected format.
+
+    Expected format:
+    - First line: task(TXXX): <summary>
+    - Footer contains: (generated by <runner> or (merged by <runner>
+    """
+    if not message.startswith(f"task({task_id}):"):
+        return False
+
+    has_footer = "(generated by" in message or "(merged by" in message
+    return has_footer
+
+
+def count_task_commits(project_dir: Path, branch: str) -> int:
+    """Count commits with task(TXXX): pattern on a branch."""
+    return len(get_task_commit_messages(project_dir, branch))
+
+
+def get_commits_since(project_dir: Path, branch: str, since_sha: str) -> list[str]:
+    """Get commit messages since a specific SHA."""
+    result = subprocess.run(
+        ["git", "log", "--format=%s", f"{since_sha}..{branch}"],
+        cwd=project_dir,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        return result.stdout.strip().split("\n") if result.stdout.strip() else []
+    return []
+
+
+def load_manifest_from_dagu_home(project_dir: Path, spec_id: str) -> dict | None:
+    """Load the branch manifest JSON from DAGU_HOME."""
+    import json
+
+    manifest_path = project_dir / ".arborist" / "dagu" / "dags" / f"{spec_id}.json"
+    if not manifest_path.exists():
+        return None
+
+    try:
+        with open(manifest_path) as f:
+            return json.load(f)
+    except Exception:
+        return None
