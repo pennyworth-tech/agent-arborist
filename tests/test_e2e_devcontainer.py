@@ -68,7 +68,7 @@ RUN npm install -g opencode-ai@latest
 # Verify installation
 RUN opencode --version
 
-WORKDIR /workspace
+WORKDIR /workspaces/calculator-project
 """
     )
 
@@ -91,6 +91,22 @@ WORKDIR /workspace
     "ARBORIST_DEFAULT_MODEL": "openai/gpt-4o-mini"
   }},
   "postCreateCommand": "git config --global --add safe.directory /workspace && python3 -m pip install -e /arborist-src",
+  "customizations": {{
+    "vscode": {{
+      "extensions": []
+    }}
+}}
+  }},
+  "workspaceFolder": "/workspaces/calculator-project",
+  "mounts": [
+    "source={arborist_repo_root},target=/arborist-src,type=bind,consistency=cached"
+  ],
+  "remoteEnv": {{
+    "OPENAI_API_KEY": "${{localEnv:OPENAI_API_KEY}}",
+    "ARBORIST_DEFAULT_RUNNER": "opencode",
+    "ARBORIST_DEFAULT_MODEL": "openai/gpt-4o-mini"
+  }},
+  "postCreateCommand": "git config --global --add safe.directory /workspaces/calculator-project && python3 -m pip install -e /arborist-src",
   "customizations": {{
     "vscode": {{
       "extensions": []

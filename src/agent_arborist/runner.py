@@ -1,5 +1,6 @@
 """Runner abstraction for executing prompts via CLI tools."""
 
+import json
 import os
 import shlex
 import subprocess
@@ -8,6 +9,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
+
+from agent_arborist.home import get_git_root
 
 RunnerType = Literal["claude", "opencode", "gemini"]
 
@@ -32,10 +35,38 @@ def _check_container_running(worktree_path: Path) -> bool:
         return False
 
 
+def get_workspace_folder(git_root: Path) -> str:
+    """Get workspaceFolder from target project's devcontainer.json.
+
+    Uses the git repo name as the workspace folder container path.
+    Example: /workspaces/my-project
+
+    Args:
+        git_root: Path to the git repository root.
+
+    Returns:
+        The folder path where worktrees are mounted in the container.
+        Reads from devcontainer.json if present, otherwise constructs
+        using the git repository name.
+    """
+    devcontainer_json = git_root / ".devcontainer" / "devcontainer.json"
+    if devcontainer_json.exists():
+        try:
+            content = json.loads(devcontainer_json.read_text())
+            configured = content.get("workspaceFolder")
+            if configured:
+                return configured
+        except (json.JSONDecodeError, IOError):
+            pass
+
+    repo_name = git_root.name if git_root.name else "workspace"
+    return f"/workspaces/{repo_name}"
+
+
 def _wrap_in_container(cmd: list[str], worktree_path: Path) -> list[str]:
     """Wrap command in devcontainer exec if container is running.
 
-    Uses a shell wrapper to ensure the command runs in /workspace directory,
+    Uses a shell wrapper to ensure the command runs in the workspace directory,
     as devcontainer exec doesn't have a native --workdir flag.
 
     Workaround based on: https://github.com/devcontainers/cli/issues/703
@@ -43,12 +74,11 @@ def _wrap_in_container(cmd: list[str], worktree_path: Path) -> list[str]:
     if not _check_container_running(worktree_path):
         return cmd
 
-    # Build shell command that changes to /workspace before executing
-    # Quote the original command arguments properly for shell execution
+    git_root = get_git_root()
+    workspace_folder = get_workspace_folder(git_root or worktree_path.resolve())
+
     shell_cmd = " ".join(shlex.quote(arg) for arg in cmd)
 
-    # Wrap in bash -c to cd to workspace first
-    # Use /workspace as it's the standard workspaceFolder in devcontainer.json
     return [
         "devcontainer",
         "exec",
@@ -56,7 +86,7 @@ def _wrap_in_container(cmd: list[str], worktree_path: Path) -> list[str]:
         str(worktree_path.resolve()),
         "bash",
         "-c",
-        f"cd /workspace && {shell_cmd}",
+        f"cd {workspace_folder} && {shell_cmd}",
     ]
 
 # Environment variable names for defaults

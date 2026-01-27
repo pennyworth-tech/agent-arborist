@@ -66,7 +66,7 @@ def temp_devcontainer_project(tmp_path):
 FROM node:18-slim
 RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
 RUN npm install -g opencode-ai@latest
-WORKDIR /workspace
+WORKDIR /workspaces/test-project
 """
     )
 
@@ -76,11 +76,11 @@ WORKDIR /workspace
         """{
   "name": "test-container",
   "build": {"dockerfile": "Dockerfile"},
-  "workspaceFolder": "/workspace",
+  "workspaceFolder": "/workspaces/test-project",
   "remoteEnv": {
     "ZAI_API_KEY": "${localEnv:ZAI_API_KEY}"
   },
-  "postCreateCommand": "git config --global --add safe.directory /workspace"
+  "postCreateCommand": "git config --global --add safe.directory /workspaces/test-project"
 }"""
     )
 
