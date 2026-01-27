@@ -10,6 +10,40 @@ from typing import Literal
 
 RunnerType = Literal["claude", "opencode", "gemini"]
 
+
+def _check_container_running(worktree_path: Path) -> bool:
+    """Check if a devcontainer is running for the given worktree."""
+    try:
+        result = subprocess.run(
+            [
+                "docker",
+                "ps",
+                "-q",
+                "--filter",
+                f"label=devcontainer.local_folder={worktree_path.resolve()}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        return bool(result.stdout.strip())
+    except Exception:
+        return False
+
+
+def _wrap_in_container(cmd: list[str], worktree_path: Path) -> list[str]:
+    """Wrap command in devcontainer exec if container is running."""
+    if not _check_container_running(worktree_path):
+        return cmd
+
+    # Wrap command in devcontainer exec
+    return [
+        "devcontainer",
+        "exec",
+        "--workspace-folder",
+        str(worktree_path.resolve()),
+    ] + cmd
+
 # Environment variable names for defaults
 ARBORIST_DEFAULT_RUNNER_ENV_VAR = "ARBORIST_DEFAULT_RUNNER"
 ARBORIST_DEFAULT_MODEL_ENV_VAR = "ARBORIST_DEFAULT_MODEL"
@@ -95,6 +129,7 @@ class ClaudeRunner(Runner):
         """Run a prompt using Claude CLI.
 
         If cwd is provided, Claude runs in that directory and can explore files there.
+        If a devcontainer is running for that worktree, the command will be wrapped in devcontainer exec.
         """
         path = shutil.which(self.command)
         if not path:
@@ -110,12 +145,17 @@ class ClaudeRunner(Runner):
             if self.model:
                 cmd.extend(["--model", self.model])
 
+            # If cwd provided and container running, wrap in devcontainer exec
+            using_container = cwd and _check_container_running(cwd)
+            if using_container:
+                cmd = _wrap_in_container(cmd, cwd)
+
             result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
                 timeout=timeout,
-                cwd=cwd,
+                cwd=None if using_container else cwd,  # devcontainer exec handles cwd
             )
 
             return RunResult(
@@ -156,7 +196,11 @@ class OpencodeRunner(Runner):
         self.model = model
 
     def run(self, prompt: str, timeout: int = 60, cwd: Path | None = None) -> RunResult:
-        """Run a prompt using OpenCode CLI."""
+        """Run a prompt using OpenCode CLI.
+
+        If cwd is provided, OpenCode runs in that directory and can explore files there.
+        If a devcontainer is running for that worktree, the command will be wrapped in devcontainer exec.
+        """
         path = shutil.which(self.command)
         if not path:
             return RunResult(
@@ -174,12 +218,17 @@ class OpencodeRunner(Runner):
                 cmd.extend(["-m", self.model])
             cmd.append(prompt)
 
+            # If cwd provided and container running, wrap in devcontainer exec
+            using_container = cwd and _check_container_running(cwd)
+            if using_container:
+                cmd = _wrap_in_container(cmd, cwd)
+
             result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
                 timeout=timeout,
-                cwd=cwd,
+                cwd=None if using_container else cwd,  # devcontainer exec handles cwd
             )
 
             return RunResult(
@@ -220,7 +269,11 @@ class GeminiRunner(Runner):
         self.model = model
 
     def run(self, prompt: str, timeout: int = 60, cwd: Path | None = None) -> RunResult:
-        """Run a prompt using Gemini CLI."""
+        """Run a prompt using Gemini CLI.
+
+        If cwd is provided, Gemini runs in that directory and can explore files there.
+        If a devcontainer is running for that worktree, the command will be wrapped in devcontainer exec.
+        """
         path = shutil.which(self.command)
         if not path:
             return RunResult(
@@ -237,12 +290,17 @@ class GeminiRunner(Runner):
                 cmd.extend(["-m", self.model])
             cmd.append(prompt)
 
+            # If cwd provided and container running, wrap in devcontainer exec
+            using_container = cwd and _check_container_running(cwd)
+            if using_container:
+                cmd = _wrap_in_container(cmd, cwd)
+
             result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
                 timeout=timeout,
-                cwd=cwd,
+                cwd=None if using_container else cwd,  # devcontainer exec handles cwd
             )
 
             return RunResult(

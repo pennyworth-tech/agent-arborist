@@ -169,15 +169,9 @@ class SubDagBuilder:
             """Generate output variable name for a step."""
             return f"{task_id}_{step.upper().replace('-', '_')}_RESULT"
 
-        def wrap_cmd(cmd: str) -> str:
-            """Wrap command in devcontainer exec if using containers."""
-            if self._use_containers:
-                return devcontainer_exec_command(cmd)
-            return cmd
-
         steps: list[SubDagStep] = []
 
-        # Pre-sync (not wrapped - runs on host to create worktree)
+        # Pre-sync (runs on host to create worktree)
         steps.append(SubDagStep(
             name="pre-sync",
             command=f"arborist task pre-sync {task_id}",
@@ -188,35 +182,35 @@ class SubDagBuilder:
         if self._use_containers:
             steps.append(SubDagStep(
                 name="container-up",
-                command=devcontainer_up_command(),
+                command=f"{devcontainer_up_command()} {task_id}",
                 depends=["pre-sync"],
             ))
 
-        # Run (wrapped - executes inside container)
+        # Run (arborist on host, but will invoke runner inside container)
         steps.append(SubDagStep(
             name="run",
-            command=wrap_cmd(f"arborist task run {task_id}"),
+            command=f"arborist task run {task_id}",
             depends=["container-up"] if self._use_containers else ["pre-sync"],
             output=output_var("run"),
         ))
 
-        # Commit (wrapped - runs inside container)
+        # Commit (arborist on host)
         steps.append(SubDagStep(
             name="commit",
-            command=wrap_cmd(f"arborist task commit {task_id}"),
+            command=f"arborist task commit {task_id}",
             depends=["run"],
             output=output_var("commit"),
         ))
 
-        # Run-test (wrapped - runs inside container)
+        # Run-test (arborist on host, executes tests inside worktree/container)
         steps.append(SubDagStep(
             name="run-test",
-            command=wrap_cmd(f"arborist task run-test {task_id}"),
+            command=f"arborist task run-test {task_id}",
             depends=["commit"],
             output=output_var("run-test"),
         ))
 
-        # Post-merge (not wrapped - merges branches on host)
+        # Post-merge (arborist on host, will invoke runner inside container)
         steps.append(SubDagStep(
             name="post-merge",
             command=f"arborist task post-merge {task_id}",
@@ -228,11 +222,11 @@ class SubDagBuilder:
         if self._use_containers:
             steps.append(SubDagStep(
                 name="container-down",
-                command=devcontainer_down_command(),
+                command=f"{devcontainer_down_command()} {task_id}",
                 depends=["post-merge"],
             ))
 
-        # Post-cleanup (not wrapped - removes worktree on host)
+        # Post-cleanup (runs on host to remove worktree)
         steps.append(SubDagStep(
             name="post-cleanup",
             command=f"arborist task post-cleanup {task_id}",

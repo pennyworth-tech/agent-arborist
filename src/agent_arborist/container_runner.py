@@ -355,9 +355,13 @@ class DevContainerRunner:
 # ============================================================
 
 
-def devcontainer_up_command(worktree_env_var: str = "${ARBORIST_WORKTREE}") -> str:
-    """Generate shell command for container-up step."""
-    return f'devcontainer up --workspace-folder "{worktree_env_var}"'
+def devcontainer_up_command() -> str:
+    """Generate shell command for container-up step.
+
+    Uses arborist CLI to ensure proper initialization (symlink creation, etc).
+    Task ID will be injected by DAG builder.
+    """
+    return "arborist task container-up"
 
 
 def devcontainer_exec_command(
@@ -368,9 +372,10 @@ def devcontainer_exec_command(
     return f'devcontainer exec --workspace-folder "{worktree_env_var}" {command}'
 
 
-def devcontainer_down_command(worktree_env_var: str = "${ARBORIST_WORKTREE}") -> str:
-    """Generate shell command for container-down step."""
-    return (
-        f"docker stop $(docker ps -q --filter "
-        f'label=devcontainer.local_folder="{worktree_env_var}") 2>/dev/null || true'
-    )
+def devcontainer_down_command() -> str:
+    """Generate shell command for container-down step.
+
+    Uses arborist CLI for proper cleanup.
+    Task ID will be injected by DAG builder.
+    """
+    return "arborist task container-down"

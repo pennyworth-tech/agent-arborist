@@ -356,18 +356,13 @@ def build_dag_from_tasks(
         "steps": root_steps,
     }
 
-    # Helper to wrap commands in devcontainer exec if needed
-    def wrap_cmd(cmd: str) -> str:
-        if use_containers:
-            return devcontainer_exec_command(cmd)
-        return cmd
-
     # Build subdag for each task with standard pattern
+    # Note: Arborist runs on host, but will invoke AI runner inside container
     subdags = []
     for task in sorted(tasks, key=lambda t: t.id):
         steps = []
 
-        # Pre-sync (not wrapped - runs on host to create worktree)
+        # Pre-sync (runs on host to create worktree)
         steps.append({
             "name": "pre-sync",
             "command": f"arborist task pre-sync {task.id}",
@@ -377,32 +372,32 @@ def build_dag_from_tasks(
         if use_containers:
             steps.append({
                 "name": "container-up",
-                "command": devcontainer_up_command(),
+                "command": f"{devcontainer_up_command()} {task.id}",
                 "depends": ["pre-sync"],
             })
 
-        # Run (wrapped - executes inside container)
+        # Run (arborist on host, but will invoke runner inside container)
         steps.append({
             "name": "run",
-            "command": wrap_cmd(f"arborist task run {task.id}"),
+            "command": f"arborist task run {task.id}",
             "depends": ["container-up"] if use_containers else ["pre-sync"],
         })
 
-        # Commit (wrapped - runs inside container)
+        # Commit (arborist on host)
         steps.append({
             "name": "commit",
-            "command": wrap_cmd(f"arborist task commit {task.id}"),
+            "command": f"arborist task commit {task.id}",
             "depends": ["run"],
         })
 
-        # Run-test (wrapped - runs inside container)
+        # Run-test (arborist on host, executes tests inside worktree/container)
         steps.append({
             "name": "run-test",
-            "command": wrap_cmd(f"arborist task run-test {task.id}"),
+            "command": f"arborist task run-test {task.id}",
             "depends": ["commit"],
         })
 
-        # Post-merge (not wrapped - merges branches on host)
+        # Post-merge (arborist on host, will invoke runner inside container)
         steps.append({
             "name": "post-merge",
             "command": f"arborist task post-merge {task.id}",
@@ -413,11 +408,11 @@ def build_dag_from_tasks(
         if use_containers:
             steps.append({
                 "name": "container-down",
-                "command": devcontainer_down_command(),
+                "command": f"{devcontainer_down_command()} {task.id}",
                 "depends": ["post-merge"],
             })
 
-        # Post-cleanup (not wrapped - removes worktree on host)
+        # Post-cleanup (runs on host to remove worktree)
         steps.append({
             "name": "post-cleanup",
             "command": f"arborist task post-cleanup {task.id}",
