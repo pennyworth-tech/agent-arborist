@@ -762,6 +762,106 @@ def task_pre_sync(ctx: click.Context, task_id: str) -> None:
         raise SystemExit(1)
 
 
+@task.command("container-up")
+@click.argument("task_id")
+@click.pass_context
+def task_container_up(ctx: click.Context, task_id: str) -> None:
+    """Start devcontainer for a task's worktree.
+
+    This command reads the worktree path from ARBORIST_WORKTREE environment variable.
+    It ensures the .devcontainer is accessible and starts the container.
+    """
+    import os
+    from agent_arborist.container_runner import DevContainerRunner
+
+    manifest_path = os.environ.get("ARBORIST_MANIFEST")
+    worktree_path_str = os.environ.get("ARBORIST_WORKTREE")
+
+    if not manifest_path or not worktree_path_str:
+        console.print("[red]Error:[/red] ARBORIST_MANIFEST and ARBORIST_WORKTREE environment variables must be set")
+        console.print("This command should be run from a DAGU DAG step")
+        raise SystemExit(1)
+
+    worktree_path = Path(worktree_path_str)
+    if not worktree_path.exists():
+        console.print(f"[red]Error:[/red] Worktree path does not exist: {worktree_path}")
+        raise SystemExit(1)
+
+    if ctx.obj.get("echo_for_testing"):
+        echo_command(
+            "task container-up",
+            task_id=task_id,
+            worktree=str(worktree_path),
+        )
+        return
+
+    # Start container
+    runner = DevContainerRunner()
+    result = runner.container_up(worktree_path)
+
+    # Output result
+    from agent_arborist.step_results import ContainerUpResult
+    container_result = ContainerUpResult(
+        success=result.success,
+        worktree_path=str(worktree_path),
+        container_started=result.success,
+        output=result.output,
+        error=result.error,
+    )
+    output_result(container_result, ctx)
+
+    if not result.success:
+        raise SystemExit(1)
+
+
+@task.command("container-down")
+@click.argument("task_id")
+@click.pass_context
+def task_container_down(ctx: click.Context, task_id: str) -> None:
+    """Stop devcontainer for a task's worktree.
+
+    This command reads the worktree path from ARBORIST_WORKTREE environment variable.
+    """
+    import os
+    from agent_arborist.container_runner import DevContainerRunner
+
+    manifest_path = os.environ.get("ARBORIST_MANIFEST")
+    worktree_path_str = os.environ.get("ARBORIST_WORKTREE")
+
+    if not manifest_path or not worktree_path_str:
+        console.print("[red]Error:[/red] ARBORIST_MANIFEST and ARBORIST_WORKTREE environment variables must be set")
+        console.print("This command should be run from a DAGU DAG step")
+        raise SystemExit(1)
+
+    worktree_path = Path(worktree_path_str)
+
+    if ctx.obj.get("echo_for_testing"):
+        echo_command(
+            "task container-down",
+            task_id=task_id,
+            worktree=str(worktree_path),
+        )
+        return
+
+    # Stop container
+    runner = DevContainerRunner()
+    result = runner.container_down(worktree_path)
+
+    # Output result
+    from agent_arborist.step_results import ContainerDownResult
+    container_result = ContainerDownResult(
+        success=result.success,
+        worktree_path=str(worktree_path),
+        container_stopped=result.success,
+        output=result.output,
+        error=result.error,
+    )
+    output_result(container_result, ctx)
+
+    if not result.success:
+        raise SystemExit(1)
+
+
 @task.command("run")
 @click.argument("task_id")
 @click.option("--timeout", "-t", default=1800, help="Timeout in seconds")

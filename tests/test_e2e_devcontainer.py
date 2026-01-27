@@ -72,27 +72,31 @@ WORKDIR /workspace
 """
     )
 
-    # devcontainer.json
+    # devcontainer.json - mount arborist source from parent
+    arborist_repo_root = str(Path(__file__).parent.parent.parent.resolve())
     devcontainer_json = devcontainer_dir / "devcontainer.json"
     devcontainer_json.write_text(
-        """{
+        f"""{{
   "name": "calculator-test",
-  "build": {
+  "build": {{
     "dockerfile": "Dockerfile"
-  },
+  }},
   "workspaceFolder": "/workspace",
-  "remoteEnv": {
-    "OPENAI_API_KEY": "${localEnv:OPENAI_API_KEY}",
+  "mounts": [
+    "source={arborist_repo_root},target=/arborist-src,type=bind,consistency=cached"
+  ],
+  "remoteEnv": {{
+    "OPENAI_API_KEY": "${{localEnv:OPENAI_API_KEY}}",
     "ARBORIST_DEFAULT_RUNNER": "opencode",
     "ARBORIST_DEFAULT_MODEL": "openai/gpt-4o-mini"
-  },
-  "postCreateCommand": "git config --global --add safe.directory /workspace",
-  "customizations": {
-    "vscode": {
+  }},
+  "postCreateCommand": "git config --global --add safe.directory /workspace && python3 -m pip install -e /arborist-src",
+  "customizations": {{
+    "vscode": {{
       "extensions": []
-    }
-  }
-}
+    }}
+  }}
+}}
 """
     )
 
@@ -353,17 +357,21 @@ class TestE2EDevContainer:
         # Check for container lifecycle steps
         has_container_up = "container-up" in dag_content
         has_container_down = "container-down" in dag_content
-        has_devcontainer_exec = "devcontainer exec" in dag_content
         has_worktree_env = "ARBORIST_WORKTREE" in dag_content
+        has_container_up_cmd = "arborist task container-up" in dag_content
+        has_container_down_cmd = "arborist task container-down" in dag_content
 
         print(f"✓ Container-up steps: {'YES' if has_container_up else 'NO'}")
         print(f"✓ Container-down steps: {'YES' if has_container_down else 'NO'}")
-        print(f"✓ Devcontainer exec wrapping: {'YES' if has_devcontainer_exec else 'NO'}")
+        print(f"✓ Container-up command: {'YES' if has_container_up_cmd else 'NO'}")
+        print(f"✓ Container-down command: {'YES' if has_container_down_cmd else 'NO'}")
         print(f"✓ ARBORIST_WORKTREE env var: {'YES' if has_worktree_env else 'NO'}")
+        print("Note: Runner commands are wrapped at execution time, not in DAG")
 
         assert has_container_up, "DAG should have container-up steps"
         assert has_container_down, "DAG should have container-down steps"
-        assert has_devcontainer_exec, "DAG should wrap commands in devcontainer exec"
+        assert has_container_up_cmd, "DAG should have arborist task container-up command"
+        assert has_container_down_cmd, "DAG should have arborist task container-down command"
         assert has_worktree_env, "DAG should set ARBORIST_WORKTREE"
 
         # Check if containers were actually created (check docker)
