@@ -6,8 +6,10 @@ wraps runner execution in devcontainer commands.
 Arborist does NOT provide a devcontainer - it uses the target's.
 """
 
+import json
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -45,6 +47,88 @@ class ContainerResult:
     output: str
     error: str | None = None
     exit_code: int = 0
+
+
+@dataclass
+class ValidationStatus:
+    """Result of devcontainer configuration validation."""
+
+    valid: bool
+    errors: list[str]
+    warnings: list[str]
+
+
+def validate_devcontainer_config(worktree_path: Path) -> ValidationStatus:
+    """Validate devcontainer.json and Dockerfile for workspace consistency.
+
+    Checks for common misconfigurations that can cause container startup failures,
+    such as workspaceFolder mismatches with the actual mount point.
+
+    Note: If workspaceFolder is not set in devcontainer.json, the devcontainer CLI
+    will automatically mount to /workspaces/<folder-name>. This is the recommended
+    approach - remove workspaceFolder and WORKDIR to let the CLI manage it.
+
+    Args:
+        worktree_path: Path to the worktree directory.
+
+    Returns:
+        ValidationStatus with validation results.
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    worktree_path = worktree_path.resolve()
+    devcontainer_dir = worktree_path / ".devcontainer"
+
+    # Check devcontainer.json exists
+    devcontainer_json = devcontainer_dir / "devcontainer.json"
+    if not devcontainer_json.exists():
+        return ValidationStatus(valid=True, errors=[], warnings=["No devcontainer.json found"])
+
+    # Read devcontainer.json
+    try:
+        dc_config = json.loads(devcontainer_json.read_text())
+    except Exception as e:
+        errors.append(f"Could not parse devcontainer.json: {e}")
+        return ValidationStatus(valid=False, errors=errors, warnings=warnings)
+
+    # Check workspaceFolder
+    workspace_folder = dc_config.get("workspaceFolder")
+
+    # Check Dockerfile
+    dockerfile = devcontainer_dir / "Dockerfile"
+    if dockerfile.exists():
+        dockerfile_content = dockerfile.read_text()
+        workdir_match = None
+
+        for line in dockerfile_content.split('\n'):
+            line = line.strip()
+            if line.lower().startswith('workdir'):
+                workdir_match = line.split(maxsplit=1)[1] if len(line.split()) > 1 else None
+                break
+
+        # If workspaceFolder is set, Dockerfile WORKDIR must match it
+        if workdir_match and workspace_folder:
+            if workdir_match.replace('\\', '') != workspace_folder:
+                errors.append(
+                    f"Dockerfile WORKDIR '{workdir_match}' does not match "
+                    f"workspaceFolder '{workspace_folder}' in devcontainer.json. "
+                    f"Both must be set to the same path to avoid OCI runtime errors."
+                )
+                return ValidationStatus(valid=False, errors=errors, warnings=warnings)
+
+        # If workspaceFolder is not set but WORKDIR is, warn about the mismatch
+        if workdir_match and not workspace_folder:
+            worktree_name = worktree_path.name
+            expected_folder = f"/workspaces/{worktree_name}"
+            if workdir_match.replace('\\', '') != expected_folder:
+                warnings.append(
+                    f"Dockerfile has WORKDIR '{workdir_match}' but workspaceFolder is not set in devcontainer.json. "
+                    f"Devcontainer CLI will mount to '{expected_folder}'. "
+                    f"Remove WORKDIR from Dockerfile to let CLI manage the workspace mount point."
+                )
+
+    return ValidationStatus(valid=len(errors) == 0, errors=errors, warnings=warnings)
 
 
 def has_devcontainer(repo_path: Path | None = None) -> bool:
@@ -172,6 +256,20 @@ class DevContainerRunner:
 
         # Ensure worktree has access to .devcontainer (symlink if needed)
         self._ensure_devcontainer_accessible(worktree_path)
+
+        # Validate devcontainer configuration for potential issues
+        validation = validate_devcontainer_config(worktree_path)
+        if validation.errors:
+            error_msg = "\n".join(validation.errors)
+            return ContainerResult(
+                success=False,
+                output="",
+                error=f"Devcontainer validation failed:\n{error_msg}",
+                exit_code=-1,
+            )
+        if validation.warnings:
+            for warning in validation.warnings:
+                print(f"[WARNING] {warning}", file=sys.stderr)
 
         cmd = [
             "devcontainer",

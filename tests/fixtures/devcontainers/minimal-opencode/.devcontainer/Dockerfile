@@ -17,8 +17,6 @@ RUN npm install -g opencode-ai@latest
 # Verify opencode installation
 RUN opencode --version
 
-# Set working directory
-WORKDIR /workspaces/agent-arborist
-
+# WORKDIR will be set by devcontainer CLI to /workspaces/<folder-name>
 # Git configuration will be done in postCreateCommand
 # Arborist will be installed from local source in postCreateCommand

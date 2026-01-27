@@ -59,28 +59,25 @@ def temp_devcontainer_project(tmp_path):
     devcontainer_dir = tmp_path / ".devcontainer"
     devcontainer_dir.mkdir()
 
-    # Minimal Dockerfile
+    # Minimal Dockerfile (WORKDIR will be set by devcontainer CLI to /workspaces/test-project)
     dockerfile = devcontainer_dir / "Dockerfile"
     dockerfile.write_text(
         """
 FROM node:18-slim
 RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
 RUN npm install -g opencode-ai@latest
-WORKDIR /workspaces/test-project
 """
     )
 
-    # Minimal devcontainer.json
+    # Minimal devcontainer.json (no workspaceFolder override - let CLI set it)
     devcontainer_json = devcontainer_dir / "devcontainer.json"
     devcontainer_json.write_text(
         """{
   "name": "test-container",
   "build": {"dockerfile": "Dockerfile"},
-  "workspaceFolder": "/workspaces/test-project",
   "remoteEnv": {
     "ZAI_API_KEY": "${localEnv:ZAI_API_KEY}"
-  },
-  "postCreateCommand": "git config --global --add safe.directory /workspaces/test-project"
+  }
 }"""
     )
 
@@ -185,6 +182,192 @@ class TestDevContainerCLI:
         is_installed, message = check_devcontainer_cli()
         assert is_installed is True
         assert "devcontainer" in message.lower() or len(message) > 0
+
+
+# ============================================================
+# DEVCONTAINER VALIDATION TESTS (Fast - No containers)
+# ============================================================
+
+
+class TestDevContainerValidation:
+    """Tests for devcontainer configuration validation.
+
+    These tests validate the configuration logic without starting containers.
+    """
+
+    def test_validate_with_no_workspace_folder(self, tmp_path):
+        """Should pass validation when workspaceFolder is not set (uses CLI default)."""
+        from agent_arborist.container_runner import validate_devcontainer_config
+
+        worktree_path = tmp_path / "T001"
+        worktree_path.mkdir()
+
+        devcontainer_dir = worktree_path / ".devcontainer"
+        devcontainer_dir.mkdir()
+
+        import json
+        with open(devcontainer_dir / "devcontainer.json", "w") as f:
+            json.dump({
+                "name": "Test Container",
+                "image": "python:3.12",
+            }, f)
+
+        with open(devcontainer_dir / "Dockerfile", "w") as f:
+            f.write("FROM python:3.12\n")
+
+        result = validate_devcontainer_config(worktree_path)
+
+        assert result.valid is True
+        assert len(result.errors) == 0
+        assert len(result.warnings) == 0
+
+    def test_validate_with_mismatched_workdir_and_workspace_folder(self, tmp_path):
+        """Should fail validation when WORKDIR doesn't match workspaceFolder."""
+        from agent_arborist.container_runner import validate_devcontainer_config
+
+        worktree_path = tmp_path / "T001"
+        worktree_path.mkdir()
+
+        devcontainer_dir = worktree_path / ".devcontainer"
+        devcontainer_dir.mkdir()
+
+        import json
+        with open(devcontainer_dir / "devcontainer.json", "w") as f:
+            json.dump({
+                "name": "Test Container",
+                "image": "python:3.12",
+                "workspaceFolder": "/custom/path",
+            }, f)
+
+        with open(devcontainer_dir / "Dockerfile", "w") as f:
+            f.write("FROM python:3.12\n")
+            f.write("WORKDIR /other/path\n")
+
+        result = validate_devcontainer_config(worktree_path)
+
+        assert result.valid is False
+        assert len(result.errors) == 1
+        assert "does not match workspaceFolder" in result.errors[0]
+        assert len(result.warnings) == 0
+
+    def test_validate_with_matching_workdir_and_workspace_folder(self, tmp_path):
+        """Should pass validation when WORKDIR matches workspaceFolder."""
+        from agent_arborist.container_runner import validate_devcontainer_config
+
+        worktree_path = tmp_path / "T001"
+        worktree_path.mkdir()
+
+        devcontainer_dir = worktree_path / ".devcontainer"
+        devcontainer_dir.mkdir()
+
+        import json
+        with open(devcontainer_dir / "devcontainer.json", "w") as f:
+            json.dump({
+                "name": "Test Container",
+                "image": "python:3.12",
+                "workspaceFolder": "/custom/path",
+            }, f)
+
+        with open(devcontainer_dir / "Dockerfile", "w") as f:
+            f.write("FROM python:3.12\n")
+            f.write("WORKDIR /custom/path\n")
+
+        result = validate_devcontainer_config(worktree_path)
+
+        assert result.valid is True
+        assert len(result.errors) == 0
+        assert len(result.warnings) == 0
+
+    def test_validate_with_devcontainer_missing(self, tmp_path):
+        """Should return valid with warning when devcontainer.json doesn't exist.
+
+        Note: This can happen if .devcontainer symlink hasn't been created yet,
+        or if the repo doesn't have a devcontainer configuration.
+        """
+        from agent_arborist.container_runner import validate_devcontainer_config
+
+        result = validate_devcontainer_config(tmp_path)
+
+        assert result.valid is True
+        assert len(result.errors) == 0
+        assert len(result.warnings) == 1
+        assert "No devcontainer.json found" in result.warnings[0]
+
+    def test_validate_with_image_no_dockerfile(self, tmp_path):
+        """Should pass validation when using pre-built image without Dockerfile."""
+        from agent_arborist.container_runner import validate_devcontainer_config
+
+        worktree_path = tmp_path / "T001"
+        worktree_path.mkdir()
+
+        devcontainer_dir = worktree_path / ".devcontainer"
+        devcontainer_dir.mkdir()
+
+        import json
+        with open(devcontainer_dir / "devcontainer.json", "w") as f:
+            json.dump({
+                "name": "Test Container",
+                "image": "python:3.12",
+            }, f)
+
+        result = validate_devcontainer_config(worktree_path)
+
+        assert result.valid is True
+        assert len(result.errors) == 0
+        assert len(result.warnings) == 0
+
+    def test_validate_with_mismatched_workdir(self, tmp_path):
+        """Should warn when WORKDIR is set but workspaceFolder is not."""
+        from agent_arborist.container_runner import validate_devcontainer_config
+
+        worktree_path = tmp_path / "T001"
+        worktree_path.mkdir()
+
+        devcontainer_dir = worktree_path / ".devcontainer"
+        devcontainer_dir.mkdir()
+
+        import json
+        with open(devcontainer_dir / "devcontainer.json", "w") as f:
+            json.dump({
+                "name": "Test Container",
+                "image": "python:3.12",
+            }, f)
+
+        with open(devcontainer_dir / "Dockerfile", "w") as f:
+            f.write("FROM python:3.12\n")
+            f.write("WORKDIR /wrong/path\n")
+
+        result = validate_devcontainer_config(worktree_path)
+
+        assert result.valid is True
+        assert len(result.errors) == 0
+        assert len(result.warnings) == 1
+        assert "WORKDIR" in result.warnings[0]
+
+    def test_validate_with_workspace_folder_and_workdir_set(self, tmp_path):
+        """Should pass validation when workspaceFolder and WORKDIR match (both set explicitly)."""
+        from agent_arborist.container_runner import validate_devcontainer_config
+
+        devcontainer_dir = tmp_path / ".devcontainer"
+        devcontainer_dir.mkdir()
+
+        import json
+        with open(devcontainer_dir / "devcontainer.json", "w") as f:
+            json.dump({
+                "name": "Test Container",
+                "image": "python:3.12",
+                "workspaceFolder": "/custom/path",
+            }, f)
+
+        with open(devcontainer_dir / "Dockerfile", "w") as f:
+            f.write("FROM python:3.12\n")
+            f.write("WORKDIR /custom/path\n")
+
+        result = validate_devcontainer_config(tmp_path)
+
+        assert result.valid is True
+        assert len(result.errors) == 0
+        assert len(result.warnings) == 0
 
 
 # ============================================================
