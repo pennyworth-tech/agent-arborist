@@ -12,6 +12,14 @@ from typing import Any
 
 import yaml
 
+from agent_arborist.container_runner import (
+    ContainerMode,
+    should_use_container,
+    devcontainer_up_command,
+    devcontainer_down_command,
+    devcontainer_exec_command,
+)
+from agent_arborist.home import get_arborist_home
 from agent_arborist.task_spec import TaskSpec, Task
 from agent_arborist.task_state import TaskTree, build_task_tree_from_spec
 
@@ -53,6 +61,8 @@ class DagConfig:
     name: str
     description: str = ""
     spec_id: str = ""  # For manifest path
+    container_mode: ContainerMode = ContainerMode.AUTO  # Container execution mode
+    repo_path: Path | None = None  # Path to target repo for devcontainer detection
 
 
 class SubDagBuilder:
@@ -61,6 +71,7 @@ class SubDagBuilder:
     def __init__(self, config: DagConfig):
         self.config = config
         self._task_tree: TaskTree | None = None
+        self._use_containers = False  # Set during build()
 
     def build(self, spec: TaskSpec, task_tree: TaskTree) -> DagBundle:
         """Build a complete DAG bundle from a TaskSpec and TaskTree.
@@ -73,6 +84,12 @@ class SubDagBuilder:
             DagBundle with root DAG and all subdags
         """
         self._task_tree = task_tree
+
+        # Check if we should use containers
+        self._use_containers = should_use_container(
+            self.config.container_mode,
+            self.config.repo_path
+        )
 
         # Build all subdags (leaves first, then parents)
         subdags = self._build_all_subdags(task_tree)
@@ -141,8 +158,9 @@ class SubDagBuilder:
     def _build_leaf_subdag(self, task_id: str) -> SubDag:
         """Build a leaf subdag with individual command nodes.
 
-        Leaf subdags have 6 steps in sequence:
-        pre-sync -> run -> commit -> run-test -> post-merge -> post-cleanup
+        Leaf subdags have steps in sequence:
+        - With containers: container-up -> pre-sync -> run -> commit -> run-test -> post-merge -> container-down -> post-cleanup
+        - Without containers: pre-sync -> run -> commit -> run-test -> post-merge -> post-cleanup
 
         Each step captures its JSON output via Dagu's output: field.
         """
@@ -151,45 +169,92 @@ class SubDagBuilder:
             """Generate output variable name for a step."""
             return f"{task_id}_{step.upper().replace('-', '_')}_RESULT"
 
-        steps = [
-            SubDagStep(
-                name="pre-sync",
-                command=f"arborist task pre-sync {task_id}",
-                output=output_var("pre-sync"),
-            ),
-            SubDagStep(
-                name="run",
-                command=f"arborist task run {task_id}",
-                depends=["pre-sync"],
-                output=output_var("run"),
-            ),
-            SubDagStep(
-                name="commit",
-                command=f"arborist task commit {task_id}",
-                depends=["run"],
-                output=output_var("commit"),
-            ),
-            SubDagStep(
-                name="run-test",
-                command=f"arborist task run-test {task_id}",
-                depends=["commit"],
-                output=output_var("run-test"),
-            ),
-            SubDagStep(
-                name="post-merge",
-                command=f"arborist task post-merge {task_id}",
-                depends=["run-test"],
-                output=output_var("post-merge"),
-            ),
-            SubDagStep(
-                name="post-cleanup",
-                command=f"arborist task post-cleanup {task_id}",
-                depends=["post-merge"],
-                output=output_var("post-cleanup"),
-            ),
-        ]
+        def wrap_cmd(cmd: str) -> str:
+            """Wrap command in devcontainer exec if using containers."""
+            if self._use_containers:
+                return devcontainer_exec_command(cmd)
+            return cmd
 
-        return SubDag(name=task_id, steps=steps)
+        steps: list[SubDagStep] = []
+
+        # Pre-sync (not wrapped - runs on host to create worktree)
+        steps.append(SubDagStep(
+            name="pre-sync",
+            command=f"arborist task pre-sync {task_id}",
+            output=output_var("pre-sync"),
+        ))
+
+        # Container lifecycle: Start container (AFTER worktree exists)
+        if self._use_containers:
+            steps.append(SubDagStep(
+                name="container-up",
+                command=devcontainer_up_command(),
+                depends=["pre-sync"],
+            ))
+
+        # Run (wrapped - executes inside container)
+        steps.append(SubDagStep(
+            name="run",
+            command=wrap_cmd(f"arborist task run {task_id}"),
+            depends=["container-up"] if self._use_containers else ["pre-sync"],
+            output=output_var("run"),
+        ))
+
+        # Commit (wrapped - runs inside container)
+        steps.append(SubDagStep(
+            name="commit",
+            command=wrap_cmd(f"arborist task commit {task_id}"),
+            depends=["run"],
+            output=output_var("commit"),
+        ))
+
+        # Run-test (wrapped - runs inside container)
+        steps.append(SubDagStep(
+            name="run-test",
+            command=wrap_cmd(f"arborist task run-test {task_id}"),
+            depends=["commit"],
+            output=output_var("run-test"),
+        ))
+
+        # Post-merge (not wrapped - merges branches on host)
+        steps.append(SubDagStep(
+            name="post-merge",
+            command=f"arborist task post-merge {task_id}",
+            depends=["run-test"],
+            output=output_var("post-merge"),
+        ))
+
+        # Container lifecycle: Stop container for this worktree
+        if self._use_containers:
+            steps.append(SubDagStep(
+                name="container-down",
+                command=devcontainer_down_command(),
+                depends=["post-merge"],
+            ))
+
+        # Post-cleanup (not wrapped - removes worktree on host)
+        steps.append(SubDagStep(
+            name="post-cleanup",
+            command=f"arborist task post-cleanup {task_id}",
+            depends=["container-down"] if self._use_containers else ["post-merge"],
+            output=output_var("post-cleanup"),
+        ))
+
+        # Add environment variable for worktree path
+        # Compute absolute path to worktree
+        spec_id = self.config.spec_id or self.config.name
+        try:
+            arborist_home = get_arborist_home()
+            worktree_path = arborist_home / "worktrees" / spec_id / task_id
+            env_vars = [
+                f"ARBORIST_MANIFEST={spec_id}.json",
+                f"ARBORIST_WORKTREE={worktree_path}",
+            ]
+        except Exception:
+            # Fallback if we can't determine arborist home
+            env_vars = [f"ARBORIST_MANIFEST={spec_id}.json"]
+
+        return SubDag(name=task_id, steps=steps, env=env_vars)
 
     def _build_parent_subdag(self, task_id: str, task_tree: TaskTree) -> SubDag:
         """Build a parent subdag that calls child subdags.
@@ -243,7 +308,20 @@ arborist task post-cleanup {task_id}"""
             output=output_var("complete"),
         ))
 
-        return SubDag(name=task_id, steps=steps)
+        # Add environment variable for worktree path
+        spec_id = self.config.spec_id or self.config.name
+        try:
+            arborist_home = get_arborist_home()
+            worktree_path = arborist_home / "worktrees" / spec_id / task_id
+            env_vars = [
+                f"ARBORIST_MANIFEST={spec_id}.json",
+                f"ARBORIST_WORKTREE={worktree_path}",
+            ]
+        except Exception:
+            # Fallback if we can't determine arborist home
+            env_vars = [f"ARBORIST_MANIFEST={spec_id}.json"]
+
+        return SubDag(name=task_id, steps=steps, env=env_vars)
 
     def _step_to_dict(self, step: SubDagStep) -> dict[str, Any]:
         """Convert a SubDagStep to a dictionary for YAML serialization."""
