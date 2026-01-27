@@ -1,6 +1,7 @@
 """Runner abstraction for executing prompts via CLI tools."""
 
 import os
+import shlex
 import subprocess
 import shutil
 from abc import ABC, abstractmethod
@@ -32,17 +33,31 @@ def _check_container_running(worktree_path: Path) -> bool:
 
 
 def _wrap_in_container(cmd: list[str], worktree_path: Path) -> list[str]:
-    """Wrap command in devcontainer exec if container is running."""
+    """Wrap command in devcontainer exec if container is running.
+
+    Uses a shell wrapper to ensure the command runs in /workspace directory,
+    as devcontainer exec doesn't have a native --workdir flag.
+
+    Workaround based on: https://github.com/devcontainers/cli/issues/703
+    """
     if not _check_container_running(worktree_path):
         return cmd
 
-    # Wrap command in devcontainer exec
+    # Build shell command that changes to /workspace before executing
+    # Quote the original command arguments properly for shell execution
+    shell_cmd = " ".join(shlex.quote(arg) for arg in cmd)
+
+    # Wrap in bash -c to cd to workspace first
+    # Use /workspace as it's the standard workspaceFolder in devcontainer.json
     return [
         "devcontainer",
         "exec",
         "--workspace-folder",
         str(worktree_path.resolve()),
-    ] + cmd
+        "bash",
+        "-c",
+        f"cd /workspace && {shell_cmd}",
+    ]
 
 # Environment variable names for defaults
 ARBORIST_DEFAULT_RUNNER_ENV_VAR = "ARBORIST_DEFAULT_RUNNER"

@@ -188,11 +188,23 @@ class DevContainerRunner:
                 timeout=self.config.up_timeout,
             )
 
+            if result.returncode != 0:
+                return ContainerResult(
+                    success=False,
+                    output=result.stdout,
+                    error=result.stderr,
+                    exit_code=result.returncode,
+                )
+
+            # Wait for container to be fully ready
+            readiness_result = self.wait_for_container_ready(worktree_path, timeout=30)
+            if not readiness_result.success:
+                return readiness_result
+
             return ContainerResult(
-                success=result.returncode == 0,
-                output=result.stdout,
-                error=result.stderr if result.returncode != 0 else None,
-                exit_code=result.returncode,
+                success=True,
+                output=result.stdout + "\n" + readiness_result.output,
+                exit_code=0,
             )
 
         except subprocess.TimeoutExpired:
@@ -328,6 +340,61 @@ class DevContainerRunner:
                 error=str(e),
                 exit_code=-1,
             )
+
+    def wait_for_container_ready(
+        self,
+        worktree_path: Path,
+        timeout: int = 30,
+        interval: float = 1.0,
+    ) -> ContainerResult:
+        """Wait for container to be fully ready after startup.
+
+        Args:
+            worktree_path: Path to the worktree.
+            timeout: Maximum seconds to wait.
+            interval: Seconds between checks.
+
+        Returns:
+            ContainerResult indicating readiness.
+        """
+        import time
+
+        start_time = time.time()
+        worktree_path = worktree_path.resolve()
+
+        while time.time() - start_time < timeout:
+            # Check if container is running
+            check_cmd = [
+                "docker",
+                "ps",
+                "-q",
+                "--filter",
+                f"label=devcontainer.local_folder={worktree_path}",
+            ]
+
+            try:
+                result = subprocess.run(
+                    check_cmd, capture_output=True, text=True, timeout=5
+                )
+                if result.stdout.strip():
+                    # Container found, test if it's responsive
+                    test_result = self.exec(worktree_path, ["echo", "ready"], timeout=5)
+                    if test_result.success:
+                        return ContainerResult(
+                            success=True,
+                            output=f"Container ready after {time.time() - start_time:.1f}s",
+                        )
+            except Exception:
+                pass
+
+            time.sleep(interval)
+
+        return ContainerResult(
+            success=False,
+            output="",
+            error=f"Container not ready after {timeout}s",
+            exit_code=-1,
+        )
 
     def _ensure_devcontainer_accessible(self, worktree_path: Path) -> None:
         """Ensure worktree can access .devcontainer config.

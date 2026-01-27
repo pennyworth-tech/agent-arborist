@@ -13,6 +13,8 @@ from agent_arborist.runner import (
     RunResult,
     get_runner,
     DEFAULT_RUNNER,
+    _wrap_in_container,
+    _check_container_running,
 )
 
 
@@ -185,3 +187,83 @@ class TestGetRunner:
         with pytest.raises(ValueError) as exc_info:
             get_runner("unknown")
         assert "Unknown runner type" in str(exc_info.value)
+
+
+class TestWrapInContainer:
+    """Test container wrapping functionality."""
+
+    @patch("agent_arborist.runner._check_container_running")
+    def test_wrap_in_container_when_no_container_running(self, mock_check):
+        """Should return original command when no container is running."""
+        from pathlib import Path
+
+        mock_check.return_value = False
+        worktree = Path("/tmp/test-worktree")
+        cmd = ["opencode", "run", "test prompt"]
+
+        result = _wrap_in_container(cmd, worktree)
+
+        assert result == cmd
+        mock_check.assert_called_once_with(worktree)
+
+    @patch("agent_arborist.runner._check_container_running")
+    def test_wrap_in_container_sets_working_directory(self, mock_check):
+        """Should wrap command with bash to cd to /workspace."""
+        from pathlib import Path
+
+        mock_check.return_value = True
+        worktree = Path("/tmp/test-worktree")
+        cmd = ["opencode", "run", "test prompt"]
+
+        result = _wrap_in_container(cmd, worktree)
+
+        # Verify structure
+        assert result[0] == "devcontainer"
+        assert result[1] == "exec"
+        assert result[2] == "--workspace-folder"
+        assert result[4] == "bash"
+        assert result[5] == "-c"
+
+        # Verify shell command includes cd /workspace
+        shell_cmd = result[6]
+        assert "cd /workspace &&" in shell_cmd
+        assert "opencode" in shell_cmd
+        assert "run" in shell_cmd
+        assert "test prompt" in shell_cmd
+
+    @patch("agent_arborist.runner._check_container_running")
+    def test_wrap_in_container_quotes_arguments(self, mock_check):
+        """Should properly quote arguments with special characters."""
+        from pathlib import Path
+
+        mock_check.return_value = True
+        worktree = Path("/tmp/test-worktree")
+        # Command with spaces and special characters in prompt
+        cmd = ["opencode", "run", "test with spaces and 'quotes'"]
+
+        result = _wrap_in_container(cmd, worktree)
+
+        shell_cmd = result[6]
+        # shlex.quote should have quoted the prompt properly
+        assert "cd /workspace &&" in shell_cmd
+        # The quoted prompt should be escaped
+        assert "opencode" in shell_cmd
+        assert "spaces" in shell_cmd
+
+    @patch("agent_arborist.runner._check_container_running")
+    def test_wrap_in_container_with_model_flag(self, mock_check):
+        """Should handle runner commands with model flags."""
+        from pathlib import Path
+
+        mock_check.return_value = True
+        worktree = Path("/tmp/test-worktree")
+        cmd = ["opencode", "run", "-m", "openai/gpt-4o-mini", "implement feature"]
+
+        result = _wrap_in_container(cmd, worktree)
+
+        shell_cmd = result[6]
+        assert "cd /workspace &&" in shell_cmd
+        assert "opencode" in shell_cmd
+        assert "-m" in shell_cmd
+        assert "openai/gpt-4o-mini" in shell_cmd
+        assert "implement feature" in shell_cmd
