@@ -118,16 +118,27 @@ def output_result(result: StepResult, ctx: click.Context) -> None:
 
 
 def _count_changed_files(worktree_path: Path) -> int:
-    """Count files changed in worktree since last commit."""
+    """Count uncommitted files changed in worktree (staged + unstaged)."""
     try:
-        result = subprocess.run(
-            ["git", "diff", "--name-only", "HEAD~1"],
+        # Check unstaged changes
+        unstaged_result = subprocess.run(
+            ["git", "diff", "--name-only"],
             cwd=worktree_path,
             capture_output=True,
             text=True,
         )
-        if result.returncode == 0:
-            return len([f for f in result.stdout.strip().split("\n") if f])
+        # Check staged changes
+        staged_result = subprocess.run(
+            ["git", "diff", "--cached", "--name-only"],
+            cwd=worktree_path,
+            capture_output=True,
+            text=True,
+        )
+
+        unstaged_files = set(f for f in unstaged_result.stdout.strip().split("\n") if f)
+        staged_files = set(f for f in staged_result.stdout.strip().split("\n") if f)
+
+        return len(unstaged_files | staged_files)
     except Exception:
         pass
     return 0
