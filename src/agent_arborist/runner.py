@@ -167,16 +167,22 @@ class ClaudeRunner(Runner):
 
         If cwd is provided, Claude runs in that directory and can explore files there.
         """
-        path = shutil.which(self.command)
-        if not path:
-            return RunResult(
-                success=False,
-                output="",
-                error=f"{self.command} not found in PATH",
-                exit_code=-1,
-            )
+        # When running in container, use command name so container can resolve it
+        # Otherwise, resolve to full path on host
+        if container_cmd_prefix:
+            cmd_name = self.command
+        else:
+            path = shutil.which(self.command)
+            if not path:
+                return RunResult(
+                    success=False,
+                    output="",
+                    error=f"{self.command} not found in PATH",
+                    exit_code=-1,
+                )
+            cmd_name = path
 
-        cmd = [path, "--dangerously-skip-permissions", "-p", prompt]
+        cmd = [cmd_name, "--dangerously-skip-permissions", "-p", prompt]
         if self.model:
             cmd.extend(["--model", self.model])
 
@@ -205,18 +211,24 @@ class OpencodeRunner(Runner):
         container_cmd_prefix: list[str] | None = None,
     ) -> RunResult:
         """Run a prompt using OpenCode CLI."""
-        path = shutil.which(self.command)
-        if not path:
-            return RunResult(
-                success=False,
-                output="",
-                error=f"{self.command} not found in PATH",
-                exit_code=-1,
-            )
+        # When running in container, use command name so container can resolve it
+        # Otherwise, resolve to full path on host
+        if container_cmd_prefix:
+            cmd_name = self.command
+        else:
+            path = shutil.which(self.command)
+            if not path:
+                return RunResult(
+                    success=False,
+                    output="",
+                    error=f"{self.command} not found in PATH",
+                    exit_code=-1,
+                )
+            cmd_name = path
 
         # OpenCode uses 'run' subcommand for non-interactive mode
         # TODO: skip permissions can be set in target repo opencode.json file
-        cmd = [path, "run"]
+        cmd = [cmd_name, "run"]
         if self.model:
             cmd.extend(["-m", self.model])
         cmd.append(prompt)
@@ -246,17 +258,23 @@ class GeminiRunner(Runner):
         container_cmd_prefix: list[str] | None = None,
     ) -> RunResult:
         """Run a prompt using Gemini CLI."""
-        path = shutil.which(self.command)
-        if not path:
-            return RunResult(
-                success=False,
-                output="",
-                error=f"{self.command} not found in PATH",
-                exit_code=-1,
-            )
+        # When running in container, use command name so container can resolve it
+        # Otherwise, resolve to full path on host
+        if container_cmd_prefix:
+            cmd_name = self.command
+        else:
+            path = shutil.which(self.command)
+            if not path:
+                return RunResult(
+                    success=False,
+                    output="",
+                    error=f"{self.command} not found in PATH",
+                    exit_code=-1,
+                )
+            cmd_name = path
 
         # Gemini CLI uses positional prompt argument
-        cmd = [path, "--yolo"]
+        cmd = [cmd_name, "--yolo"]
         if self.model:
             cmd.extend(["-m", self.model])
         cmd.append(prompt)
