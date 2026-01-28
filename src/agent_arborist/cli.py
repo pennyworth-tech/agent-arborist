@@ -872,8 +872,14 @@ def task_container_down(ctx: click.Context, task_id: str) -> None:
     default=None,
     help=f"Runner to use (default: ${ARBORIST_DEFAULT_RUNNER_ENV_VAR} or opencode)",
 )
+@click.option(
+    "--model",
+    "-m",
+    default=None,
+    help=f"Model to use (default: ${ARBORIST_DEFAULT_MODEL_ENV_VAR} or runner-specific default)",
+)
 @click.pass_context
-def task_run(ctx: click.Context, task_id: str, timeout: int, runner: str | None) -> None:
+def task_run(ctx: click.Context, task_id: str, timeout: int, runner: str | None, model: str | None) -> None:
     """Execute a task using AI in its worktree.
 
     The AI runner will be invoked in the task's worktree directory,
@@ -925,7 +931,7 @@ def task_run(ctx: click.Context, task_id: str, timeout: int, runner: str | None)
         raise SystemExit(1)
 
     # Build prompt for AI
-    resolved_model = get_default_model()
+    resolved_model = model if model is not None else get_default_model()
     prompt = f"""Implement task {task_id}: "{task_description}"
 
 You are in the project worktree. Read the task spec at specs/{manifest.spec_id}/tasks.md for full context including dependencies and requirements.
@@ -953,8 +959,8 @@ IMPORTANT:
 
     import time
 
-    # Get runner (model comes from environment default)
-    runner_instance = get_runner(runner_type)
+    # Get runner with model
+    runner_instance = get_runner(runner_type, model=resolved_model)
 
     if not runner_instance.is_available():
         console.print(f"[red]Error:[/red] {runner_type} not found in PATH")
@@ -1809,6 +1815,8 @@ def spec_dag_build(
             spec_id=dag_name,
             container_mode=container_mode_enum,
             repo_path=repo_path,
+            runner=runner,
+            model=model,
         )
         builder = DagBuilder(config)
         dag_yaml = builder.build_yaml(task_spec)

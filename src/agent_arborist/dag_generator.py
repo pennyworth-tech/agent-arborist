@@ -264,6 +264,8 @@ def build_dag_from_tasks(
     manifest_path: str,
     container_mode: ContainerMode = ContainerMode.AUTO,
     repo_path: Path | None = None,
+    runner_name: str | None = None,
+    model: str | None = None,
 ) -> str:
     """Build full DAGU DAG YAML from simple task list.
 
@@ -276,6 +278,8 @@ def build_dag_from_tasks(
         manifest_path: Path to manifest JSON file
         container_mode: Container execution mode
         repo_path: Path to repo for devcontainer detection
+        runner_name: Runner to use (claude, opencode, gemini)
+        model: Model to use (format depends on runner)
     """
     dag_name_safe = dag_name.replace("-", "_")
 
@@ -377,9 +381,14 @@ def build_dag_from_tasks(
             })
 
         # Run (arborist on host, but will invoke runner inside container)
+        run_cmd = f"arborist task run {task.id}"
+        if runner_name:
+            run_cmd += f" --runner {runner_name}"
+        if model:
+            run_cmd += f" --model '{model}'"
         steps.append({
             "name": "run",
-            "command": f"arborist task run {task.id}",
+            "command": run_cmd,
             "depends": ["container-up"] if use_containers else ["pre-sync"],
         })
 
@@ -548,6 +557,8 @@ class DagGenerator:
             manifest,
             container_mode=self.container_mode,
             repo_path=self.repo_path,
+            runner_name=self.runner.name,
+            model=self.runner.model,
         )
 
         return GenerationResult(

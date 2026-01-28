@@ -63,6 +63,8 @@ class DagConfig:
     spec_id: str = ""  # For manifest path
     container_mode: ContainerMode = ContainerMode.AUTO  # Container execution mode
     repo_path: Path | None = None  # Path to target repo for devcontainer detection
+    runner: str | None = None  # Runner to use (claude, opencode, gemini)
+    model: str | None = None  # Model to use (format depends on runner)
 
 
 class SubDagBuilder:
@@ -187,9 +189,14 @@ class SubDagBuilder:
             ))
 
         # Run (arborist on host, but will invoke runner inside container)
+        run_cmd = f"arborist task run {task_id}"
+        if self.config.runner:
+            run_cmd += f" --runner {self.config.runner}"
+        if self.config.model:
+            run_cmd += f" --model '{self.config.model}'"
         steps.append(SubDagStep(
             name="run",
-            command=f"arborist task run {task_id}",
+            command=run_cmd,
             depends=["container-up"] if self._use_containers else ["pre-sync"],
             output=output_var("run"),
         ))
