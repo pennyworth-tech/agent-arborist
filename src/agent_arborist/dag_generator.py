@@ -18,7 +18,6 @@ from agent_arborist.container_runner import (
     should_use_container,
     devcontainer_up_command,
     devcontainer_down_command,
-    devcontainer_exec_command,
 )
 from agent_arborist.home import get_arborist_home
 
@@ -352,22 +351,19 @@ def build_dag_from_tasks(
     root_dag = {
         "name": dag_name_safe,
         "description": description,
-        "env": [f"ARBORIST_MANIFEST={manifest_path}"],
+        "env": [
+            f"ARBORIST_MANIFEST={manifest_path}",
+            f"ARBORIST_CONTAINER_MODE={container_mode.value}",
+        ],
         "steps": root_steps,
     }
-
-    # Helper to wrap commands in devcontainer exec if needed
-    def wrap_cmd(cmd: str) -> str:
-        if use_containers:
-            return devcontainer_exec_command(cmd)
-        return cmd
 
     # Build subdag for each task with standard pattern
     subdags = []
     for task in sorted(tasks, key=lambda t: t.id):
         steps = []
 
-        # Pre-sync (not wrapped - runs on host to create worktree)
+        # Pre-sync (runs on host to create worktree)
         steps.append({
             "name": "pre-sync",
             "command": f"arborist task pre-sync {task.id}",
@@ -381,28 +377,28 @@ def build_dag_from_tasks(
                 "depends": ["pre-sync"],
             })
 
-        # Run (wrapped - executes inside container)
+        # Run (self-aware - wraps AI runner subprocess if needed)
         steps.append({
             "name": "run",
-            "command": wrap_cmd(f"arborist task run {task.id}"),
+            "command": f"arborist task run {task.id}",
             "depends": ["container-up"] if use_containers else ["pre-sync"],
         })
 
-        # Commit (wrapped - runs inside container)
+        # Commit (runs git on host)
         steps.append({
             "name": "commit",
-            "command": wrap_cmd(f"arborist task commit {task.id}"),
+            "command": f"arborist task commit {task.id}",
             "depends": ["run"],
         })
 
-        # Run-test (wrapped - runs inside container)
+        # Run-test (self-aware - wraps test command subprocess if needed)
         steps.append({
             "name": "run-test",
-            "command": wrap_cmd(f"arborist task run-test {task.id}"),
+            "command": f"arborist task run-test {task.id}",
             "depends": ["commit"],
         })
 
-        # Post-merge (not wrapped - merges branches on host)
+        # Post-merge (self-aware - wraps AI runner subprocess if needed)
         steps.append({
             "name": "post-merge",
             "command": f"arborist task post-merge {task.id}",
@@ -431,9 +427,13 @@ def build_dag_from_tasks(
             env_vars = [
                 f"ARBORIST_MANIFEST={manifest_path}",
                 f"ARBORIST_WORKTREE={worktree_path}",
+                f"ARBORIST_CONTAINER_MODE={container_mode.value}",
             ]
         except Exception:
-            env_vars = [f"ARBORIST_MANIFEST={manifest_path}"]
+            env_vars = [
+                f"ARBORIST_MANIFEST={manifest_path}",
+                f"ARBORIST_CONTAINER_MODE={container_mode.value}",
+            ]
 
         subdag = {
             "name": task.id,
