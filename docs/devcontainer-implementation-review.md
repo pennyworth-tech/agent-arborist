@@ -1364,12 +1364,8 @@ The test expects the `backlit-devpod/.devcontainer/` to provide:
 - ✅ Git configured for commits (user.name, user.email)
 
 **Required Environment:**
-- ✅ `ANTHROPIC_API_KEY` passed through from host
+- ✅ `ANTHROPIC_API_KEY` passed through from host (via .env file)
 - ✅ Node.js or compatible runtime for Claude Code
-
-**Optional (recommended) for arborist tests:**
-- 📝 `ARBORIST_DEFAULT_RUNNER=claude` in remoteEnv
-- 📝 `ARBORIST_DEFAULT_MODEL=sonnet` in remoteEnv
 
 **What Tests Will Verify:**
 ```bash
@@ -1377,9 +1373,86 @@ The test expects the `backlit-devpod/.devcontainer/` to provide:
 which claude           # Claude Code available
 claude --version       # Working installation
 git config user.name   # Git configured
+echo $ANTHROPIC_API_KEY  # Environment variable available
 ```
 
 **Note:** Tests do NOT modify `backlit-devpod` repo. They copy `.devcontainer/` into test fixture projects.
+
+#### Environment Variable Strategy: .env File Approach
+
+**Pattern:** Tests create a `.env` file and modify devcontainer.json to use it via `runArgs`.
+
+**Critical Timing Understanding:**
+
+Environment variables from `.env` are set at **container creation time** (`devcontainer up`), NOT at execution time (`devcontainer exec`).
+
+```bash
+# Timeline:
+1. Create .env file with ANTHROPIC_API_KEY
+2. devcontainer up --workspace-folder /test-project
+   ↓ Docker reads .env file via runArgs: ["--env-file", ".env"]
+   ↓ Container starts with ANTHROPIC_API_KEY in environment
+3. devcontainer exec ... claude -p "..."
+   ↓ Command inherits container's environment
+   ↓ ANTHROPIC_API_KEY is available ✓
+4. devcontainer exec ... arborist task run T001
+   ↓ Also inherits container's environment
+   ↓ ANTHROPIC_API_KEY is available ✓
+```
+
+**Key Implications:**
+
+1. **✅ All exec commands see the variables** - No special handling per command
+2. **✅ Variables persist for container lifetime** - Set once at up, available everywhere
+3. **⚠️ Changes require container restart** - Modifying .env after up won't take effect
+4. **✅ Git-safe** - .env file created in tmp_path, never committed
+
+**Test Implementation:**
+
+```python
+# tests/conftest.py
+@pytest.fixture
+def e2e_project(tmp_path, backlit_devcontainer):
+    """Create test project with backlit devcontainer and .env file."""
+    project_dir = tmp_path / "test-project"
+    project_dir.mkdir()
+
+    # Copy backlit devcontainer
+    shutil.copytree(backlit_devcontainer, project_dir / ".devcontainer")
+
+    # Create .env file with API key from host environment
+    env_file = project_dir / ".env"
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        pytest.skip("ANTHROPIC_API_KEY not set in environment")
+    env_file.write_text(f"ANTHROPIC_API_KEY={api_key}\n")
+
+    # Modify devcontainer.json to use .env file
+    dc_json = project_dir / ".devcontainer" / "devcontainer.json"
+    with open(dc_json, "r") as f:
+        config = json.load(f)
+
+    # Add runArgs to pass .env file to Docker
+    config["runArgs"] = config.get("runArgs", []) + [
+        "--env-file", "${localWorkspaceFolder}/.env"
+    ]
+
+    with open(dc_json, "w") as f:
+        json.dump(config, f, indent=2)
+
+    # Initialize git repo
+    subprocess.run(["git", "init"], cwd=project_dir, check=True)
+    # ... rest of setup
+
+    yield project_dir
+```
+
+**Why This Works:**
+
+1. **At test time:** Create .env with ANTHROPIC_API_KEY from host
+2. **At container-up:** Docker reads .env, sets variables in container environment
+3. **At exec time:** All commands (arborist, claude) inherit container environment
+4. **Result:** No special environment handling needed in runner.py or dag_builder.py
 
 #### Benefits of This Approach
 
