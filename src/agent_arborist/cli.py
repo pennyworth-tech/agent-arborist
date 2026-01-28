@@ -772,8 +772,14 @@ def task_pre_sync(ctx: click.Context, task_id: str) -> None:
     default=None,
     help=f"Runner to use (default: ${ARBORIST_DEFAULT_RUNNER_ENV_VAR} or opencode)",
 )
+@click.option(
+    "--model",
+    "-m",
+    default=None,
+    help="Model to use (default: runner's default model)",
+)
 @click.pass_context
-def task_run(ctx: click.Context, task_id: str, timeout: int, runner: str | None) -> None:
+def task_run(ctx: click.Context, task_id: str, timeout: int, runner: str | None, model: str | None) -> None:
     """Execute a task using AI in its worktree.
 
     The AI runner will be invoked in the task's worktree directory,
@@ -805,8 +811,9 @@ def task_run(ctx: click.Context, task_id: str, timeout: int, runner: str | None)
     # Get worktree path
     worktree_path = get_worktree_path(manifest.spec_id, task_id)
 
-    # Get runner type early for echo
+    # Get runner type and model early for echo
     runner_type = runner or get_default_runner()
+    resolved_model = model or get_default_model()
 
     if ctx.obj.get("echo_for_testing"):
         echo_command(
@@ -814,6 +821,7 @@ def task_run(ctx: click.Context, task_id: str, timeout: int, runner: str | None)
             task_id=task_id,
             spec_id=manifest.spec_id,
             runner=runner_type,
+            model=resolved_model,
             timeout=str(timeout),
             worktree=str(worktree_path),
         )
@@ -825,7 +833,6 @@ def task_run(ctx: click.Context, task_id: str, timeout: int, runner: str | None)
         raise SystemExit(1)
 
     # Build prompt for AI
-    resolved_model = get_default_model()
     prompt = f"""Implement task {task_id}: "{task_description}"
 
 You are in the project worktree. Read the task spec at specs/{manifest.spec_id}/tasks.md for full context including dependencies and requirements.
@@ -853,8 +860,8 @@ IMPORTANT:
 
     import time
 
-    # Get runner (model comes from environment default)
-    runner_instance = get_runner(runner_type)
+    # Get runner with specified or default model
+    runner_instance = get_runner(runner_type, model=resolved_model)
 
     if not runner_instance.is_available():
         console.print(f"[red]Error:[/red] {runner_type} not found in PATH")
@@ -1111,8 +1118,21 @@ def task_run_test(ctx: click.Context, task_id: str, cmd: str | None) -> None:
 @task.command("post-merge")
 @click.argument("task_id")
 @click.option("--timeout", "-t", default=300, help="Timeout in seconds for AI merge")
+@click.option(
+    "--runner",
+    "-r",
+    type=click.Choice(["claude", "opencode", "gemini"]),
+    default=None,
+    help=f"Runner to use (default: ${ARBORIST_DEFAULT_RUNNER_ENV_VAR} or opencode)",
+)
+@click.option(
+    "--model",
+    "-m",
+    default=None,
+    help="Model to use (default: runner's default model)",
+)
 @click.pass_context
-def task_post_merge(ctx: click.Context, task_id: str, timeout: int) -> None:
+def task_post_merge(ctx: click.Context, task_id: str, timeout: int, runner: str | None, model: str | None) -> None:
     """Merge task branch to parent branch using AI.
 
     AI performs a squash merge with proper commit message format:
@@ -1148,9 +1168,9 @@ def task_post_merge(ctx: click.Context, task_id: str, timeout: int) -> None:
     task_branch = task_info.branch
     parent_branch = task_info.parent_branch
 
-    # Get runner info for commit message footer
-    runner_type = get_default_runner()
-    resolved_model = get_default_model()
+    # Get runner and model (use CLI params or defaults)
+    runner_type = runner or get_default_runner()
+    resolved_model = model or get_default_model()
 
     # Get or create worktree for parent branch
     parent_worktree = find_worktree_for_branch(parent_branch)
@@ -1176,6 +1196,8 @@ def task_post_merge(ctx: click.Context, task_id: str, timeout: int) -> None:
             "task post-merge",
             task_id=task_id,
             spec_id=manifest.spec_id,
+            runner=runner_type,
+            model=resolved_model,
             branch=task_branch,
             parent=parent_branch,
             worktree=str(parent_worktree),
@@ -1210,7 +1232,7 @@ IMPORTANT:
 Do NOT push. Just complete the merge and commit locally.
 """
 
-    runner_instance = get_runner(runner_type)
+    runner_instance = get_runner(runner_type, model=resolved_model)
 
     if not runner_instance.is_available():
         console.print(f"[red]Error:[/red] {runner_type} not available")
@@ -1709,6 +1731,8 @@ def spec_dag_build(
             spec_id=dag_name,
             container_mode=container_mode_enum,
             repo_path=repo_path,
+            runner=runner,
+            model=model,
         )
         builder = DagBuilder(config)
         dag_yaml = builder.build_yaml(task_spec)
