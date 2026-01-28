@@ -58,10 +58,10 @@ def e2e_project(tmp_path):
 FROM node:18-slim
 
 # Install essential tools
-RUN apt-get update && apt-get install -y \\
-    git \\
-    curl \\
-    && rm -rf /var/lib/apt/lists/*
+        RUN apt-get update && apt-get install -y \\
+            git \\
+            curl \\
+            && rm -rf /var/lib/apt/lists/*
 
 # Install OpenCode CLI globally
 RUN npm install -g opencode-ai@latest
@@ -88,7 +88,6 @@ RUN opencode --version
     "ARBORIST_DEFAULT_RUNNER": "opencode",
     "ARBORIST_DEFAULT_MODEL": "openai/gpt-4o-mini"
   }},
-  "postCreateCommand": "python3 -m pip install -e /arborist-src",
   "customizations": {{
     "vscode": {{
       "extensions": []
@@ -139,73 +138,37 @@ RUN opencode --version
     spec_dir = project_dir / "specs" / "001-calculator"
     spec_dir.mkdir(parents=True)
 
-    # Create task specs
-    (spec_dir / "T001.md").write_text(
+    # Create a single tasks.md file with all task definitions
+    (spec_dir / "tasks.md").write_text(
         """\
-# T001: Create addition function
+# Tasks: Calculator Project
 
-Create a file `calculator.js` with an `add(a, b)` function that returns the sum of two numbers.
+**Project**: Simple command-line calculator with basic arithmetic operations
+**Total Tasks**: 4
 
-## Implementation
-- Create calculator.js in the workspace root
-- Implement add function that takes two parameters
-- Return the sum of the two numbers
-- Use module.exports to export the function
-"""
-    )
+## Phase 1: Core Operations
 
-    (spec_dir / "T002.md").write_text(
-        """\
-# T002: Create subtraction function
+- [ ] T001 Create `calculator.js` with an `add(a, b)` function
+- [ ] T002 Add `subtract(a, b)` function to calculator.js
+- [ ] T003 Add `multiply(a, b)` function to calculator.js
 
-Add a `subtract(a, b)` function to `calculator.js` that returns the difference.
+**Checkpoint**: All basic operations implemented
 
-## Implementation
-- Add subtract function to existing calculator.js
-- Function should take two parameters
-- Return the difference (a - b)
-- Export the function alongside add
+---
+
+## Phase 2: Testing
+
+- [ ] T004 Create `calculator.test.js` with tests for all operations
+
+**Checkpoint**: Tests pass
+
+---
 
 ## Dependencies
-- Depends on T001 (calculator.js must exist)
-"""
-    )
 
-    (spec_dir / "T003.md").write_text(
-        """\
-# T003: Create multiplication function
-
-Add a `multiply(a, b)` function to `calculator.js` that returns the product.
-
-## Implementation
-- Add multiply function to existing calculator.js
-- Function should take two parameters
-- Return the product (a * b)
-- Export the function alongside add and subtract
-
-## Dependencies
-- Depends on T001 (calculator.js must exist)
-"""
-    )
-
-    (spec_dir / "T004.md").write_text(
-        """\
-# T004: Create test file
-
-Create `calculator.test.js` with simple tests for all three operations.
-
-## Implementation
-- Create calculator.test.js in workspace root
-- Require the calculator module
-- Test add(2, 3) === 5
-- Test subtract(5, 3) === 2
-- Test multiply(4, 3) === 12
-- Use console.assert() for assertions
-- Print "All tests passed!" if successful
-
-## Dependencies
-- Depends on T002 (subtract function must exist)
-- Depends on T003 (multiply function must exist)
+```
+T001 → T002 → T003 → T004
+```
 """
     )
 
@@ -298,7 +261,7 @@ class TestE2EDevContainer:
             env=test_env,
         )
 
-        print("\\n=== DAG Run Output ===")
+        print("\n=== DAG Run Output ===")
         print(run_result.stdout)
         if run_result.stderr:
             print("=== Stderr ===")
@@ -327,12 +290,16 @@ class TestE2EDevContainer:
         print(status_result.stdout)
 
         # Step 6: Verify commits were made for each task
-        print("\\n=== Verifying Task Commits ===")
+        print("\n=== Verifying Task Commits ===")
 
         task_branches = ["001-calculator_a_T001", "001-calculator_a_T002", "001-calculator_a_T003", "001-calculator_a_T004"]
+        expected_task_count = 4
         commits_verified = []
+        branches_with_changes = []
 
         for branch in task_branches:
+            task_id = branch.split("_")[-1]  # Extract T001, T002, etc.
+
             branch_check = subprocess.run(
                 ["git", "rev-parse", "--verify", branch],
                 cwd=e2e_project,
@@ -341,6 +308,9 @@ class TestE2EDevContainer:
             )
 
             if branch_check.returncode == 0:
+                # Get commits with task(TXXX): format
+                task_commits = get_task_commit_messages(e2e_project, branch)
+
                 log_result = subprocess.run(
                     ["git", "log", "--oneline", "-5", branch],
                     cwd=e2e_project,
@@ -348,9 +318,10 @@ class TestE2EDevContainer:
                     text=True,
                 )
 
-                print(f"\\n{branch}:")
+                print(f"\n{branch}:")
                 print(log_result.stdout)
 
+                # Check if branch has changes compared to source branch
                 diff_result = subprocess.run(
                     ["git", "diff", "--stat", "001-calculator", branch],
                     cwd=e2e_project,
@@ -360,15 +331,35 @@ class TestE2EDevContainer:
 
                 if diff_result.stdout.strip():
                     print(f"  Changes: {diff_result.stdout.strip()}")
-                    commits_verified.append(branch)
+                    branches_with_changes.append(branch)
                 else:
                     print(f"  WARNING: No changes found")
 
-        # Step 7: Verify DAG structure and container mode
+                # Verify task commits exist
+                if task_commits:
+                    print(f"  ✓ Found {len(task_commits)} task commit(s) matching task({task_id}): format")
+                    commits_verified.append(branch)
+                else:
+                    print(f"  ✗ No task commits found matching task({task_id}): format")
+            else:
+                print(f"\n{branch}: Branch does not exist")
+
+        # Step 7: Assert commit requirements
+        print("\n=== Commit Verification Results ===")
+        print(f"Branches with task(TXXX): commits: {len(commits_verified)}/{expected_task_count}")
+        print(f"Branches with file changes: {len(branches_with_changes)}/{expected_task_count}")
+
+        assert len(commits_verified) == expected_task_count, \
+            f"Expected {expected_task_count} branches with task commits, but found {len(commits_verified)}"
+
+        assert len(branches_with_changes) == expected_task_count, \
+            f"Expected {expected_task_count} branches with changes, but found {len(branches_with_changes)}"
+
+        # Step 8: Verify DAG structure and container mode
         assert dag_file.exists(), "DAG file should exist"
 
         dag_content = dag_file.read_text()
-        print("\\n=== Verifying Container Mode Integration ===")
+        print("\n=== Verifying Container Mode Integration ===")
 
         has_container_up = "container-up" in dag_content
         has_container_down = "container-down" in dag_content
@@ -388,10 +379,11 @@ class TestE2EDevContainer:
         assert has_container_down_cmd, "DAG should have arborist task container-down command"
         assert has_worktree_env, "DAG should set ARBORIST_WORKTREE"
 
-        print("\\n=== Test Summary ===")
+        print("\n=== Test Summary ===")
         print("✓ DAG built successfully")
         print("✓ DAG executed successfully")
-        print(f"✓ {len(commits_verified)}/4 task branches have non-empty commits")
+        print(f"✓ All {expected_task_count} task branches have valid commits with changes")
+        print("✓ Container mode integration verified")
         print("✓ Worktrees created properly")
 
     def test_container_mode_flag_integration(self, e2e_project):
@@ -441,6 +433,12 @@ class TestE2EDevContainer:
             timeout=600,
             env=test_env,
         )
+
+        print("\n=== DAG Run Output ===")
+        print(run_result.stdout)
+        if run_result.stderr:
+            print("=== Stderr ===")
+            print(run_result.stderr)
 
         return build_result, run_result
 
