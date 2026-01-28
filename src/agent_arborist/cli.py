@@ -1492,133 +1492,6 @@ def spec_branch_create_all(ctx: click.Context) -> None:
         raise SystemExit(1)
 
 
-@spec.command("branch-cleanup-all")
-@click.option("--force", "-f", is_flag=True, help="Force removal of worktrees and branches")
-@click.pass_context
-def spec_branch_cleanup_all(ctx: click.Context, force: bool) -> None:
-    """Remove all worktrees and branches for the current spec.
-
-    Auto-detects spec from git branch, or use --spec to specify.
-    Finds branches matching {spec}_a* pattern and worktrees in .arborist/worktrees/{spec}/.
-
-    Use --force to force removal even if branches are not fully merged.
-    """
-    spec_id = ctx.obj.get("spec_id")
-
-    if not spec_id:
-        console.print("[red]Error:[/red] No spec available")
-        console.print("Either:")
-        console.print("  - Run from a spec branch (e.g., 002-my-feature)")
-        console.print("  - Use --spec option (e.g., --spec 002-my-feature)")
-        raise SystemExit(1)
-
-    if ctx.obj.get("echo_for_testing"):
-        echo_command(
-            "spec branch-cleanup-all",
-            spec_id=spec_id,
-            force=str(force),
-        )
-        return
-
-    git_root = get_git_root()
-    branch_pattern = f"{spec_id}_a"
-
-    # Find all branches matching the pattern
-    result = subprocess.run(
-        ["git", "branch", "--list", f"{branch_pattern}*"],
-        cwd=git_root,
-        capture_output=True,
-        text=True,
-    )
-    branches = [b.strip().lstrip("*+ ") for b in result.stdout.strip().split("\n") if b.strip()]
-
-    # Find worktrees using git worktree list (more reliable than directory listing)
-    # This catches worktrees even if arborist_home is different or directory structure varies
-    worktree_result = subprocess.run(
-        ["git", "worktree", "list", "--porcelain"],
-        cwd=git_root,
-        capture_output=True,
-        text=True,
-    )
-    worktrees = []
-    current_worktree = None
-    for line in worktree_result.stdout.strip().split("\n"):
-        if line.startswith("worktree "):
-            current_worktree = {"path": Path(line[9:])}
-        elif line.startswith("branch refs/heads/") and current_worktree:
-            branch_name = line[18:]
-            # Check if this worktree's branch matches our pattern
-            if branch_name.startswith(branch_pattern):
-                current_worktree["branch"] = branch_name
-                worktrees.append(current_worktree)
-            current_worktree = None
-        elif line == "" and current_worktree:
-            current_worktree = None
-
-    # Also find worktrees directory for this spec (for cleanup)
-    try:
-        arborist_home = get_arborist_home()
-        worktrees_dir = arborist_home / "worktrees" / spec_id
-    except ArboristHomeError:
-        worktrees_dir = None
-
-    if not branches and not worktrees:
-        console.print(f"[dim]No branches or worktrees found for spec {spec_id}[/dim]")
-        return
-
-    if not ctx.obj.get("quiet"):
-        console.print(f"[cyan]Cleaning up for spec {spec_id}...[/cyan]")
-        if branches:
-            console.print(f"[dim]Found {len(branches)} branches matching {branch_pattern}*[/dim]")
-        if worktrees:
-            console.print(f"[dim]Found {len(worktrees)} worktrees[/dim]")
-        if force:
-            console.print(f"[yellow]Force mode enabled[/yellow]")
-
-    cleaned = []
-    errors = []
-
-    # Remove worktrees first (must be done before deleting branches)
-    for worktree_info in worktrees:
-        worktree_path = worktree_info["path"]
-        if not ctx.obj.get("quiet"):
-            console.print(f"[dim]Removing worktree {worktree_path.name}...[/dim]")
-        try:
-            cmd = ["git", "worktree", "remove", str(worktree_path)]
-            if force:
-                cmd.append("--force")
-            subprocess.run(cmd, cwd=git_root, check=True, capture_output=True)
-            cleaned.append(f"worktree:{worktree_path.name}")
-        except subprocess.CalledProcessError as e:
-            errors.append(f"worktree {worktree_path.name}: {e.stderr.strip() if e.stderr else str(e)}")
-
-    # Clean up empty worktrees directory
-    if worktrees_dir and worktrees_dir.exists():
-        try:
-            worktrees_dir.rmdir()  # Only removes if empty
-        except OSError:
-            pass  # Not empty, that's fine
-
-    # Delete branches (longer names first to delete children before parents)
-    for branch in sorted(branches, key=len, reverse=True):
-        if not ctx.obj.get("quiet"):
-            console.print(f"[dim]Deleting branch {branch}...[/dim]")
-        try:
-            cmd = ["git", "branch", "-D" if force else "-d", branch]
-            subprocess.run(cmd, cwd=git_root, check=True, capture_output=True)
-            cleaned.append(f"branch:{branch}")
-        except subprocess.CalledProcessError as e:
-            errors.append(f"branch {branch}: {e.stderr.strip() if e.stderr else str(e)}")
-
-    if errors:
-        console.print(f"[yellow]Cleaned up {len(cleaned)} items with {len(errors)} errors:[/yellow]")
-        for err in errors:
-            console.print(f"  [red]Error:[/red] {err}")
-        raise SystemExit(1)
-    else:
-        console.print(f"[green]OK:[/green] Cleaned up {len(cleaned)} items")
-
-
 @spec.command("dag-build")
 @click.argument("directory", required=False, type=click.Path(exists=True))
 @click.option(
@@ -2869,6 +2742,242 @@ def dag_dashboard(
             process.terminate()
         console.print(f"[red]Error:[/red] {e}")
         raise SystemExit(1)
+
+
+# -----------------------------------------------------------------------------
+# Cleanup commands
+# -----------------------------------------------------------------------------
+
+
+@main.group()
+def cleanup() -> None:
+    """Cleanup worktrees, containers, and branches."""
+    pass
+
+
+@cleanup.command("containers")
+@click.option("--spec", "-s", help="Only cleanup containers for this spec")
+@click.option("--dry-run", "-n", is_flag=True, help="Show what would be cleaned without doing it")
+@click.pass_context
+def cleanup_containers(ctx: click.Context, spec: str | None, dry_run: bool) -> None:
+    """Stop and remove all devcontainer instances for worktrees.
+
+    This finds all containers created by devcontainer up for arborist worktrees
+    and stops (but does not remove) them. Containers are identified by the
+    devcontainer.local_folder label.
+    """
+    arborist_home = ctx.obj.get("arborist_home")
+
+    if not arborist_home:
+        console.print("[red]Error:[/red] Arborist not initialized")
+        console.print("Run 'arborist init' first")
+        raise SystemExit(1)
+
+    worktrees_dir = arborist_home / "worktrees"
+
+    if not worktrees_dir.exists():
+        console.print("[dim]No worktrees directory found[/dim]")
+        return
+
+    # Find all worktree paths
+    worktree_paths = []
+    if spec:
+        spec_dir = worktrees_dir / spec
+        if spec_dir.exists():
+            for task_dir in spec_dir.iterdir():
+                if task_dir.is_dir():
+                    worktree_paths.append(task_dir)
+    else:
+        for spec_dir in worktrees_dir.iterdir():
+            if spec_dir.is_dir():
+                for task_dir in spec_dir.iterdir():
+                    if task_dir.is_dir():
+                        worktree_paths.append(task_dir)
+
+    if not worktree_paths:
+        console.print("[dim]No worktrees found[/dim]")
+        return
+
+    console.print(f"[cyan]Found {len(worktree_paths)} worktree(s)[/cyan]")
+
+    stopped_count = 0
+    for worktree_path in worktree_paths:
+        # Find containers with this worktree's label
+        label_filter = f"label=devcontainer.local_folder={worktree_path}"
+
+        try:
+            # List containers with this label
+            result = subprocess.run(
+                ["docker", "ps", "-q", "--filter", label_filter],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+
+            if result.returncode != 0:
+                console.print(f"[yellow]Warning:[/yellow] Failed to list containers for {worktree_path.name}")
+                continue
+
+            container_ids = result.stdout.strip().split("\n")
+            container_ids = [cid for cid in container_ids if cid]
+
+            if not container_ids:
+                continue
+
+            for container_id in container_ids:
+                if dry_run:
+                    console.print(f"[dim]Would stop container {container_id[:12]} for {worktree_path.name}[/dim]")
+                else:
+                    # Stop the container
+                    stop_result = subprocess.run(
+                        ["docker", "stop", container_id],
+                        capture_output=True,
+                        text=True,
+                        timeout=60,
+                    )
+
+                    if stop_result.returncode == 0:
+                        console.print(f"[green]✓[/green] Stopped container {container_id[:12]} for {worktree_path.name}")
+                        stopped_count += 1
+                    else:
+                        console.print(f"[red]✗[/red] Failed to stop container {container_id[:12]}")
+
+        except subprocess.TimeoutExpired:
+            console.print(f"[yellow]Warning:[/yellow] Timeout checking containers for {worktree_path.name}")
+        except Exception as e:
+            console.print(f"[yellow]Warning:[/yellow] Error processing {worktree_path.name}: {e}")
+
+    if dry_run:
+        console.print(f"\n[dim]Dry run complete - no containers were actually stopped[/dim]")
+    else:
+        console.print(f"\n[green]Stopped {stopped_count} container(s)[/green]")
+
+
+@cleanup.command("branches")
+@click.option("--force", "-f", is_flag=True, help="Force removal of worktrees and branches")
+@click.pass_context
+def cleanup_branches(ctx: click.Context, force: bool) -> None:
+    """Remove all worktrees and branches for the current spec.
+
+    Auto-detects spec from git branch, or use --spec to specify.
+    Finds branches matching {spec}_a* pattern and worktrees in .arborist/worktrees/{spec}/.
+
+    Use --force to force removal even if branches are not fully merged.
+    """
+    spec_id = ctx.obj.get("spec_id")
+
+    if not spec_id:
+        console.print("[red]Error:[/red] No spec available")
+        console.print("Either:")
+        console.print("  - Run from a spec branch (e.g., 002-my-feature)")
+        console.print("  - Use --spec option (e.g., --spec 002-my-feature)")
+        raise SystemExit(1)
+
+    if ctx.obj.get("echo_for_testing"):
+        echo_command(
+            "cleanup branches",
+            spec_id=spec_id,
+            force=str(force),
+        )
+        return
+
+    git_root = get_git_root()
+    branch_pattern = f"{spec_id}_a"
+
+    # Find all branches matching the pattern
+    result = subprocess.run(
+        ["git", "branch", "--list", f"{branch_pattern}*"],
+        cwd=git_root,
+        capture_output=True,
+        text=True,
+    )
+    branches = [b.strip().lstrip("*+ ") for b in result.stdout.strip().split("\n") if b.strip()]
+
+    # Find worktrees using git worktree list (more reliable than directory listing)
+    # This catches worktrees even if arborist_home is different or directory structure varies
+    worktree_result = subprocess.run(
+        ["git", "worktree", "list", "--porcelain"],
+        cwd=git_root,
+        capture_output=True,
+        text=True,
+    )
+    worktrees = []
+    current_worktree = None
+    for line in worktree_result.stdout.strip().split("\n"):
+        if line.startswith("worktree "):
+            current_worktree = {"path": Path(line[9:])}
+        elif line.startswith("branch refs/heads/") and current_worktree:
+            branch_name = line[18:]
+            # Check if this worktree's branch matches our pattern
+            if branch_name.startswith(branch_pattern):
+                current_worktree["branch"] = branch_name
+                worktrees.append(current_worktree)
+            current_worktree = None
+        elif line == "" and current_worktree:
+            current_worktree = None
+
+    # Also find worktrees directory for this spec (for cleanup)
+    try:
+        arborist_home = get_arborist_home()
+        worktrees_dir = arborist_home / "worktrees" / spec_id
+    except ArboristHomeError:
+        worktrees_dir = None
+
+    if not branches and not worktrees:
+        console.print(f"[dim]No branches or worktrees found for spec {spec_id}[/dim]")
+        return
+
+    if not ctx.obj.get("quiet"):
+        console.print(f"[cyan]Cleaning up for spec {spec_id}...[/cyan]")
+        if branches:
+            console.print(f"[dim]Found {len(branches)} branches matching {branch_pattern}*[/dim]")
+        if worktrees:
+            console.print(f"[dim]Found {len(worktrees)} worktrees[/dim]")
+        if force:
+            console.print(f"[yellow]Force mode enabled[/yellow]")
+
+    cleaned = []
+    errors = []
+
+    # Remove worktrees first (must be done before deleting branches)
+    for worktree_info in worktrees:
+        worktree_path = worktree_info["path"]
+        if not ctx.obj.get("quiet"):
+            console.print(f"[dim]Removing worktree {worktree_path.name}...[/dim]")
+        try:
+            cmd = ["git", "worktree", "remove", str(worktree_path)]
+            if force:
+                cmd.append("--force")
+            subprocess.run(cmd, cwd=git_root, check=True, capture_output=True)
+            cleaned.append(f"worktree:{worktree_path.name}")
+        except subprocess.CalledProcessError as e:
+            errors.append(f"worktree {worktree_path.name}: {e.stderr.strip() if e.stderr else str(e)}")
+
+    # Clean up empty worktrees directory
+    if worktrees_dir and worktrees_dir.exists():
+        try:
+            worktrees_dir.rmdir()  # Only removes if empty
+        except OSError:
+            pass  # Not empty, that's fine
+
+    # Delete branches (longer names first to delete children before parents)
+    for branch in sorted(branches, key=len, reverse=True):
+        if not ctx.obj.get("quiet"):
+            console.print(f"[dim]Deleting branch {branch}...[/dim]")
+        try:
+            cmd = ["git", "branch", "-D" if force else "-d", branch]
+            subprocess.run(cmd, cwd=git_root, check=True, capture_output=True)
+            cleaned.append(f"branch:{branch}")
+        except subprocess.CalledProcessError as e:
+            errors.append(f"branch {branch}: {e.stderr.strip() if e.stderr else str(e)}")
+
+    if errors:
+        console.print(f"[yellow]Cleaned up {len(cleaned)} items with {len(errors)} errors:[/yellow]")
+        for err in errors:
+            console.print(f"  [red]Error:[/red] {err}")
+        raise SystemExit(1)
+    else:
+        console.print(f"[green]OK:[/green] Cleaned up {len(cleaned)} items")
 
 
 def _check_dependencies() -> None:

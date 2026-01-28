@@ -405,20 +405,13 @@ def build_dag_from_tasks(
             "depends": ["run-test"],
         })
 
-        # Container lifecycle: Stop container
+        # Container lifecycle: Stop container (but don't remove it)
         if use_containers:
             steps.append({
                 "name": "container-down",
                 "command": devcontainer_down_command(),
                 "depends": ["post-merge"],
             })
-
-        # Post-cleanup (not wrapped - removes worktree on host)
-        steps.append({
-            "name": "post-cleanup",
-            "command": f"arborist task post-cleanup {task.id}",
-            "depends": ["container-down"] if use_containers else ["post-merge"],
-        })
 
         # Compute worktree path for ARBORIST_WORKTREE env var
         try:
