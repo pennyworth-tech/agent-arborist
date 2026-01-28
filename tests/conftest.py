@@ -6,6 +6,17 @@ from pathlib import Path
 
 import pytest
 
+# Load .env file if it exists (for ANTHROPIC_API_KEY, etc.)
+try:
+    from dotenv import load_dotenv
+    repo_root = Path(__file__).parent.parent
+    env_file = repo_root / ".env"
+    if env_file.exists():
+        load_dotenv(env_file)
+except ImportError:
+    # python-dotenv not installed, skip loading
+    pass
+
 # Configuration for backlit-devpod repository
 BACKLIT_DEVPOD_REPO = "https://github.com/pennyworth-tech/backlit-devpod"
 BACKLIT_DEVPOD_REF = "main"  # Can pin to specific commit/tag if needed

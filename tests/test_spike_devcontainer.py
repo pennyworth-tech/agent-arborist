@@ -30,9 +30,9 @@ requires_devcontainer_cli = pytest.mark.skipif(
     reason="devcontainer CLI not installed (install: npm install -g @devcontainers/cli)",
 )
 
-requires_anthropic_api_key = pytest.mark.skipif(
-    os.environ.get("ANTHROPIC_API_KEY") is None,
-    reason="ANTHROPIC_API_KEY not set in environment",
+requires_claude_code_oauth_token = pytest.mark.skipif(
+    os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") is None,
+    reason="CLAUDE_CODE_OAUTH_TOKEN not set in environment",
 )
 
 
@@ -45,15 +45,15 @@ def spike_project(tmp_path, backlit_devcontainer):
     # Copy backlit devcontainer
     shutil.copytree(backlit_devcontainer, project_dir / ".devcontainer")
 
-    # Create .env file with API key from host environment
+    # Create .env file with OAuth token from host environment
     env_file = project_dir / ".env"
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        pytest.skip("ANTHROPIC_API_KEY not set in environment")
+    oauth_token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "")
+    if not oauth_token:
+        pytest.skip("CLAUDE_CODE_OAUTH_TOKEN not set in environment")
 
     env_file.write_text(
         f"# Test environment\n"
-        f"ANTHROPIC_API_KEY={api_key}\n"
+        f"CLAUDE_CODE_OAUTH_TOKEN={oauth_token}\n"
         f"TEST_VAR=hello_from_env\n"
     )
 
@@ -174,13 +174,13 @@ class TestDevContainerSpike:
             exec_result.stdout.strip() == "hello_from_env"
         ), "Environment variable not available at exec time"
 
-    @requires_anthropic_api_key
+    @requires_claude_code_oauth_token
     def test_2_claude_code_works_without_wrapper(self, spike_project):
         """Verify Claude Code CLI works without bash -lc wrapper.
 
         This validates that:
         - Claude Code is available in PATH
-        - ANTHROPIC_API_KEY is accessible
+        - CLAUDE_CODE_OAUTH_TOKEN is accessible
         - Commands work in correct working directory
         - No login shell (-lc) needed
         """
@@ -225,9 +225,9 @@ class TestDevContainerSpike:
         print(f"  which claude: {which_result.stdout.strip()}")
         assert which_result.returncode == 0, "claude not found in PATH"
 
-        # Test: Verify ANTHROPIC_API_KEY is available
-        print("→ Checking if ANTHROPIC_API_KEY is available...")
-        key_check = subprocess.run(
+        # Test: Verify CLAUDE_CODE_OAUTH_TOKEN is available
+        print("→ Checking if CLAUDE_CODE_OAUTH_TOKEN is available...")
+        token_check = subprocess.run(
             [
                 "devcontainer",
                 "exec",
@@ -235,14 +235,14 @@ class TestDevContainerSpike:
                 str(spike_project),
                 "bash",
                 "-c",
-                "[ -n \"$ANTHROPIC_API_KEY\" ] && echo 'KEY_SET' || echo 'KEY_NOT_SET'",
+                "[ -n \"$CLAUDE_CODE_OAUTH_TOKEN\" ] && echo 'TOKEN_SET' || echo 'TOKEN_NOT_SET'",
             ],
             capture_output=True,
             text=True,
         )
 
-        print(f"  API key status: {key_check.stdout.strip()}")
-        assert key_check.stdout.strip() == "KEY_SET", "ANTHROPIC_API_KEY not set"
+        print(f"  OAuth token status: {token_check.stdout.strip()}")
+        assert token_check.stdout.strip() == "TOKEN_SET", "CLAUDE_CODE_OAUTH_TOKEN not set"
 
         # Test: Run simple claude command (--version doesn't need API key)
         print("→ Running claude --version...")
