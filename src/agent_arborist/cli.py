@@ -2853,6 +2853,114 @@ def cleanup_containers(ctx: click.Context, spec: str | None, dry_run: bool) -> N
         console.print(f"\n[green]Stopped {stopped_count} container(s)[/green]")
 
 
+@cleanup.command("dags")
+@click.option("--spec", "-s", help="Only cleanup DAGs for this spec")
+@click.option("--dry-run", "-n", is_flag=True, help="Show what would be cleaned without doing it")
+@click.pass_context
+def cleanup_dags(ctx: click.Context, spec: str | None, dry_run: bool) -> None:
+    """Remove DAG YAML and JSON files from dagu/dags directory.
+
+    This removes generated DAG files but does not affect task specs.
+    DAGs can be regenerated from specs using 'arborist spec dag-build'.
+    """
+    dagu_home = ctx.obj.get("dagu_home")
+
+    if not dagu_home:
+        console.print("[red]Error:[/red] Arborist not initialized")
+        console.print("Run 'arborist init' first")
+        raise SystemExit(1)
+
+    dags_dir = dagu_home / "dags"
+
+    if not dags_dir.exists():
+        console.print("[dim]No dags directory found[/dim]")
+        return
+
+    # Find DAG files
+    if spec:
+        dag_files = list(dags_dir.glob(f"{spec}.yaml")) + list(dags_dir.glob(f"{spec}.json"))
+    else:
+        dag_files = list(dags_dir.glob("*.yaml")) + list(dags_dir.glob("*.json"))
+
+    if not dag_files:
+        console.print(f"[dim]No DAG files found{' for spec ' + spec if spec else ''}[/dim]")
+        return
+
+    console.print(f"[cyan]Found {len(dag_files)} DAG file(s)[/cyan]")
+
+    removed_count = 0
+    for dag_file in dag_files:
+        if dry_run:
+            console.print(f"[dim]Would remove {dag_file.name}[/dim]")
+        else:
+            try:
+                dag_file.unlink()
+                console.print(f"[green]✓[/green] Removed {dag_file.name}")
+                removed_count += 1
+            except Exception as e:
+                console.print(f"[red]✗[/red] Failed to remove {dag_file.name}: {e}")
+
+    if dry_run:
+        console.print(f"\n[dim]Dry run complete - no files were actually removed[/dim]")
+    else:
+        console.print(f"\n[green]Removed {removed_count} DAG file(s)[/green]")
+
+
+@cleanup.command("logs")
+@click.option("--spec", "-s", help="Only cleanup logs for this spec")
+@click.option("--dry-run", "-n", is_flag=True, help="Show what would be cleaned without doing it")
+@click.pass_context
+def cleanup_logs(ctx: click.Context, spec: str | None, dry_run: bool) -> None:
+    """Remove DAG execution logs from dagu/logs directory.
+
+    This removes log directories for DAG runs but does not affect DAG definitions.
+    Logs are organized by DAG name (normalized with underscores).
+    """
+    dagu_home = ctx.obj.get("dagu_home")
+
+    if not dagu_home:
+        console.print("[red]Error:[/red] Arborist not initialized")
+        console.print("Run 'arborist init' first")
+        raise SystemExit(1)
+
+    logs_dir = dagu_home / "logs"
+
+    if not logs_dir.exists():
+        console.print("[dim]No logs directory found[/dim]")
+        return
+
+    # Find log directories
+    if spec:
+        # Normalize spec name (dagu converts hyphens to underscores)
+        normalized_spec = spec.replace("-", "_")
+        log_dirs = [d for d in logs_dir.iterdir() if d.is_dir() and d.name.startswith(normalized_spec)]
+    else:
+        log_dirs = [d for d in logs_dir.iterdir() if d.is_dir()]
+
+    if not log_dirs:
+        console.print(f"[dim]No log directories found{' for spec ' + spec if spec else ''}[/dim]")
+        return
+
+    console.print(f"[cyan]Found {len(log_dirs)} log director{('y' if len(log_dirs) == 1 else 'ies')}[/cyan]")
+
+    removed_count = 0
+    for log_dir in log_dirs:
+        if dry_run:
+            console.print(f"[dim]Would remove {log_dir.name}/[/dim]")
+        else:
+            try:
+                shutil.rmtree(log_dir)
+                console.print(f"[green]✓[/green] Removed {log_dir.name}/")
+                removed_count += 1
+            except Exception as e:
+                console.print(f"[red]✗[/red] Failed to remove {log_dir.name}/: {e}")
+
+    if dry_run:
+        console.print(f"\n[dim]Dry run complete - no directories were actually removed[/dim]")
+    else:
+        console.print(f"\n[green]Removed {removed_count} log director{('y' if removed_count == 1 else 'ies')}[/green]")
+
+
 @cleanup.command("branches")
 @click.option("--force", "-f", is_flag=True, help="Force removal of worktrees and branches")
 @click.pass_context
