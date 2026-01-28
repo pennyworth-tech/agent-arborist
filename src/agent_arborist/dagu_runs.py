@@ -7,6 +7,15 @@ from enum import IntEnum
 from pathlib import Path
 
 
+def normalize_dag_name(dag_name: str) -> str:
+    """Normalize DAG name to match Dagu's directory naming convention.
+
+    Dagu converts hyphens to underscores when creating directories.
+    E.g., "003-terraform-hello-world" -> "003_terraform_hello_world"
+    """
+    return dag_name.replace("-", "_")
+
+
 class DaguStatus(IntEnum):
     """Dagu step/run status codes."""
 
@@ -185,7 +194,9 @@ def _find_run_dir(dagu_home: Path, dag_name: str, run_id: str) -> Path | None:
     Returns:
         Path to run directory or None if not found
     """
-    runs_dir = dagu_home / "data" / "dag-runs" / dag_name / "dag-runs"
+    # Normalize dag name to match Dagu's directory naming (hyphens -> underscores)
+    normalized_name = normalize_dag_name(dag_name)
+    runs_dir = dagu_home / "data" / "dag-runs" / normalized_name / "dag-runs"
 
     if not runs_dir.exists():
         return None
@@ -355,7 +366,9 @@ def list_dag_runs(
 
     # Determine which DAG directories to scan
     if dag_name:
-        dag_dirs = [runs_dir / dag_name]
+        # Normalize dag name to match Dagu's directory naming (hyphens -> underscores)
+        normalized_name = normalize_dag_name(dag_name)
+        dag_dirs = [runs_dir / normalized_name]
     else:
         dag_dirs = [d for d in runs_dir.iterdir() if d.is_dir()]
 
