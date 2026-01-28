@@ -136,6 +136,17 @@ def create_worktree(task_branch: str, worktree_path: Path, cwd: Path | None = No
 
     try:
         _run_git("worktree", "add", str(worktree_path), task_branch, cwd=cwd)
+
+        # Initialize submodules in the new worktree
+        try:
+            _run_git("submodule", "update", "--init", "--recursive", cwd=worktree_path)
+        except subprocess.CalledProcessError as e:
+            # Submodule init failure is non-fatal - continue with warning
+            return GitResult(
+                success=True,
+                message=f"Created worktree at {worktree_path} (submodule init failed: {e.stderr})"
+            )
+
         return GitResult(success=True, message=f"Created worktree at {worktree_path}")
     except subprocess.CalledProcessError as e:
         return GitResult(success=False, message="Failed to create worktree", error=e.stderr)
