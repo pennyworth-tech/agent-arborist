@@ -1217,8 +1217,21 @@ def task_run_test(ctx: click.Context, task_id: str, cmd: str | None) -> None:
 @task.command("post-merge")
 @click.argument("task_id")
 @click.option("--timeout", "-t", default=300, help="Timeout in seconds for AI merge")
+@click.option(
+    "--runner",
+    "-r",
+    type=click.Choice(["claude", "opencode", "gemini"]),
+    default=None,
+    help=f"Runner to use (default: ${ARBORIST_DEFAULT_RUNNER_ENV_VAR} or opencode)",
+)
+@click.option(
+    "--model",
+    "-m",
+    default=None,
+    help=f"Model to use (default: ${ARBORIST_DEFAULT_MODEL_ENV_VAR} or runner-specific default)",
+)
 @click.pass_context
-def task_post_merge(ctx: click.Context, task_id: str, timeout: int) -> None:
+def task_post_merge(ctx: click.Context, task_id: str, timeout: int, runner: str | None, model: str | None) -> None:
     """Merge task branch to parent branch using AI.
 
     AI performs a squash merge with proper commit message format:
@@ -1255,8 +1268,8 @@ def task_post_merge(ctx: click.Context, task_id: str, timeout: int) -> None:
     parent_branch = task_info.parent_branch
 
     # Get runner info for commit message footer
-    runner_type = get_default_runner()
-    resolved_model = get_default_model()
+    runner_type = runner if runner is not None else get_default_runner()
+    resolved_model = model if model is not None else get_default_model()
 
     # Get or create worktree for parent branch
     parent_worktree = find_worktree_for_branch(parent_branch)

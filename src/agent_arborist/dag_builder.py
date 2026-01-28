@@ -218,9 +218,14 @@ class SubDagBuilder:
         ))
 
         # Post-merge (arborist on host, will invoke runner inside container)
+        post_merge_cmd = f"arborist task post-merge {task_id}"
+        if self.config.runner:
+            post_merge_cmd += f" --runner {self.config.runner}"
+        if self.config.model:
+            post_merge_cmd += f" --model '{self.config.model}'"
         steps.append(SubDagStep(
             name="post-merge",
-            command=f"arborist task post-merge {task_id}",
+            command=post_merge_cmd,
             depends=["run-test"],
             output=output_var("post-merge"),
         ))
