@@ -2756,11 +2756,13 @@ def cleanup() -> None:
 
 
 @cleanup.command("containers")
-@click.option("--spec", "-s", help="Only cleanup containers for this spec")
 @click.option("--dry-run", "-n", is_flag=True, help="Show what would be cleaned without doing it")
+@click.option("--all", is_flag=True, help="Cleanup all specs (ignore current spec)")
 @click.pass_context
-def cleanup_containers(ctx: click.Context, spec: str | None, dry_run: bool) -> None:
+def cleanup_containers(ctx: click.Context, dry_run: bool, all: bool) -> None:
     """Stop and remove all devcontainer instances for worktrees.
+
+    Auto-detects spec from git branch, or use --spec to specify, or --all for all specs.
 
     This finds all containers created by devcontainer up for arborist worktrees
     and stops (but does not remove) them. Containers are identified by the
@@ -2772,6 +2774,9 @@ def cleanup_containers(ctx: click.Context, spec: str | None, dry_run: bool) -> N
         console.print("[red]Error:[/red] Arborist not initialized")
         console.print("Run 'arborist init' first")
         raise SystemExit(1)
+
+    # Get spec from context unless --all is specified
+    spec = None if all else ctx.obj.get("spec_id")
 
     worktrees_dir = arborist_home / "worktrees"
 
@@ -2854,11 +2859,13 @@ def cleanup_containers(ctx: click.Context, spec: str | None, dry_run: bool) -> N
 
 
 @cleanup.command("dags")
-@click.option("--spec", "-s", help="Only cleanup DAGs for this spec")
 @click.option("--dry-run", "-n", is_flag=True, help="Show what would be cleaned without doing it")
+@click.option("--all", is_flag=True, help="Cleanup all specs (ignore current spec)")
 @click.pass_context
-def cleanup_dags(ctx: click.Context, spec: str | None, dry_run: bool) -> None:
+def cleanup_dags(ctx: click.Context, dry_run: bool, all: bool) -> None:
     """Remove DAG YAML and JSON files from dagu/dags directory.
+
+    Auto-detects spec from git branch, or use --spec to specify, or --all for all specs.
 
     This removes generated DAG files but does not affect task specs.
     DAGs can be regenerated from specs using 'arborist spec dag-build'.
@@ -2869,6 +2876,9 @@ def cleanup_dags(ctx: click.Context, spec: str | None, dry_run: bool) -> None:
         console.print("[red]Error:[/red] Arborist not initialized")
         console.print("Run 'arborist init' first")
         raise SystemExit(1)
+
+    # Get spec from context unless --all is specified
+    spec = None if all else ctx.obj.get("spec_id")
 
     dags_dir = dagu_home / "dags"
 
@@ -2907,11 +2917,13 @@ def cleanup_dags(ctx: click.Context, spec: str | None, dry_run: bool) -> None:
 
 
 @cleanup.command("logs")
-@click.option("--spec", "-s", help="Only cleanup logs for this spec")
 @click.option("--dry-run", "-n", is_flag=True, help="Show what would be cleaned without doing it")
+@click.option("--all", is_flag=True, help="Cleanup all specs (ignore current spec)")
 @click.pass_context
-def cleanup_logs(ctx: click.Context, spec: str | None, dry_run: bool) -> None:
+def cleanup_logs(ctx: click.Context, dry_run: bool, all: bool) -> None:
     """Remove DAG execution logs from dagu/logs directory.
+
+    Auto-detects spec from git branch, or use --spec to specify, or --all for all specs.
 
     This removes log directories for DAG runs but does not affect DAG definitions.
     Logs are organized by DAG name (normalized with underscores).
@@ -2922,6 +2934,9 @@ def cleanup_logs(ctx: click.Context, spec: str | None, dry_run: bool) -> None:
         console.print("[red]Error:[/red] Arborist not initialized")
         console.print("Run 'arborist init' first")
         raise SystemExit(1)
+
+    # Get spec from context unless --all is specified
+    spec = None if all else ctx.obj.get("spec_id")
 
     logs_dir = dagu_home / "logs"
 
