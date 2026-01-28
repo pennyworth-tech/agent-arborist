@@ -136,17 +136,6 @@ def create_worktree(task_branch: str, worktree_path: Path, cwd: Path | None = No
 
     try:
         _run_git("worktree", "add", str(worktree_path), task_branch, cwd=cwd)
-
-        # Initialize submodules in the new worktree
-        try:
-            _run_git("submodule", "update", "--init", "--recursive", cwd=worktree_path)
-        except subprocess.CalledProcessError as e:
-            # Submodule init failure is non-fatal - continue with warning
-            return GitResult(
-                success=True,
-                message=f"Created worktree at {worktree_path} (submodule init failed: {e.stderr})"
-            )
-
         return GitResult(success=True, message=f"Created worktree at {worktree_path}")
     except subprocess.CalledProcessError as e:
         return GitResult(success=False, message="Failed to create worktree", error=e.stderr)
@@ -324,21 +313,46 @@ def detect_test_command(worktree: Path) -> str | None:
     return None
 
 
-def run_tests(worktree: Path, test_cmd: str | None = None) -> GitResult:
-    """Run tests in the worktree."""
+def run_tests(
+    worktree: Path,
+    test_cmd: str | None = None,
+    container_cmd_prefix: list[str] | None = None,
+) -> GitResult:
+    """Run tests in the worktree.
+
+    Args:
+        worktree: Path to worktree
+        test_cmd: Test command to run (auto-detected if None)
+        container_cmd_prefix: Optional devcontainer exec prefix for running in container
+
+    Returns:
+        GitResult with success status and output
+    """
     cmd = test_cmd or detect_test_command(worktree)
 
     if not cmd:
         return GitResult(success=True, message="No test command detected, skipping tests")
 
     try:
-        result = subprocess.run(
-            cmd,
-            shell=True,
-            cwd=worktree,
-            capture_output=True,
-            text=True,
-        )
+        # Handle container wrapping
+        if container_cmd_prefix:
+            # Build full command for container execution
+            # Need to join cmd with bash -c if it's a shell command
+            full_cmd = container_cmd_prefix + ["bash", "-c", cmd]
+            result = subprocess.run(
+                full_cmd,
+                capture_output=True,
+                text=True,
+            )
+        else:
+            # Run directly on host
+            result = subprocess.run(
+                cmd,
+                shell=True,
+                cwd=worktree,
+                capture_output=True,
+                text=True,
+            )
 
         if result.returncode == 0:
             return GitResult(success=True, message="Tests passed")

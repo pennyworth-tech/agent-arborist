@@ -34,6 +34,10 @@ from agent_arborist.task_spec import parse_task_spec
 from agent_arborist.dag_builder import DagConfig, DagBuilder
 from agent_arborist.dag_generator import DagGenerator
 from agent_arborist.container_runner import ContainerMode
+from agent_arborist.container_context import (
+    wrap_subprocess_command,
+    get_container_mode_from_env,
+)
 from agent_arborist import dagu_runs
 from agent_arborist.git_tasks import (
     get_worktree_path,
@@ -867,9 +871,27 @@ IMPORTANT:
         console.print(f"[red]Error:[/red] {runner_type} not found in PATH")
         raise SystemExit(1)
 
-    # Run the AI in the worktree directory
+    # Check if we need to wrap runner command with devcontainer exec
+    container_mode = get_container_mode_from_env()
+    container_cmd_prefix = None
+    if container_mode != ContainerMode.DISABLED:
+        from agent_arborist.container_context import should_use_container
+        if should_use_container(worktree_path, container_mode):
+            container_cmd_prefix = [
+                "devcontainer",
+                "exec",
+                "--workspace-folder",
+                str(worktree_path.resolve()),
+            ]
+
+    # Run the AI in the worktree directory (or container if needed)
     start_time = time.time()
-    result = runner_instance.run(prompt, timeout=timeout, cwd=worktree_path)
+    result = runner_instance.run(
+        prompt,
+        timeout=timeout,
+        cwd=worktree_path,
+        container_cmd_prefix=container_cmd_prefix,
+    )
     duration = time.time() - start_time
 
     # Gather metrics for output
@@ -1098,7 +1120,20 @@ def task_run_test(ctx: click.Context, task_id: str, cmd: str | None) -> None:
         output_result(step_result, ctx)
         return
 
-    result = run_tests(worktree_path, test_cmd)
+    # Check if we need to wrap test command with devcontainer exec
+    container_mode = get_container_mode_from_env()
+    container_cmd_prefix = None
+    if container_mode != ContainerMode.DISABLED:
+        from agent_arborist.container_context import should_use_container
+        if should_use_container(worktree_path, container_mode):
+            container_cmd_prefix = [
+                "devcontainer",
+                "exec",
+                "--workspace-folder",
+                str(worktree_path.resolve()),
+            ]
+
+    result = run_tests(worktree_path, test_cmd, container_cmd_prefix)
 
     # Build step result
     step_result = RunTestResult(
@@ -1241,8 +1276,26 @@ Do NOT push. Just complete the merge and commit locally.
     if not ctx.obj.get("quiet"):
         console.print(f"[dim]Running {runner_type} in {parent_worktree}[/dim]")
 
+    # Check if we need to wrap runner command with devcontainer exec
+    container_mode = get_container_mode_from_env()
+    container_cmd_prefix = None
+    if container_mode != ContainerMode.DISABLED:
+        from agent_arborist.container_context import should_use_container
+        if should_use_container(parent_worktree, container_mode):
+            container_cmd_prefix = [
+                "devcontainer",
+                "exec",
+                "--workspace-folder",
+                str(parent_worktree.resolve()),
+            ]
+
     # Run AI in parent worktree
-    result = runner_instance.run(merge_prompt, timeout=timeout, cwd=parent_worktree)
+    result = runner_instance.run(
+        merge_prompt,
+        timeout=timeout,
+        cwd=parent_worktree,
+        container_cmd_prefix=container_cmd_prefix,
+    )
 
     # Cleanup temporary worktree if we created it
     if created_worktree:

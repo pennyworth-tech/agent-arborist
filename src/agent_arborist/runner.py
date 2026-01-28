@@ -59,6 +59,7 @@ def _execute_command(
     cmd: list[str],
     timeout: int,
     cwd: Path | None = None,
+    container_cmd_prefix: list[str] | None = None,
 ) -> RunResult:
     """Execute a command and return standardized result.
 
@@ -68,10 +69,18 @@ def _execute_command(
         cmd: Command and arguments to execute
         timeout: Timeout in seconds
         cwd: Working directory for execution
+        container_cmd_prefix: Optional prefix for container execution (e.g., ["devcontainer", "exec", ...])
+                             If provided, prepends this to cmd and cwd is handled by container
 
     Returns:
         RunResult with success status, output, and error details
     """
+    # Apply container prefix if provided
+    if container_cmd_prefix:
+        cmd = container_cmd_prefix + cmd
+        # Container sets working directory, don't pass cwd to subprocess
+        cwd = None
+
     try:
         result = subprocess.run(
             cmd,
@@ -111,13 +120,20 @@ class Runner(ABC):
     command: str
 
     @abstractmethod
-    def run(self, prompt: str, timeout: int = 60, cwd: Path | None = None) -> RunResult:
+    def run(
+        self,
+        prompt: str,
+        timeout: int = 60,
+        cwd: Path | None = None,
+        container_cmd_prefix: list[str] | None = None,
+    ) -> RunResult:
         """Run a prompt and return the result.
 
         Args:
             prompt: The prompt to execute
             timeout: Timeout in seconds
             cwd: Working directory for the runner (allows AI to explore files)
+            container_cmd_prefix: Optional prefix for container execution
         """
         pass
 
@@ -140,7 +156,13 @@ class ClaudeRunner(Runner):
         """
         self.model = model
 
-    def run(self, prompt: str, timeout: int = 60, cwd: Path | None = None) -> RunResult:
+    def run(
+        self,
+        prompt: str,
+        timeout: int = 60,
+        cwd: Path | None = None,
+        container_cmd_prefix: list[str] | None = None,
+    ) -> RunResult:
         """Run a prompt using Claude CLI.
 
         If cwd is provided, Claude runs in that directory and can explore files there.
@@ -158,7 +180,7 @@ class ClaudeRunner(Runner):
         if self.model:
             cmd.extend(["--model", self.model])
 
-        return _execute_command(cmd, timeout, cwd)
+        return _execute_command(cmd, timeout, cwd, container_cmd_prefix)
 
 
 class OpencodeRunner(Runner):
@@ -175,7 +197,13 @@ class OpencodeRunner(Runner):
         """
         self.model = model
 
-    def run(self, prompt: str, timeout: int = 60, cwd: Path | None = None) -> RunResult:
+    def run(
+        self,
+        prompt: str,
+        timeout: int = 60,
+        cwd: Path | None = None,
+        container_cmd_prefix: list[str] | None = None,
+    ) -> RunResult:
         """Run a prompt using OpenCode CLI."""
         path = shutil.which(self.command)
         if not path:
@@ -193,7 +221,7 @@ class OpencodeRunner(Runner):
             cmd.extend(["-m", self.model])
         cmd.append(prompt)
 
-        return _execute_command(cmd, timeout, cwd)
+        return _execute_command(cmd, timeout, cwd, container_cmd_prefix)
 
 
 class GeminiRunner(Runner):
@@ -210,7 +238,13 @@ class GeminiRunner(Runner):
         """
         self.model = model
 
-    def run(self, prompt: str, timeout: int = 60, cwd: Path | None = None) -> RunResult:
+    def run(
+        self,
+        prompt: str,
+        timeout: int = 60,
+        cwd: Path | None = None,
+        container_cmd_prefix: list[str] | None = None,
+    ) -> RunResult:
         """Run a prompt using Gemini CLI."""
         path = shutil.which(self.command)
         if not path:
@@ -227,7 +261,7 @@ class GeminiRunner(Runner):
             cmd.extend(["-m", self.model])
         cmd.append(prompt)
 
-        return _execute_command(cmd, timeout, cwd)
+        return _execute_command(cmd, timeout, cwd, container_cmd_prefix)
 
 
 def get_runner(runner_type: RunnerType | None = None, model: str | None = None) -> Runner:
