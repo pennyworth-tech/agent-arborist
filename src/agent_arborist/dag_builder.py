@@ -63,6 +63,38 @@ class DagConfig:
     spec_id: str = ""  # For manifest path
     container_mode: ContainerMode = ContainerMode.AUTO  # Container execution mode
     repo_path: Path | None = None  # Path to target repo for devcontainer detection
+    runner: str | None = None  # AI runner to use (claude, opencode, gemini)
+    model: str | None = None  # Model to use (uses runner default if not specified)
+
+
+def build_arborist_command(
+    task_id: str,
+    subcommand: str,
+    runner: str | None = None,
+    model: str | None = None,
+) -> str:
+    """Build arborist task command with optional flags.
+
+    Args:
+        task_id: Task identifier (e.g., "T001")
+        subcommand: Task subcommand (e.g., "run", "post-merge", "run-test")
+        runner: Optional runner to use (claude, opencode, gemini)
+        model: Optional model to use
+
+    Returns:
+        Command string with flags as needed
+
+    Example:
+        >>> build_arborist_command("T001", "run", runner="claude", model="sonnet")
+        "arborist task run --runner claude --model sonnet T001"
+    """
+    cmd_parts = ["arborist", "task", subcommand]
+    if runner:
+        cmd_parts.extend(["--runner", runner])
+    if model:
+        cmd_parts.extend(["--model", model])
+    cmd_parts.append(task_id)
+    return " ".join(cmd_parts)
 
 
 class SubDagBuilder:
@@ -193,9 +225,10 @@ class SubDagBuilder:
             ))
 
         # Run (wrapped - executes inside container)
+        run_cmd = build_arborist_command(task_id, "run", self.config.runner, self.config.model)
         steps.append(SubDagStep(
             name="run",
-            command=wrap_cmd(f"arborist task run {task_id}"),
+            command=wrap_cmd(run_cmd),
             depends=["container-up"] if self._use_containers else ["pre-sync"],
             output=output_var("run"),
         ))
@@ -217,9 +250,10 @@ class SubDagBuilder:
         ))
 
         # Post-merge (not wrapped - merges branches on host)
+        post_merge_cmd = build_arborist_command(task_id, "post-merge", self.config.runner, self.config.model)
         steps.append(SubDagStep(
             name="post-merge",
-            command=f"arborist task post-merge {task_id}",
+            command=post_merge_cmd,
             depends=["run-test"],
             output=output_var("post-merge"),
         ))
@@ -297,8 +331,9 @@ class SubDagBuilder:
             ))
 
         # Complete step (depends on all children)
+        post_merge_cmd = build_arborist_command(task_id, "post-merge", self.config.runner, self.config.model)
         complete_command = f"""arborist task run-test {task_id} &&
-arborist task post-merge {task_id} &&
+{post_merge_cmd} &&
 arborist task post-cleanup {task_id}"""
 
         steps.append(SubDagStep(
