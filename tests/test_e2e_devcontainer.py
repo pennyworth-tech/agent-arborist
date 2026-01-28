@@ -108,6 +108,20 @@ RUN opencode --version
         capture_output=True,
     )
 
+    # Create opencode.json with permissions for all operations
+    opencode_config = project_dir / "opencode.json"
+    opencode_config.write_text(
+        """{
+  "$schema": "https://opencode.ai/config.json",
+  "permission": {
+    "*": {
+      "*": "allow"
+    }
+  }
+}
+"""
+    )
+
     # Create initial commit
     readme = project_dir / "README.md"
     readme.write_text("# Calculator Project\\n")
