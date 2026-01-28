@@ -75,7 +75,24 @@ def _wrap_in_container(cmd: list[str], worktree_path: Path) -> list[str]:
         return cmd
 
     git_root = get_git_root()
-    workspace_folder = get_workspace_folder(git_root or worktree_path.resolve())
+    
+    # Check if devcontainer.json has a custom workspaceFolder
+    devcontainer_json = git_root / ".devcontainer" / "devcontainer.json"
+    if devcontainer_json.exists():
+        try:
+            content = json.loads(devcontainer_json.read_text())
+            configured_workspace = content.get("workspaceFolder")
+            if configured_workspace:
+                workspace_folder = configured_workspace
+            else:
+                # Devcontainer CLI mounts to /workspaces/<worktree_name> by default
+                workspace_folder = f"/workspaces/{worktree_path.name}"
+        except (json.JSONDecodeError, IOError):
+            # Fallback to default if JSON is invalid
+            workspace_folder = f"/workspaces/{worktree_path.name}"
+    else:
+        # If no devcontainer.json, use worktree name
+        workspace_folder = f"/workspaces/{worktree_path.name}"
 
     shell_cmd = " ".join(shlex.quote(arg) for arg in cmd)
 
@@ -85,7 +102,7 @@ def _wrap_in_container(cmd: list[str], worktree_path: Path) -> list[str]:
         "--workspace-folder",
         str(worktree_path.resolve()),
         "bash",
-        "-c",
+        "-lc",
         f"cd {workspace_folder} && {shell_cmd}",
     ]
 
@@ -186,12 +203,15 @@ class ClaudeRunner(Runner):
             )
 
         try:
-            cmd = [path, "--dangerously-skip-permissions", "-p", prompt]
+            # If cwd provided and container running, wrap in devcontainer exec
+            using_container = cwd and _check_container_running(cwd)
+            
+            # When running in container, use command name (not full path) for container's PATH
+            cmd_base = [self.command] if using_container else [path]
+            cmd = cmd_base + ["--dangerously-skip-permissions", "-p", prompt]
             if self.model:
                 cmd.extend(["--model", self.model])
 
-            # If cwd provided and container running, wrap in devcontainer exec
-            using_container = cwd and _check_container_running(cwd)
             if using_container:
                 cmd = _wrap_in_container(cmd, cwd)
 
@@ -256,15 +276,18 @@ class OpencodeRunner(Runner):
             )
 
         try:
+            # If cwd provided and container running, wrap in devcontainer exec
+            using_container = cwd and _check_container_running(cwd)
+            
+            # When running in container, use command name (not full path) for container's PATH
+            cmd_base = [self.command] if using_container else [path]
             # OpenCode uses 'run' subcommand for non-interactive mode
             # TODO: skip permissions can be set in target repo opencode.json file
-            cmd = [path, "run"]
+            cmd = cmd_base + ["run"]
             if self.model:
                 cmd.extend(["-m", self.model])
             cmd.append(prompt)
 
-            # If cwd provided and container running, wrap in devcontainer exec
-            using_container = cwd and _check_container_running(cwd)
             if using_container:
                 cmd = _wrap_in_container(cmd, cwd)
 
@@ -329,14 +352,17 @@ class GeminiRunner(Runner):
             )
 
         try:
+            # If cwd provided and container running, wrap in devcontainer exec
+            using_container = cwd and _check_container_running(cwd)
+            
+            # When running in container, use command name (not full path) for container's PATH
+            cmd_base = [self.command] if using_container else [path]
             # Gemini CLI uses positional prompt argument
-            cmd = [path, "--yolo"]
+            cmd = cmd_base + ["--yolo"]
             if self.model:
                 cmd.extend(["-m", self.model])
             cmd.append(prompt)
 
-            # If cwd provided and container running, wrap in devcontainer exec
-            using_container = cwd and _check_container_running(cwd)
             if using_container:
                 cmd = _wrap_in_container(cmd, cwd)
 
