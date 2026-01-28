@@ -1838,3 +1838,108 @@ The parallel execution requirement **strengthens the case for keeping lifecycle 
 - ✅ Centralize devcontainer exec wrapping (one place)
 
 **The refactoring strategy remains valid** - we're simplifying implementation while keeping the correct architecture for parallel execution.
+
+---
+
+## Part 4: Spike Test Validation Results
+
+**Date:** 2026-01-28
+**Branch:** refactor/simplify-devcontainer-implementation
+**Commits:** 8feeaba, 627fc9a, 791be73
+
+### 4.1 Overview
+
+Before proceeding with the refactoring, we created spike tests to validate three critical assumptions about devcontainer behavior:
+
+1. Environment variables from .env are available at exec time (no special handling needed)
+2. Claude Code CLI works without bash -lc wrapper (can remove workaround)
+3. Commands execute in correct working directory (no cd command needed)
+
+### 4.2 Test Implementation
+
+**Test Fixture:** `spike_project` in `tests/test_spike_devcontainer.py`
+- Creates minimal test project with backlit-devpod devcontainer
+- Creates .env file with CLAUDE_CODE_OAUTH_TOKEN from host environment
+- Modifies devcontainer.json to add `runArgs: ["--env-file", "${localWorkspaceFolder}/.env"]`
+- Initializes git repo with initial commit
+- Cleans up container after test
+
+**Environment Setup:**
+- `.env` file at repository root (gitignored)
+- `python-dotenv` loads .env in `conftest.py`
+- `CLAUDE_CODE_OAUTH_TOKEN` required for tests
+
+### 4.3 Test Results
+
+#### Test 1: Environment Variables Available at Exec Time ✅
+
+**Validation:** Environment variables from .env are inherited by all exec commands
+
+```
+→ Starting devcontainer...
+  Container up exit code: 0
+→ Testing environment variable access...
+  TEST_VAR value: hello_from_env
+PASSED
+```
+
+**Key Finding:** Variables set at container creation (devcontainer up) are automatically inherited by all subsequent exec commands. No special handling needed per command.
+
+**Runtime:** 268.98s (4:28) - container startup time
+
+#### Test 2: Claude Code Works Without bash -lc Wrapper ✅
+
+**Validation:** Claude Code CLI is in PATH and works without login shell
+
+```
+→ Checking if claude command is available...
+  which claude: /home/vscode/.local/bin/claude
+→ Checking if CLAUDE_CODE_OAUTH_TOKEN is available...
+  OAuth token status: TOKEN_SET
+→ Running claude --version...
+  Claude version: 2.1.22 (Claude Code)
+PASSED
+```
+
+**Key Finding:** The bash -lc hack is **NOT NEEDED**. Claude Code is properly installed in PATH by backlit-devpod's install-tools.sh and accessible via plain devcontainer exec.
+
+**Runtime:** 248.74s (4:08) - container startup time
+
+#### Test 3: Working Directory Correct ✅
+
+**Validation:** Commands execute in correct working directory without cd command
+
+```
+→ Checking working directory...
+  Working directory: /workspaces/spike-test
+→ Creating test file...
+  ✓ File created successfully in workspace
+PASSED
+```
+
+**Key Finding:** devcontainer CLI automatically defaults to /workspaces/<folder-name>. No cd command or wrapper needed.
+
+**Runtime:** 252.95s (4:12) - container startup time
+
+### 4.4 Conclusions
+
+**All three assumptions validated!** The spike tests confirm we can proceed with the simplified refactoring approach:
+
+#### Can Remove:
+1. ✅ **bash -lc wrapper** - Not needed, Claude Code is in PATH
+2. ✅ **Environment variable juggling** - .env at up time handles everything
+3. ✅ **Working directory hacks** - devcontainer CLI defaults correctly
+
+#### Implementation Validated:
+1. ✅ **.env file approach** - runArgs with --env-file works perfectly
+2. ✅ **backlit-devpod integration** - Hybrid sibling/clone strategy works
+3. ✅ **Clean test fixture** - Creates proper test environment with .env
+
+#### Next Steps:
+With spike tests passing, we can confidently proceed with Step 2 of the refactoring plan:
+- Add runner-model config threading
+- Simplify container_runner.py
+- Remove defensive coding and workarounds
+- Centralize command execution logic
+
+**Estimated Code Reduction:** Still targeting 54% reduction (~900 lines), now with empirical validation that the simplified approach works.
