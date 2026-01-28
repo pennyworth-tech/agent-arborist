@@ -289,71 +289,82 @@ class TestE2EDevContainer:
         print("\\n=== DAG Run Status ===")
         print(status_result.stdout)
 
-        # Step 6: Verify commits were made for each task
-        print("\n=== Verifying Task Commits ===")
+        # Step 6: Verify commits were merged to alternate branch
+        print("\n=== Verifying Task Commits in Merged Branch ===")
 
-        task_branches = ["001-calculator_a_T001", "001-calculator_a_T002", "001-calculator_a_T003", "001-calculator_a_T004"]
-        expected_task_count = 4
-        commits_verified = []
-        branches_with_changes = []
+        # After DAG execution, task branches are cleaned up and commits are merged to the alternate branch
+        merged_branch = "001-calculator_a"
+        expected_task_ids = ["T001", "T002", "T003", "T004"]
 
-        for branch in task_branches:
-            task_id = branch.split("_")[-1]  # Extract T001, T002, etc.
+        # Check that merged branch exists
+        branch_check = subprocess.run(
+            ["git", "rev-parse", "--verify", merged_branch],
+            cwd=e2e_project,
+            capture_output=True,
+            text=True,
+        )
 
-            branch_check = subprocess.run(
-                ["git", "rev-parse", "--verify", branch],
+        assert branch_check.returncode == 0, f"Merged branch {merged_branch} does not exist"
+
+        # Get all commits from merged branch
+        log_result = subprocess.run(
+            ["git", "log", "--oneline", merged_branch],
+            cwd=e2e_project,
+            capture_output=True,
+            text=True,
+        )
+
+        print(f"\n{merged_branch} commits:")
+        print(log_result.stdout)
+
+        # Check for each task ID's commit
+        commits_by_task = {}
+        for task_id in expected_task_ids:
+            # Get commits matching this specific task ID
+            task_commits_result = subprocess.run(
+                ["git", "log", "--format=%s", "--grep", f"^task({task_id}):", merged_branch],
                 cwd=e2e_project,
                 capture_output=True,
                 text=True,
             )
 
-            if branch_check.returncode == 0:
-                # Get commits with task(TXXX): format
-                task_commits = get_task_commit_messages(e2e_project, branch)
+            task_commits = task_commits_result.stdout.strip().split("\n") if task_commits_result.stdout.strip() else []
+            commits_by_task[task_id] = task_commits
 
-                log_result = subprocess.run(
-                    ["git", "log", "--oneline", "-5", branch],
-                    cwd=e2e_project,
-                    capture_output=True,
-                    text=True,
-                )
-
-                print(f"\n{branch}:")
-                print(log_result.stdout)
-
-                # Check if branch has changes compared to source branch
-                diff_result = subprocess.run(
-                    ["git", "diff", "--stat", "001-calculator", branch],
-                    cwd=e2e_project,
-                    capture_output=True,
-                    text=True,
-                )
-
-                if diff_result.stdout.strip():
-                    print(f"  Changes: {diff_result.stdout.strip()}")
-                    branches_with_changes.append(branch)
-                else:
-                    print(f"  WARNING: No changes found")
-
-                # Verify task commits exist
-                if task_commits:
-                    print(f"  ✓ Found {len(task_commits)} task commit(s) matching task({task_id}): format")
-                    commits_verified.append(branch)
-                else:
-                    print(f"  ✗ No task commits found matching task({task_id}): format")
+            if task_commits:
+                print(f"  ✓ {task_id}: Found {len(task_commits)} commit(s)")
+                for commit in task_commits:
+                    print(f"    - {commit[:80]}")
             else:
-                print(f"\n{branch}: Branch does not exist")
+                print(f"  ✗ {task_id}: No commits found")
+
+        # Check if merged branch has changes compared to source branch
+        diff_result = subprocess.run(
+            ["git", "diff", "--stat", "001-calculator", merged_branch],
+            cwd=e2e_project,
+            capture_output=True,
+            text=True,
+        )
+
+        has_changes = bool(diff_result.stdout.strip())
+
+        print(f"\nChanges in {merged_branch} vs source:")
+        if has_changes:
+            print(diff_result.stdout)
+        else:
+            print("  WARNING: No changes found")
 
         # Step 7: Assert commit requirements
         print("\n=== Commit Verification Results ===")
-        print(f"Branches with task(TXXX): commits: {len(commits_verified)}/{expected_task_count}")
-        print(f"Branches with file changes: {len(branches_with_changes)}/{expected_task_count}")
+        tasks_with_commits = [tid for tid, commits in commits_by_task.items() if commits]
+        print(f"Tasks with commits: {len(tasks_with_commits)}/{len(expected_task_ids)}")
+        print(f"Branch has changes: {'YES' if has_changes else 'NO'}")
 
-        assert len(commits_verified) == expected_task_count, \
-            f"Expected {expected_task_count} branches with task commits, but found {len(commits_verified)}"
+        assert len(tasks_with_commits) == len(expected_task_ids), \
+            f"Expected {len(expected_task_ids)} tasks with commits, but found {len(tasks_with_commits)}: {tasks_with_commits}"
 
-        assert len(branches_with_changes) == expected_task_count, \
-            f"Expected {expected_task_count} branches with changes, but found {len(branches_with_changes)}"
+        assert has_changes, \
+            f"Expected {merged_branch} to have changes compared to source branch"
 
         # Step 8: Verify DAG structure and container mode
         assert dag_file.exists(), "DAG file should exist"

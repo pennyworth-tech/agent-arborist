@@ -407,9 +407,14 @@ def build_dag_from_tasks(
         })
 
         # Post-merge (arborist on host, will invoke runner inside container)
+        post_merge_cmd = f"arborist task post-merge {task.id}"
+        if runner_name:
+            post_merge_cmd += f" --runner {runner_name}"
+        if model:
+            post_merge_cmd += f" --model '{model}'"
         steps.append({
             "name": "post-merge",
-            "command": f"arborist task post-merge {task.id}",
+            "command": post_merge_cmd,
             "depends": ["run-test"],
         })
 
