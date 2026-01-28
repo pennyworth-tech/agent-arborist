@@ -55,6 +55,55 @@ class RunResult:
     exit_code: int = 0
 
 
+def _execute_command(
+    cmd: list[str],
+    timeout: int,
+    cwd: Path | None = None,
+) -> RunResult:
+    """Execute a command and return standardized result.
+
+    This centralizes the common subprocess execution logic used by all runners.
+
+    Args:
+        cmd: Command and arguments to execute
+        timeout: Timeout in seconds
+        cwd: Working directory for execution
+
+    Returns:
+        RunResult with success status, output, and error details
+    """
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=cwd,
+        )
+
+        return RunResult(
+            success=result.returncode == 0,
+            output=result.stdout.strip(),
+            error=result.stderr.strip() if result.returncode != 0 else None,
+            exit_code=result.returncode,
+        )
+
+    except subprocess.TimeoutExpired:
+        return RunResult(
+            success=False,
+            output="",
+            error=f"Timeout after {timeout} seconds",
+            exit_code=-1,
+        )
+    except Exception as e:
+        return RunResult(
+            success=False,
+            output="",
+            error=str(e),
+            exit_code=-1,
+        )
+
+
 class Runner(ABC):
     """Base class for prompt runners."""
 
@@ -105,40 +154,11 @@ class ClaudeRunner(Runner):
                 exit_code=-1,
             )
 
-        try:
-            cmd = [path, "--dangerously-skip-permissions", "-p", prompt]
-            if self.model:
-                cmd.extend(["--model", self.model])
+        cmd = [path, "--dangerously-skip-permissions", "-p", prompt]
+        if self.model:
+            cmd.extend(["--model", self.model])
 
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                cwd=cwd,
-            )
-
-            return RunResult(
-                success=result.returncode == 0,
-                output=result.stdout.strip(),
-                error=result.stderr.strip() if result.returncode != 0 else None,
-                exit_code=result.returncode,
-            )
-
-        except subprocess.TimeoutExpired:
-            return RunResult(
-                success=False,
-                output="",
-                error=f"Timeout after {timeout} seconds",
-                exit_code=-1,
-            )
-        except Exception as e:
-            return RunResult(
-                success=False,
-                output="",
-                error=str(e),
-                exit_code=-1,
-            )
+        return _execute_command(cmd, timeout, cwd)
 
 
 class OpencodeRunner(Runner):
@@ -166,43 +186,14 @@ class OpencodeRunner(Runner):
                 exit_code=-1,
             )
 
-        try:
-            # OpenCode uses 'run' subcommand for non-interactive mode
-            # TODO: skip permissions can be set in target repo opencode.json file
-            cmd = [path, "run"]
-            if self.model:
-                cmd.extend(["-m", self.model])
-            cmd.append(prompt)
+        # OpenCode uses 'run' subcommand for non-interactive mode
+        # TODO: skip permissions can be set in target repo opencode.json file
+        cmd = [path, "run"]
+        if self.model:
+            cmd.extend(["-m", self.model])
+        cmd.append(prompt)
 
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                cwd=cwd,
-            )
-
-            return RunResult(
-                success=result.returncode == 0,
-                output=result.stdout.strip(),
-                error=result.stderr.strip() if result.returncode != 0 else None,
-                exit_code=result.returncode,
-            )
-
-        except subprocess.TimeoutExpired:
-            return RunResult(
-                success=False,
-                output="",
-                error=f"Timeout after {timeout} seconds",
-                exit_code=-1,
-            )
-        except Exception as e:
-            return RunResult(
-                success=False,
-                output="",
-                error=str(e),
-                exit_code=-1,
-            )
+        return _execute_command(cmd, timeout, cwd)
 
 
 class GeminiRunner(Runner):
@@ -230,42 +221,13 @@ class GeminiRunner(Runner):
                 exit_code=-1,
             )
 
-        try:
-            # Gemini CLI uses positional prompt argument
-            cmd = [path, "--yolo"]
-            if self.model:
-                cmd.extend(["-m", self.model])
-            cmd.append(prompt)
+        # Gemini CLI uses positional prompt argument
+        cmd = [path, "--yolo"]
+        if self.model:
+            cmd.extend(["-m", self.model])
+        cmd.append(prompt)
 
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                cwd=cwd,
-            )
-
-            return RunResult(
-                success=result.returncode == 0,
-                output=result.stdout.strip(),
-                error=result.stderr.strip() if result.returncode != 0 else None,
-                exit_code=result.returncode,
-            )
-
-        except subprocess.TimeoutExpired:
-            return RunResult(
-                success=False,
-                output="",
-                error=f"Timeout after {timeout} seconds",
-                exit_code=-1,
-            )
-        except Exception as e:
-            return RunResult(
-                success=False,
-                output="",
-                error=str(e),
-                exit_code=-1,
-            )
+        return _execute_command(cmd, timeout, cwd)
 
 
 def get_runner(runner_type: RunnerType | None = None, model: str | None = None) -> Runner:
