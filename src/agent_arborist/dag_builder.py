@@ -193,13 +193,16 @@ class SubDagBuilder:
         """Build a leaf subdag with individual command nodes.
 
         Leaf subdags have steps in sequence:
-        - With containers: pre-sync -> container-up -> run -> commit -> run-test -> post-merge -> container-down -> post-cleanup
-        - Without containers: pre-sync -> run -> commit -> run-test -> post-merge -> post-cleanup
+        - With containers: pre-sync -> container-up -> run -> commit -> run-test -> post-merge -> container-down
+        - Without containers: pre-sync -> run -> commit -> run-test -> post-merge
 
         Commands are self-aware: they detect container needs and wrap their subprocesses
         (AI runners, test commands) with 'devcontainer exec' when needed.
 
         Each step captures its JSON output via Dagu's output: field.
+
+        Note: Containers are stopped but not removed. Worktrees are kept for inspection.
+        Use 'arborist cleanup' commands to clean up afterward.
         """
 
         def output_var(step: str) -> str:
@@ -257,21 +260,13 @@ class SubDagBuilder:
             output=output_var("post-merge"),
         ))
 
-        # Container lifecycle: Stop container for this worktree
+        # Container lifecycle: Stop container for this worktree (but don't remove it)
         if self._use_containers:
             steps.append(SubDagStep(
                 name="container-down",
                 command=devcontainer_down_command(),
                 depends=["post-merge"],
             ))
-
-        # Post-cleanup (runs on host to remove worktree)
-        steps.append(SubDagStep(
-            name="post-cleanup",
-            command=f"arborist task post-cleanup {task_id}",
-            depends=["container-down"] if self._use_containers else ["post-merge"],
-            output=output_var("post-cleanup"),
-        ))
 
         # Add environment variables for worktree path and container mode
         # Compute absolute path to worktree
