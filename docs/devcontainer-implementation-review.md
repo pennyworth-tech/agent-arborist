@@ -709,6 +709,9 @@ class OpencodeRunner(Runner):
         cmd.append(prompt)
         return _execute_command(cmd, cwd=cwd, timeout=timeout)
 
+# Note: For devcontainer e2e tests, we'll focus on ClaudeRunner only
+# OpenCode/Gemini support remains but won't be tested in devcontainer context
+
 class GeminiRunner(Runner):
     def run(self, prompt: str, timeout: int = 60, cwd: Path | None = None) -> RunResult:
         cmd = ["gemini", "--yolo"]
@@ -1075,7 +1078,342 @@ devcontainer exec --workspace-folder /path opencode run "task"
 **If devcontainer CLI handles all three:** Proceed with simplification
 **If not:** Keep minimal wrapper, but still remove validation/workspace resolution complexity
 
-### 3.7 Branching Strategy
+### 3.7 External DevContainer Definition for Testing
+
+#### The Testing Challenge
+
+**Original Approach:** Each test fixture had its own `.devcontainer/` directory embedded in the test tree:
+```
+tests/fixtures/devcontainers/
+└── minimal-opencode/
+    ├── .devcontainer/
+    │   ├── Dockerfile
+    │   └── devcontainer.json
+    ├── .env
+    └── README.md
+```
+
+**Problems:**
+- ❌ Duplicates devcontainer config across test fixtures
+- ❌ Hard to maintain (update Claude Code version = edit multiple Dockerfiles)
+- ❌ Doesn't reflect real-world usage (users have one devcontainer, not per-fixture)
+- ❌ Testing arborist's devcontainer logic, not realistic project scenarios
+
+#### New Approach: Use Existing backlit-devpod Repository
+
+**Actual Setup:** Use the existing production devcontainer from https://github.com/pennyworth-tech/backlit-devpod
+
+**Repository Structure:**
+```
+https://github.com/pennyworth-tech/backlit-devpod
+├── .devcontainer/
+│   ├── Dockerfile            # Includes Claude Code CLI
+│   └── devcontainer.json     # Production config
+└── ... (other backlit project files)
+```
+
+**Local Development Context:**
+```
+~/dev/pw/
+├── agent-arborist/           # This repo
+└── backlit-devpod/           # Sibling directory (../backlit-devpod)
+```
+
+**Testing Focus:** Claude Code only (not OpenCode/Gemini) - matches production usage
+
+#### Implementation Options
+
+##### Option 1: Git Submodule (Standard Approach)
+
+**Setup:**
+```bash
+# In arborist repo
+git submodule add https://github.com/pennyworth-tech/backlit-devpod \
+  tests/fixtures/backlit-devpod
+```
+
+**Test Usage:**
+```python
+# tests/conftest.py
+@pytest.fixture
+def e2e_project(tmp_path):
+    project_dir = tmp_path / "test-project"
+    project_dir.mkdir()
+
+    # Copy devcontainer from submodule
+    submodule_dc = Path(__file__).parent / "fixtures" / "backlit-devpod" / ".devcontainer"
+    shutil.copytree(submodule_dc, project_dir / ".devcontainer")
+
+    # ... rest of test setup
+```
+
+**CI Configuration:**
+```yaml
+# .github/workflows/test.yml
+- name: Checkout with submodules
+  uses: actions/checkout@v4
+  with:
+    submodules: true
+```
+
+**Pros:**
+- ✅ Git-native, well-understood approach
+- ✅ Version pinned in arborist repo (specific commit)
+- ✅ Works offline after initial clone
+- ✅ Standard for cross-repo dependencies
+
+**Cons:**
+- ⚠️ Developers must remember `git clone --recurse-submodules`
+- ⚠️ Submodule management learning curve
+- ⚠️ Must `git submodule update` to get latest backlit-devpod changes
+
+##### Option 2: Sibling Directory Reference (Recommended for Local Dev)
+
+**Setup:** Assumes `backlit-devpod` is already cloned at `../backlit-devpod`
+
+```python
+# tests/conftest.py
+import pytest
+from pathlib import Path
+import shutil
+
+@pytest.fixture(scope="session")
+def backlit_devcontainer() -> Path:
+    """Get devcontainer from sibling backlit-devpod repo."""
+    # Look for sibling directory
+    arborist_root = Path(__file__).parent.parent
+    sibling_path = arborist_root.parent / "backlit-devpod" / ".devcontainer"
+
+    if not sibling_path.exists():
+        pytest.skip(
+            "backlit-devpod not found at ../backlit-devpod\n"
+            "Clone it: git clone https://github.com/pennyworth-tech/backlit-devpod ../backlit-devpod"
+        )
+
+    return sibling_path
+
+@pytest.fixture
+def e2e_project(tmp_path, backlit_devcontainer):
+    """Create test project with backlit devcontainer."""
+    project_dir = tmp_path / "test-project"
+    project_dir.mkdir()
+
+    # Copy devcontainer from sibling repo
+    shutil.copytree(backlit_devcontainer, project_dir / ".devcontainer")
+
+    # ... rest of test setup
+    yield project_dir
+```
+
+**CI Configuration:**
+```yaml
+# .github/workflows/test.yml
+- name: Checkout agent-arborist
+  uses: actions/checkout@v4
+  with:
+    path: agent-arborist
+
+- name: Checkout backlit-devpod
+  uses: actions/checkout@v4
+  with:
+    repository: pennyworth-tech/backlit-devpod
+    path: backlit-devpod
+
+- name: Run tests
+  working-directory: agent-arborist
+  run: pytest tests/test_e2e_devcontainer.py
+```
+
+**Pros:**
+- ✅ Matches your actual local setup (`../backlit-devpod`)
+- ✅ No submodule complexity
+- ✅ Always uses latest backlit-devpod from your local checkout
+- ✅ Easy to test devcontainer changes before committing to backlit-devpod
+- ✅ Clear error message if sibling repo missing
+
+**Cons:**
+- ⚠️ Requires manual clone of backlit-devpod
+- ⚠️ Slightly more complex CI configuration (two checkouts)
+
+##### Option 3: Hybrid Approach (Sibling Fallback to Clone)
+
+**Best of both worlds:** Check for sibling directory first, clone if not found
+
+```python
+# tests/conftest.py
+import pytest
+from pathlib import Path
+import subprocess
+import shutil
+
+BACKLIT_DEVPOD_REPO = "https://github.com/pennyworth-tech/backlit-devpod"
+BACKLIT_DEVPOD_REF = "main"  # or specific commit/tag
+
+@pytest.fixture(scope="session")
+def backlit_devcontainer(tmp_path_factory) -> Path:
+    """Get backlit devcontainer from sibling dir or clone."""
+    # Try sibling directory first (local dev)
+    arborist_root = Path(__file__).parent.parent
+    sibling_path = arborist_root.parent / "backlit-devpod" / ".devcontainer"
+
+    if sibling_path.exists():
+        print(f"\nUsing backlit-devpod from sibling directory: {sibling_path}")
+        return sibling_path
+
+    # Fall back to cloning (CI or first-time setup)
+    print(f"\nSibling backlit-devpod not found, cloning from {BACKLIT_DEVPOD_REPO}")
+    cache_dir = tmp_path_factory.mktemp("backlit_devpod_cache")
+    clone_path = cache_dir / "backlit-devpod"
+
+    subprocess.run(
+        ["git", "clone", "--depth", "1", "--branch", BACKLIT_DEVPOD_REF,
+         BACKLIT_DEVPOD_REPO, str(clone_path)],
+        check=True, capture_output=True
+    )
+
+    return clone_path / ".devcontainer"
+```
+
+**Pros:**
+- ✅ Works for both local dev (uses `../backlit-devpod`) and CI (clones)
+- ✅ No submodule complexity
+- ✅ Automatic fallback behavior
+- ✅ Matches your workflow
+
+**Cons:**
+- ⚠️ Slightly more complex fixture logic
+- ⚠️ Network required if sibling not present
+
+#### Recommended Approach: Option 3 (Hybrid Sibling Fallback to Clone)
+
+**Rationale:**
+1. **Matches actual workflow** - uses `../backlit-devpod` for local dev
+2. **No submodule complexity** - developers clone backlit-devpod themselves
+3. **Automatic fallback** - clones if sibling not present (CI, first-time setup)
+4. **Production devcontainer** - tests with actual backlit production environment
+5. **Easy to iterate** - modify backlit-devpod locally, tests see changes immediately
+6. **Realistic testing** - exactly how users would reference external devcontainer
+
+#### Test Structure with backlit-devpod DevContainer
+
+```python
+# tests/conftest.py
+BACKLIT_DEVPOD_REPO = "https://github.com/pennyworth-tech/backlit-devpod"
+BACKLIT_DEVPOD_REF = "main"  # or specific commit for pinning
+
+@pytest.fixture(scope="session")
+def backlit_devcontainer(tmp_path_factory) -> Path:
+    """Get backlit devcontainer from sibling dir or clone."""
+    # Try sibling directory first
+    arborist_root = Path(__file__).parent.parent
+    sibling_path = arborist_root.parent / "backlit-devpod" / ".devcontainer"
+
+    if sibling_path.exists():
+        return sibling_path
+
+    # Fall back to cloning for CI
+    cache_dir = tmp_path_factory.mktemp("backlit_devpod_cache")
+    clone_path = cache_dir / "backlit-devpod"
+    subprocess.run(
+        ["git", "clone", "--depth", "1", "--branch", BACKLIT_DEVPOD_REF,
+         BACKLIT_DEVPOD_REPO, str(clone_path)],
+        check=True, capture_output=True
+    )
+    return clone_path / ".devcontainer"
+
+# tests/test_e2e_devcontainer.py
+@pytest.fixture
+def e2e_project(tmp_path, backlit_devcontainer):
+    """Create test project with backlit devcontainer."""
+    project_dir = tmp_path / "calculator-project"
+    project_dir.mkdir()
+
+    # Copy backlit devcontainer into test project
+    shutil.copytree(backlit_devcontainer, project_dir / ".devcontainer")
+
+    # Initialize git repo
+    subprocess.run(["git", "init"], cwd=project_dir, check=True)
+    # ... git config, initial commit ...
+
+    # Create test spec
+    (project_dir / "specs" / "001-calculator" / "tasks.md").write_text(...)
+
+    return project_dir
+
+def test_full_dag_workflow(e2e_project):
+    """Test complete workflow with backlit devcontainer."""
+    # Test expects Claude Code to be available in container
+    # (installed in backlit-devpod devcontainer definition)
+    result = subprocess.run(
+        ["arborist", "dag", "run", "001-calculator"],
+        cwd=e2e_project,
+        capture_output=True,
+        text=True
+    )
+    # Verify Claude Code executed tasks successfully
+    ...
+```
+
+#### backlit-devpod Repository Assumptions
+
+The test expects the `backlit-devpod/.devcontainer/` to provide:
+
+**Required Tools:**
+- ✅ Claude Code CLI (installed and in PATH)
+- ✅ Git (for worktree operations)
+- ✅ Git configured for commits (user.name, user.email)
+
+**Required Environment:**
+- ✅ `ANTHROPIC_API_KEY` passed through from host
+- ✅ Node.js or compatible runtime for Claude Code
+
+**Optional (recommended) for arborist tests:**
+- 📝 `ARBORIST_DEFAULT_RUNNER=claude` in remoteEnv
+- 📝 `ARBORIST_DEFAULT_MODEL=sonnet` in remoteEnv
+
+**What Tests Will Verify:**
+```bash
+# Inside the devcontainer, these should succeed:
+which claude           # Claude Code available
+claude --version       # Working installation
+git config user.name   # Git configured
+```
+
+**Note:** Tests do NOT modify `backlit-devpod` repo. They copy `.devcontainer/` into test fixture projects.
+
+#### Benefits of This Approach
+
+1. **Uses Production DevContainer**
+   - Tests with actual backlit production environment
+   - Ensures arborist works with real-world devcontainer setups
+   - No test-specific devcontainer to maintain
+
+2. **Separation of Concerns**
+   - Arborist tests container **orchestration** (lifecycle, wrapping)
+   - backlit-devpod defines container **environment** (tools, config)
+   - Changes to backlit devcontainer don't require arborist changes
+
+3. **Realistic Testing**
+   - Exactly mirrors how users would reference external devcontainer
+   - Tests the "bring your own devcontainer" philosophy
+   - Validates cross-repo devcontainer workflow
+
+4. **Local Development Workflow**
+   - Uses `../backlit-devpod` that developers already have cloned
+   - Easy to test devcontainer changes (edit backlit-devpod, rerun tests)
+   - No submodules or complex setup
+
+5. **CI/CD Friendly**
+   - Simple two-repo checkout in GitHub Actions
+   - No submodule recursion complexity
+   - Can pin to specific backlit-devpod commit if needed
+
+6. **Claude Code Focus**
+   - Tests only with Claude Code (production runner)
+   - Simpler test setup (no multi-runner matrix)
+   - Matches actual backlit usage patterns
+
+### 3.8 Branching Strategy
 
 #### Recommended Branch Point: `ff37f35` (Add container mode integration)
 
@@ -1160,30 +1498,55 @@ git cherry-pick 8472c22  # Fix file change detection
 
 #### Step 1: Spike - Prove Simplicity Works (1-2 hours)
 
-Create a minimal proof-of-concept:
+Create a minimal proof-of-concept using backlit-devpod:
+
 ```python
-# test_simple_devcontainer.py
+# test_spike_devcontainer.py
 def test_simple_execution():
     """Test that devcontainer exec handles everything we need."""
-    worktree = Path("/path/to/worktree-with-devcontainer")
+    # Create test project with backlit devcontainer
+    project_dir = tmp_path / "spike-test"
+    project_dir.mkdir()
+
+    # Copy backlit-devpod devcontainer
+    backlit_dc = Path("../backlit-devpod/.devcontainer")
+    shutil.copytree(backlit_dc, project_dir / ".devcontainer")
+
+    # Initialize git
+    subprocess.run(["git", "init"], cwd=project_dir, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=project_dir, check=True)
+    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=project_dir, check=True)
 
     # Start container
-    subprocess.run(["devcontainer", "up", "--workspace-folder", str(worktree)])
+    subprocess.run(
+        ["devcontainer", "up", "--workspace-folder", str(project_dir)],
+        check=True
+    )
 
-    # Run command - devcontainer CLI should handle:
+    # Run Claude Code - devcontainer CLI should handle:
     # - Working directory
-    # - PATH setup
-    # - Environment variables
-    cmd = ["devcontainer", "exec", "--workspace-folder", str(worktree),
-           "opencode", "run", "Add a function that adds two numbers"]
+    # - PATH setup (finds claude command)
+    # - Environment variables (ANTHROPIC_API_KEY)
+    cmd = [
+        "devcontainer", "exec",
+        "--workspace-folder", str(project_dir),
+        "claude", "-p", "Create a simple add function in add.js"
+    ]
     result = subprocess.run(cmd, capture_output=True, text=True)
 
-    assert result.returncode == 0
-    assert "function add" in result.stdout.lower()
+    assert result.returncode == 0, f"Command failed: {result.stderr}"
+
+    # Verify file was created
+    assert (project_dir / "add.js").exists()
 ```
 
+**Test Questions:**
+1. Does `devcontainer exec ... claude` work without bash -lc wrapper?
+2. Does Claude Code find files in correct working directory?
+3. Are environment variables (ANTHROPIC_API_KEY) available?
+
 **If this works:** Proceed with refactoring. Devcontainer CLI handles everything we need.
-**If this fails:** Document what's missing and assess if workarounds are necessary.
+**If this fails:** Document specific issues and minimal workarounds required.
 
 #### Step 2: Add Runner-Model Config (2-3 hours)
 
