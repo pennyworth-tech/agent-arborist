@@ -15,8 +15,6 @@ import yaml
 from agent_arborist.container_runner import (
     ContainerMode,
     should_use_container,
-    devcontainer_up_command,
-    devcontainer_down_command,
 )
 from agent_arborist.home import get_arborist_home
 from agent_arborist.task_spec import TaskSpec, Task
@@ -222,7 +220,7 @@ class SubDagBuilder:
         if self._use_containers:
             steps.append(SubDagStep(
                 name="container-up",
-                command=devcontainer_up_command(),
+                command=f"arborist task container-up {task_id}",
                 depends=["pre-sync"],
             ))
 
@@ -264,7 +262,7 @@ class SubDagBuilder:
         if self._use_containers:
             steps.append(SubDagStep(
                 name="container-down",
-                command=devcontainer_down_command(),
+                command=f"arborist task container-stop {task_id}",
                 depends=["post-merge"],
             ))
 
