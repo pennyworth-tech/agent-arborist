@@ -13,20 +13,18 @@ This fixture demonstrates a target project that has:
 
 Integration tests:
 1. Copy this fixture to a temporary directory
-2. **Copy `agent-arborist/.env` to the temp directory** (simulates user's .env)
+2. **Copy fixture `.env` to temp-directory/.devcontainer/.env** (git_tasks.py pattern)
 3. Initialize it as a git repository
 4. Run `arborist` commands that detect this `.devcontainer/`
-5. Container starts and loads `.env` via `--env-file` runArgs
+5. Container starts and loads `.env` from `.devcontainer/.env`
 6. Verify tasks execute inside the container with API keys available
 
 ## Environment Variable Flow
 
 ```
-agent-arborist/.env (your API keys)
+Fixture .env.example (template with your keys)
         ↓
-   conftest.py loads into test process
-        ↓
-   git_tasks.py copies to temp-project/.devcontainer/.env
+   Test copies to temp-project/.devcontainer/.env
         ↓
    devcontainer.json uses runArgs: ["--env-file", ".devcontainer/.env"]
         ↓
@@ -44,19 +42,20 @@ agent-arborist/.env (your API keys)
 
 ## Required .env File
 
-The `.devcontainer/.env` file must contain:
+Tests copy `.env.example` (from fixture root) to `.devcontainer/.env` in temp project.
+
+The `.env` file must contain:
 - `ANTHROPIC_API_KEY` - For Claude Code
 - `OPENAI_API_KEY` - For OpenCode
 - `GOOGLE_API_KEY` - For Gemini
 - `ZAI_API_KEY` - Optional for OpenCode
 - `CLAUDE_CODE_OAUTH_TOKEN` - For Claude authentication
 
-**Location**: `.devcontainer/.env` (inside .devcontainer directory)
+**Fixture Location**: `.env.example` (at fixture root, alongside README.md)
+**Target Location**: `.devcontainer/.env` (where tests copy it)
 
-This matches the arborist pattern where `git_tasks.py` copies from:
+This matches the arborist pattern where `git_tasks.py` copies:
 `git_root/.devcontainer/.env` → `worktree/.devcontainer/.env`
-
-See `.devcontainer/.env.example` for template.
 
 ## NOT for Arborist Development
 
