@@ -48,11 +48,10 @@ Fixture .devcontainer/.env.example (template)
 Tests create `.devcontainer/.env` from `.devcontainer/.env.example` with actual API keys.
 
 The `.env` file must contain:
-- `ANTHROPIC_API_KEY` - For Claude Code
+- `CLAUDE_CODE_OAUTH_TOKEN` - For Claude Code (OAuth token from Claude Pro/Max)
 - `OPENAI_API_KEY` - For OpenCode
 - `GOOGLE_API_KEY` - For Gemini
 - `ZAI_API_KEY` - Optional for OpenCode
-- `CLAUDE_CODE_OAUTH_TOKEN` - For Claude authentication
 
 **Location**: `.devcontainer/.env.example` (template in .devcontainer/)
 **Test creates**: `.devcontainer/.env` (with actual keys from host environment)

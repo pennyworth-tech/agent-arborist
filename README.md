@@ -50,10 +50,9 @@ cp .env.example .env
 
 ### Required API Keys
 
-- **ANTHROPIC_API_KEY** - For Claude Code integration tests
+- **CLAUDE_CODE_OAUTH_TOKEN** - For Claude Code integration tests (OAuth token from Claude Pro/Max subscription)
 - **OPENAI_API_KEY** - For OpenCode integration tests
 - **GOOGLE_API_KEY** - For Gemini integration tests
-- **CLAUDE_CODE_OAUTH_TOKEN** - For Claude authentication
 - **ZAI_API_KEY** - (Optional) For OpenCode with ZAI
 
 ### Running Tests

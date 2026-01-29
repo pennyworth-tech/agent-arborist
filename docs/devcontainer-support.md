@@ -125,7 +125,7 @@ The target project should have something like:
   },
   "workspaceFolder": "/workspace",
   "remoteEnv": {
-    "ANTHROPIC_API_KEY": "${localEnv:ANTHROPIC_API_KEY}",
+    "CLAUDE_CODE_OAUTH_TOKEN": "${localEnv:CLAUDE_CODE_OAUTH_TOKEN}",
     "OPENAI_API_KEY": "${localEnv:OPENAI_API_KEY}",
     "GOOGLE_API_KEY": "${localEnv:GOOGLE_API_KEY}"
   },
