@@ -1207,24 +1207,13 @@ def task_post_merge(ctx: click.Context, task_id: str, timeout: int, runner: str 
     runner_type = runner or get_default_runner()
     resolved_model = model or get_default_model()
 
-    # Get or create worktree for parent branch
-    parent_worktree = find_worktree_for_branch(parent_branch)
-    created_worktree = False
+    # Get the task worktree (where we'll do the merge work)
+    task_worktree = find_worktree_for_branch(task_branch)
 
-    if not parent_worktree:
-        # Create temporary worktree for parent
-        parent_worktree = get_worktree_path(manifest.spec_id, f"{task_id}_merge")
-        parent_worktree.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            subprocess.run(
-                ["git", "worktree", "add", str(parent_worktree), parent_branch],
-                capture_output=True, check=True
-            )
-            created_worktree = True
-        except subprocess.CalledProcessError as e:
-            console.print(f"[red]Error:[/red] Failed to create worktree for {parent_branch}")
-            console.print(f"[dim]{e.stderr.decode() if e.stderr else ''}[/dim]")
-            raise SystemExit(1)
+    if not task_worktree:
+        console.print(f"[red]Error:[/red] Task worktree not found for {task_branch}")
+        console.print(f"[dim]Make sure the task worktree exists before merging[/dim]")
+        raise SystemExit(1)
 
     if ctx.obj.get("echo_for_testing"):
         echo_command(
@@ -1235,21 +1224,22 @@ def task_post_merge(ctx: click.Context, task_id: str, timeout: int, runner: str 
             model=resolved_model,
             branch=task_branch,
             parent=parent_branch,
-            worktree=str(parent_worktree),
+            worktree=str(task_worktree),
         )
         return
 
     if not ctx.obj.get("quiet"):
         console.print(f"[cyan]Merging {task_branch} → {parent_branch} (squash)[/cyan]")
 
-    # Build prompt for AI to do the merge
-    merge_prompt = f"""Perform a squash merge of branch '{task_branch}' into the current branch '{parent_branch}'.
+    # Build prompt for AI to do the merge in the task worktree
+    merge_prompt = f"""Perform a squash merge of branch '{task_branch}' into '{parent_branch}'.
 
 STEPS:
-1. Run: git merge --squash {task_branch}
-2. If there are conflicts, resolve them carefully by examining both versions
-3. After resolving any conflicts, stage all changes with: git add -A
-4. Create a SINGLE commit with this EXACT format:
+1. Checkout the parent branch: git checkout {parent_branch}
+2. Run: git merge --squash {task_branch}
+3. If there are conflicts, resolve them carefully by examining both versions
+4. After resolving any conflicts, stage all changes with: git add -A
+5. Create a SINGLE commit with this EXACT format:
 
 git commit -m "task({task_id}): <one-line summary of what was merged>
 
@@ -1258,11 +1248,14 @@ git commit -m "task({task_id}): <one-line summary of what was merged>
 
 (merged by {runner_type} / {resolved_model} from {task_branch})"
 
+6. Switch back to the original branch: git checkout {task_branch}
+
 IMPORTANT:
 - The first line MUST be: task({task_id}): followed by a brief summary
 - Use bullet points for details in the body
 - Include the footer line showing this was a merge
 - If the merge has no changes (branches identical), just report that - no commit needed
+- Always switch back to {task_branch} at the end to restore the worktree state
 
 Do NOT push. Just complete the merge and commit locally.
 """
@@ -1274,45 +1267,35 @@ Do NOT push. Just complete the merge and commit locally.
         raise SystemExit(1)
 
     if not ctx.obj.get("quiet"):
-        console.print(f"[dim]Running {runner_type} in {parent_worktree}[/dim]")
+        console.print(f"[dim]Running {runner_type} in {task_worktree}[/dim]")
 
     # Check if we need to wrap runner command with devcontainer exec
     container_mode = get_container_mode_from_env()
     container_cmd_prefix = None
     if container_mode != ContainerMode.DISABLED:
         from agent_arborist.container_context import should_use_container
-        if should_use_container(parent_worktree, container_mode):
+        if should_use_container(task_worktree, container_mode):
             container_cmd_prefix = [
                 "devcontainer",
                 "exec",
                 "--workspace-folder",
-                str(parent_worktree.resolve()),
+                str(task_worktree.resolve()),
             ]
 
-    # Run AI in parent worktree
+    # Run AI in task worktree
     result = runner_instance.run(
         merge_prompt,
         timeout=timeout,
-        cwd=parent_worktree,
+        cwd=task_worktree,
         container_cmd_prefix=container_cmd_prefix,
     )
-
-    # Cleanup temporary worktree if we created it
-    if created_worktree:
-        try:
-            subprocess.run(
-                ["git", "worktree", "remove", str(parent_worktree), "--force"],
-                capture_output=True, check=False
-            )
-        except Exception:
-            pass
 
     # Build step result
     step_result = PostMergeResult(
         success=result.success,
         merged_into=parent_branch,
         source_branch=task_branch,
-        commit_sha=_get_head_sha(parent_worktree) if result.success and not created_worktree else None,
+        commit_sha=_get_head_sha(task_worktree) if result.success else None,
         conflicts=[],  # AI should have resolved any conflicts
         conflict_resolved=False,
         error=result.error if not result.success else None,
