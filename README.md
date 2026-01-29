@@ -8,56 +8,80 @@ Automated Task Tree Executor - DAG workflow orchestration with Claude Code and D
 pip install -e .
 ```
 
-## DevContainer Setup
+## Architecture: Host-Based with Optional Container Support
 
-Agent Arborist includes a DevContainer configuration for consistent development environments with all necessary AI CLI tools pre-installed.
+Agent Arborist runs on your **HOST machine** and can optionally execute tasks inside devcontainers:
 
-### Environment Variables
+```
+┌─────────────────────────────────────────┐
+│ Arborist (runs on HOST)                 │
+│ - Detects target's .devcontainer/       │
+│ - Generates DAG with container commands │
+│ - Orchestrates via Dagu                 │
+└─────────────────────────────────────────┘
+              ↓
+┌─────────────────────────────────────────┐
+│ Target Project (user provides)          │
+│ └── .devcontainer/                      │
+│     ├── devcontainer.json               │
+│     └── Dockerfile                      │
+└─────────────────────────────────────────┘
+              ↓
+      Tasks execute inside
+      target's container
+```
 
-Copy `.devcontainer/.env.example` to `.devcontainer/.env` and fill in your API keys:
+**Key Points**:
+- Arborist itself runs on your host (no devcontainer needed for arborist)
+- Target projects can have `.devcontainer/` for isolated execution
+- Tests run from host and verify container operations
+- See `tests/fixtures/devcontainers/` for example target configurations
+
+## Testing
+
+### Environment Setup
+
+Copy `.env.example` to `.env` and fill in your API keys:
 
 ```bash
-cp .devcontainer/.env.example .devcontainer/.env
-# Edit .devcontainer/.env with your actual API keys
+cp .env.example .env
+# Edit .env with your actual API keys
 ```
 
 ### Required API Keys
 
-- **ANTHROPIC_API_KEY** - For Claude Code CLI (`claude`)
-- **OPENAI_API_KEY** - For OpenCode CLI (`opencode`)
-- **GOOGLE_API_KEY** - For Gemini CLI (`gemini`)
-- **CLAUDE_CODE_OAUTH_TOKEN** - For Claude Code authentication
-- **ZAI_API_KEY** - (Optional) For OpenCode with ZAI provider
+- **ANTHROPIC_API_KEY** - For Claude Code integration tests
+- **OPENAI_API_KEY** - For OpenCode integration tests
+- **GOOGLE_API_KEY** - For Gemini integration tests
+- **CLAUDE_CODE_OAUTH_TOKEN** - For Claude authentication
+- **ZAI_API_KEY** - (Optional) For OpenCode with ZAI
 
-### Installed Tools
+### Running Tests
 
-The DevContainer includes:
-- **Claude Code CLI** (`@anthropic-ai/claude-code`)
-- **OpenCode CLI** (`opencode-ai`)
-- **Gemini CLI** (`@google/gemini-cli`)
-- **GitHub CLI** (`gh`)
-- **Node.js** (via nvm)
-- **Python 3** with pip
-- **tmux** terminal multiplexer
-
-### Testing
-
-The DevContainer includes all tools needed to run tests:
+All tests run from the HOST (not inside containers):
 
 ```bash
-# Run unit tests (default, excludes integration tests)
+# Unit tests only (fast, no containers)
 pytest tests/
 
-# Run integration tests with AI providers
+# Integration tests (starts containers, requires Docker)
 pytest tests/ -m integration
 
-# Run provider-specific tests
+# Provider-specific tests (requires API keys)
 pytest tests/ -m claude          # Claude Code tests
 pytest tests/ -m opencode        # OpenCode tests
 pytest tests/ -m gemini          # Gemini tests
+
+# Dagu integration tests (requires dagu CLI on host)
+pytest tests/ -m dagu
 ```
 
-**Note**: Dagu tests are excluded from the DevContainer as Dagu runs on the host system, not inside containers.
+**Test Architecture**:
+1. Tests run from HOST using pytest
+2. Test fixtures in `tests/fixtures/devcontainers/` represent target projects
+3. Tests start containers using `devcontainer` CLI
+4. Tests execute commands inside containers via `devcontainer exec`
+5. Tests verify results from HOST
 
 ## Usage
 
@@ -67,4 +91,9 @@ arborist version
 
 # Check dependencies
 arborist doctor
+
+# Generate DAG with optional container support
+arborist spec dag-build spec/ --container-mode auto  # Use target's .devcontainer if present
+arborist spec dag-build spec/ --container-mode enabled  # Require .devcontainer
+arborist spec dag-build spec/ --container-mode disabled # Ignore .devcontainer
 ```
