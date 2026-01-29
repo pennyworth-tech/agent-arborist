@@ -48,13 +48,15 @@ class TestClaudeRunner:
         runner = ClaudeRunner()
         assert not runner.is_available()
 
+    @patch("subprocess.run")
     @patch("shutil.which")
-    def test_run_not_found(self, mock_which):
+    def test_run_not_found(self, mock_which, mock_run):
         mock_which.return_value = None
+        mock_run.side_effect = FileNotFoundError("No such file or directory: 'claude'")
         runner = ClaudeRunner()
         result = runner.run("test prompt")
         assert not result.success
-        assert "not found" in result.error
+        assert "No such file or directory" in result.error
 
     @patch("subprocess.run")
     @patch("shutil.which")
