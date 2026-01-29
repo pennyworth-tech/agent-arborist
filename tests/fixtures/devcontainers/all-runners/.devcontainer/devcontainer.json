@@ -5,7 +5,7 @@
   },
   "runArgs": [
     "--env-file",
-    "${localWorkspaceFolder}/.env"
+    ".devcontainer/.env"
   ],
   "workspaceFolder": "/workspace",
   "postCreateCommand": "git config --global --add safe.directory /workspace",

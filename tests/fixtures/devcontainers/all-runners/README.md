@@ -26,9 +26,9 @@ agent-arborist/.env (your API keys)
         ↓
    conftest.py loads into test process
         ↓
-   Test copies to temp-project/.env
+   git_tasks.py copies to temp-project/.devcontainer/.env
         ↓
-   devcontainer.json uses runArgs: ["--env-file", ".env"]
+   devcontainer.json uses runArgs: ["--env-file", ".devcontainer/.env"]
         ↓
    Container has API keys available
 ```
@@ -44,14 +44,19 @@ agent-arborist/.env (your API keys)
 
 ## Required .env File
 
-Tests must create `.env` in the target project root with:
+The `.devcontainer/.env` file must contain:
 - `ANTHROPIC_API_KEY` - For Claude Code
 - `OPENAI_API_KEY` - For OpenCode
 - `GOOGLE_API_KEY` - For Gemini
 - `ZAI_API_KEY` - Optional for OpenCode
 - `CLAUDE_CODE_OAUTH_TOKEN` - For Claude authentication
 
-See `.env.example` for template.
+**Location**: `.devcontainer/.env` (inside .devcontainer directory)
+
+This matches the arborist pattern where `git_tasks.py` copies from:
+`git_root/.devcontainer/.env` → `worktree/.devcontainer/.env`
+
+See `.devcontainer/.env.example` for template.
 
 ## NOT for Arborist Development
 
