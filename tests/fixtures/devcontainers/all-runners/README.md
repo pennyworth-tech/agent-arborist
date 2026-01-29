@@ -13,18 +13,21 @@ This fixture demonstrates a target project that has:
 
 Integration tests:
 1. Copy this fixture to a temporary directory
-2. **Copy fixture `.env` to temp-directory/.devcontainer/.env** (git_tasks.py pattern)
+2. **Test creates .devcontainer/.env from .devcontainer/.env.example with actual keys**
 3. Initialize it as a git repository
 4. Run `arborist` commands that detect this `.devcontainer/`
-5. Container starts and loads `.env` from `.devcontainer/.env`
-6. Verify tasks execute inside the container with API keys available
+5. git_tasks.py copies .devcontainer/.env to worktree/.devcontainer/.env
+6. Container starts and loads `.env` from `.devcontainer/.env`
+7. Verify tasks execute inside the container with API keys available
 
 ## Environment Variable Flow
 
 ```
-Fixture .env.example (template with your keys)
+Fixture .devcontainer/.env.example (template)
         ↓
-   Test copies to temp-project/.devcontainer/.env
+   Test creates .devcontainer/.env with actual API keys
+        ↓
+   git_tasks.py copies git_root/.devcontainer/.env → worktree/.devcontainer/.env
         ↓
    devcontainer.json uses runArgs: ["--env-file", ".devcontainer/.env"]
         ↓
@@ -42,7 +45,7 @@ Fixture .env.example (template with your keys)
 
 ## Required .env File
 
-Tests copy `.env.example` (from fixture root) to `.devcontainer/.env` in temp project.
+Tests create `.devcontainer/.env` from `.devcontainer/.env.example` with actual API keys.
 
 The `.env` file must contain:
 - `ANTHROPIC_API_KEY` - For Claude Code
@@ -51,8 +54,8 @@ The `.env` file must contain:
 - `ZAI_API_KEY` - Optional for OpenCode
 - `CLAUDE_CODE_OAUTH_TOKEN` - For Claude authentication
 
-**Fixture Location**: `.env.example` (at fixture root, alongside README.md)
-**Target Location**: `.devcontainer/.env` (where tests copy it)
+**Location**: `.devcontainer/.env.example` (template in .devcontainer/)
+**Test creates**: `.devcontainer/.env` (with actual keys from host environment)
 
 This matches the arborist pattern where `git_tasks.py` copies:
 `git_root/.devcontainer/.env` → `worktree/.devcontainer/.env`
