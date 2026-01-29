@@ -1,0 +1,31 @@
+{
+  "name": "Agent Arborist DevContainer",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": "."
+  },
+  "runArgs": [
+    "--privileged",
+    "--env-file",
+    ".devcontainer/.env"
+  ],
+  "remoteUser": "vscode",
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {}
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "anthropic.claude-code",
+        "github.copilot",
+        "github.copilot-chat"
+      ]
+    }
+  },
+  "postCreateCommand": "echo '🚀 DevContainer ready! Run: claude --version && opencode --version && gemini --version'",
+  "shutdownAction": "none",
+  "capAdd": [
+    "SYS_ADMIN",
+    "SYS_PTRACE"
+  ]
+}

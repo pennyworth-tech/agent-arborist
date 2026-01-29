@@ -32,3 +32,5 @@ Thumbs.db
 
 # Environment variables (secrets)
 .env
+.devcontainer/.env
+.devcontainer/installation-report.md
