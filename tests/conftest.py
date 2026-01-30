@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-# Load .env file if it exists (for ANTHROPIC_API_KEY, etc.)
+# Load .env file if it exists (for CLAUDE_CODE_OAUTH_TOKEN, etc.)
 try:
     from dotenv import load_dotenv
     repo_root = Path(__file__).parent.parent

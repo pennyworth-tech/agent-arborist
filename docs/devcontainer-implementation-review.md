@@ -1364,7 +1364,7 @@ The test expects the `backlit-devpod/.devcontainer/` to provide:
 - ✅ Git configured for commits (user.name, user.email)
 
 **Required Environment:**
-- ✅ `ANTHROPIC_API_KEY` passed through from host (via .env file)
+- ✅ `CLAUDE_CODE_OAUTH_TOKEN` passed through from host (via .env file)
 - ✅ Node.js or compatible runtime for Claude Code
 
 **What Tests Will Verify:**
@@ -1373,7 +1373,7 @@ The test expects the `backlit-devpod/.devcontainer/` to provide:
 which claude           # Claude Code available
 claude --version       # Working installation
 git config user.name   # Git configured
-echo $ANTHROPIC_API_KEY  # Environment variable available
+echo $CLAUDE_CODE_OAUTH_TOKEN  # Environment variable available
 ```
 
 **Note:** Tests do NOT modify `backlit-devpod` repo. They copy `.devcontainer/` into test fixture projects.
@@ -1388,16 +1388,16 @@ Environment variables from `.env` are set at **container creation time** (`devco
 
 ```bash
 # Timeline:
-1. Create .env file with ANTHROPIC_API_KEY
+1. Create .env file with CLAUDE_CODE_OAUTH_TOKEN
 2. devcontainer up --workspace-folder /test-project
    ↓ Docker reads .env file via runArgs: ["--env-file", ".env"]
-   ↓ Container starts with ANTHROPIC_API_KEY in environment
+   ↓ Container starts with CLAUDE_CODE_OAUTH_TOKEN in environment
 3. devcontainer exec ... claude -p "..."
    ↓ Command inherits container's environment
-   ↓ ANTHROPIC_API_KEY is available ✓
+   ↓ CLAUDE_CODE_OAUTH_TOKEN is available ✓
 4. devcontainer exec ... arborist task run T001
    ↓ Also inherits container's environment
-   ↓ ANTHROPIC_API_KEY is available ✓
+   ↓ CLAUDE_CODE_OAUTH_TOKEN is available ✓
 ```
 
 **Key Implications:**
@@ -1422,10 +1422,10 @@ def e2e_project(tmp_path, backlit_devcontainer):
 
     # Create .env file with API key from host environment
     env_file = project_dir / ".env"
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        pytest.skip("ANTHROPIC_API_KEY not set in environment")
-    env_file.write_text(f"ANTHROPIC_API_KEY={api_key}\n")
+    oauth_token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "")
+    if not oauth_token:
+        pytest.skip("CLAUDE_CODE_OAUTH_TOKEN not set in environment")
+    env_file.write_text(f"CLAUDE_CODE_OAUTH_TOKEN={oauth_token}\n")
 
     # Modify devcontainer.json to use .env file
     dc_json = project_dir / ".devcontainer" / "devcontainer.json"
@@ -1449,7 +1449,7 @@ def e2e_project(tmp_path, backlit_devcontainer):
 
 **Why This Works:**
 
-1. **At test time:** Create .env with ANTHROPIC_API_KEY from host
+1. **At test time:** Create .env with CLAUDE_CODE_OAUTH_TOKEN from host
 2. **At container-up:** Docker reads .env, sets variables in container environment
 3. **At exec time:** All commands (arborist, claude) inherit container environment
 4. **Result:** No special environment handling needed in runner.py or dag_builder.py
@@ -1599,7 +1599,7 @@ def test_simple_execution():
     # Run Claude Code - devcontainer CLI should handle:
     # - Working directory
     # - PATH setup (finds claude command)
-    # - Environment variables (ANTHROPIC_API_KEY)
+    # - Environment variables (CLAUDE_CODE_OAUTH_TOKEN)
     cmd = [
         "devcontainer", "exec",
         "--workspace-folder", str(project_dir),
@@ -1616,7 +1616,7 @@ def test_simple_execution():
 **Test Questions:**
 1. Does `devcontainer exec ... claude` work without bash -lc wrapper?
 2. Does Claude Code find files in correct working directory?
-3. Are environment variables (ANTHROPIC_API_KEY) available?
+3. Are environment variables (CLAUDE_CODE_OAUTH_TOKEN) available?
 
 **If this works:** Proceed with refactoring. Devcontainer CLI handles everything we need.
 **If this fails:** Document specific issues and minimal workarounds required.

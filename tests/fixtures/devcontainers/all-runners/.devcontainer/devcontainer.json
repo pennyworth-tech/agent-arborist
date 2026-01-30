@@ -1,0 +1,17 @@
+{
+  "name": "test-fixture-all-runners",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "runArgs": [
+    "--env-file",
+    ".devcontainer/.env"
+  ],
+  "workspaceFolder": "/workspace",
+  "postCreateCommand": "git config --global --add safe.directory /workspace",
+  "customizations": {
+    "vscode": {
+      "extensions": []
+    }
+  }
+}

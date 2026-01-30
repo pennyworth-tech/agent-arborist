@@ -16,8 +16,6 @@ from agent_arborist.runner import Runner, get_runner, RunnerType, DEFAULT_RUNNER
 from agent_arborist.container_runner import (
     ContainerMode,
     should_use_container,
-    devcontainer_up_command,
-    devcontainer_down_command,
 )
 from agent_arborist.home import get_arborist_home
 
@@ -373,7 +371,7 @@ def build_dag_from_tasks(
         if use_containers:
             steps.append({
                 "name": "container-up",
-                "command": devcontainer_up_command(),
+                "command": f"arborist task container-up {task.id}",
                 "depends": ["pre-sync"],
             })
 
@@ -409,7 +407,7 @@ def build_dag_from_tasks(
         if use_containers:
             steps.append({
                 "name": "container-down",
-                "command": devcontainer_down_command(),
+                "command": f"arborist task container-stop {task.id}",
                 "depends": ["post-merge"],
             })
 

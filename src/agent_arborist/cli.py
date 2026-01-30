@@ -1207,24 +1207,13 @@ def task_post_merge(ctx: click.Context, task_id: str, timeout: int, runner: str 
     runner_type = runner or get_default_runner()
     resolved_model = model or get_default_model()
 
-    # Get or create worktree for parent branch
-    parent_worktree = find_worktree_for_branch(parent_branch)
-    created_worktree = False
+    # Get the task worktree (where we'll do the merge work)
+    task_worktree = find_worktree_for_branch(task_branch)
 
-    if not parent_worktree:
-        # Create temporary worktree for parent
-        parent_worktree = get_worktree_path(manifest.spec_id, f"{task_id}_merge")
-        parent_worktree.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            subprocess.run(
-                ["git", "worktree", "add", str(parent_worktree), parent_branch],
-                capture_output=True, check=True
-            )
-            created_worktree = True
-        except subprocess.CalledProcessError as e:
-            console.print(f"[red]Error:[/red] Failed to create worktree for {parent_branch}")
-            console.print(f"[dim]{e.stderr.decode() if e.stderr else ''}[/dim]")
-            raise SystemExit(1)
+    if not task_worktree:
+        console.print(f"[red]Error:[/red] Task worktree not found for {task_branch}")
+        console.print(f"[dim]Make sure the task worktree exists before merging[/dim]")
+        raise SystemExit(1)
 
     if ctx.obj.get("echo_for_testing"):
         echo_command(
@@ -1235,21 +1224,22 @@ def task_post_merge(ctx: click.Context, task_id: str, timeout: int, runner: str 
             model=resolved_model,
             branch=task_branch,
             parent=parent_branch,
-            worktree=str(parent_worktree),
+            worktree=str(task_worktree),
         )
         return
 
     if not ctx.obj.get("quiet"):
         console.print(f"[cyan]Merging {task_branch} → {parent_branch} (squash)[/cyan]")
 
-    # Build prompt for AI to do the merge
-    merge_prompt = f"""Perform a squash merge of branch '{task_branch}' into the current branch '{parent_branch}'.
+    # Build prompt for AI to do the merge in the task worktree
+    merge_prompt = f"""Perform a squash merge of branch '{task_branch}' into '{parent_branch}'.
 
 STEPS:
-1. Run: git merge --squash {task_branch}
-2. If there are conflicts, resolve them carefully by examining both versions
-3. After resolving any conflicts, stage all changes with: git add -A
-4. Create a SINGLE commit with this EXACT format:
+1. Checkout the parent branch: git checkout {parent_branch}
+2. Run: git merge --squash {task_branch}
+3. If there are conflicts, resolve them carefully by examining both versions
+4. After resolving any conflicts, stage all changes with: git add -A
+5. Create a SINGLE commit with this EXACT format:
 
 git commit -m "task({task_id}): <one-line summary of what was merged>
 
@@ -1258,11 +1248,14 @@ git commit -m "task({task_id}): <one-line summary of what was merged>
 
 (merged by {runner_type} / {resolved_model} from {task_branch})"
 
+6. Switch back to the original branch: git checkout {task_branch}
+
 IMPORTANT:
 - The first line MUST be: task({task_id}): followed by a brief summary
 - Use bullet points for details in the body
 - Include the footer line showing this was a merge
 - If the merge has no changes (branches identical), just report that - no commit needed
+- Always switch back to {task_branch} at the end to restore the worktree state
 
 Do NOT push. Just complete the merge and commit locally.
 """
@@ -1274,45 +1267,35 @@ Do NOT push. Just complete the merge and commit locally.
         raise SystemExit(1)
 
     if not ctx.obj.get("quiet"):
-        console.print(f"[dim]Running {runner_type} in {parent_worktree}[/dim]")
+        console.print(f"[dim]Running {runner_type} in {task_worktree}[/dim]")
 
     # Check if we need to wrap runner command with devcontainer exec
     container_mode = get_container_mode_from_env()
     container_cmd_prefix = None
     if container_mode != ContainerMode.DISABLED:
         from agent_arborist.container_context import should_use_container
-        if should_use_container(parent_worktree, container_mode):
+        if should_use_container(task_worktree, container_mode):
             container_cmd_prefix = [
                 "devcontainer",
                 "exec",
                 "--workspace-folder",
-                str(parent_worktree.resolve()),
+                str(task_worktree.resolve()),
             ]
 
-    # Run AI in parent worktree
+    # Run AI in task worktree
     result = runner_instance.run(
         merge_prompt,
         timeout=timeout,
-        cwd=parent_worktree,
+        cwd=task_worktree,
         container_cmd_prefix=container_cmd_prefix,
     )
-
-    # Cleanup temporary worktree if we created it
-    if created_worktree:
-        try:
-            subprocess.run(
-                ["git", "worktree", "remove", str(parent_worktree), "--force"],
-                capture_output=True, check=False
-            )
-        except Exception:
-            pass
 
     # Build step result
     step_result = PostMergeResult(
         success=result.success,
         merged_into=parent_branch,
         source_branch=task_branch,
-        commit_sha=_get_head_sha(parent_worktree) if result.success and not created_worktree else None,
+        commit_sha=_get_head_sha(task_worktree) if result.success else None,
         conflicts=[],  # AI should have resolved any conflicts
         conflict_resolved=False,
         error=result.error if not result.success else None,
@@ -1387,6 +1370,128 @@ def task_post_cleanup(ctx: click.Context, task_id: str, keep_branch: bool) -> No
             task_node = tree.get_task(task_id)
             if task_node:
                 update_task_status(manifest.spec_id, task_id, task_node.status, worktree=None)
+
+
+@task.command("container-up")
+@click.argument("task_id")
+@click.pass_context
+def task_container_up(ctx: click.Context, task_id: str) -> None:
+    """Start devcontainer for a task's worktree.
+
+    The .devcontainer/.env file is copied to the worktree during pre-sync.
+    Environment variables are managed via devcontainer.json configuration.
+
+    Requires ARBORIST_MANIFEST and ARBORIST_WORKTREE environment variables.
+    """
+    import os
+    import subprocess
+
+    manifest_path = os.environ.get("ARBORIST_MANIFEST")
+    worktree_path = os.environ.get("ARBORIST_WORKTREE")
+
+    if not manifest_path:
+        console.print("[red]Error:[/red] ARBORIST_MANIFEST environment variable not set")
+        console.print("This command should be run from a DAGU DAG step")
+        raise SystemExit(1)
+
+    if not worktree_path:
+        console.print("[red]Error:[/red] ARBORIST_WORKTREE environment variable not set")
+        console.print("This command should be run from a DAGU DAG step")
+        raise SystemExit(1)
+
+    worktree = Path(worktree_path)
+    if not worktree.exists():
+        console.print(f"[red]Error:[/red] Worktree does not exist: {worktree}")
+        raise SystemExit(1)
+
+    if ctx.obj.get("echo_for_testing"):
+        echo_command(
+            "task container-up",
+            task_id=task_id,
+            worktree=str(worktree),
+        )
+        return
+
+    # Build the command
+    cmd_parts = ['devcontainer', 'up', '--workspace-folder', str(worktree)]
+
+    console.print(f"[cyan]Starting container for:[/cyan] {worktree}")
+
+    try:
+        result = subprocess.run(
+            cmd_parts,
+            capture_output=True,
+            text=True,
+        )
+
+        if result.returncode != 0:
+            console.print(f"[red]Error starting container:[/red]")
+            console.print(result.stderr)
+            raise SystemExit(1)
+
+        console.print(f"[green]Container started successfully[/green]")
+
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise SystemExit(1)
+
+
+@task.command("container-stop")
+@click.argument("task_id")
+@click.pass_context
+def task_container_stop(ctx: click.Context, task_id: str) -> None:
+    """Stop devcontainer for a task's worktree (but don't remove it).
+
+    Uses docker ps filter to find and stop the container by devcontainer.local_folder label.
+    The container is stopped but not removed, allowing for debugging.
+    Use 'arborist cleanup containers' to fully remove stopped containers.
+
+    Requires ARBORIST_WORKTREE environment variable.
+    """
+    import os
+    import subprocess
+
+    worktree_path = os.environ.get("ARBORIST_WORKTREE")
+
+    if not worktree_path:
+        console.print("[red]Error:[/red] ARBORIST_WORKTREE environment variable not set")
+        console.print("This command should be run from a DAGU DAG step")
+        raise SystemExit(1)
+
+    worktree = Path(worktree_path)
+
+    if ctx.obj.get("echo_for_testing"):
+        echo_command(
+            "task container-stop",
+            task_id=task_id,
+            worktree=str(worktree),
+        )
+        return
+
+    # Build the command to stop the container
+    # Find container by devcontainer.local_folder label and stop it
+    cmd = f'docker stop $(docker ps -q --filter label=devcontainer.local_folder="{worktree}") 2>/dev/null || true'
+
+    console.print(f"[cyan]Stopping container for:[/cyan] {worktree}")
+
+    try:
+        result = subprocess.run(
+            cmd,
+            shell=True,
+            capture_output=True,
+            text=True,
+        )
+
+        # Command always succeeds due to || true
+        # Check if any container was stopped
+        if result.stdout.strip():
+            console.print(f"[green]Container stopped successfully[/green]")
+        else:
+            console.print(f"[dim]No running container found for this worktree[/dim]")
+
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise SystemExit(1)
 
 
 # -----------------------------------------------------------------------------
@@ -2764,8 +2869,8 @@ def cleanup_containers(ctx: click.Context, dry_run: bool, all: bool) -> None:
 
     Auto-detects spec from git branch, or use --spec to specify, or --all for all specs.
 
-    This finds all containers created by devcontainer up for arborist worktrees
-    and stops (but does not remove) them. Containers are identified by the
+    This finds all containers created by devcontainer up for arborist worktrees,
+    stops them, and removes them. Containers are identified by the
     devcontainer.local_folder label.
     """
     arborist_home = ctx.obj.get("arborist_home")
@@ -2831,7 +2936,7 @@ def cleanup_containers(ctx: click.Context, dry_run: bool, all: bool) -> None:
 
             for container_id in container_ids:
                 if dry_run:
-                    console.print(f"[dim]Would stop container {container_id[:12]} for {worktree_path.name}[/dim]")
+                    console.print(f"[dim]Would stop and remove container {container_id[:12]} for {worktree_path.name}[/dim]")
                 else:
                     # Stop the container
                     stop_result = subprocess.run(
@@ -2843,7 +2948,20 @@ def cleanup_containers(ctx: click.Context, dry_run: bool, all: bool) -> None:
 
                     if stop_result.returncode == 0:
                         console.print(f"[green]✓[/green] Stopped container {container_id[:12]} for {worktree_path.name}")
-                        stopped_count += 1
+
+                        # Remove the container
+                        rm_result = subprocess.run(
+                            ["docker", "rm", container_id],
+                            capture_output=True,
+                            text=True,
+                            timeout=30,
+                        )
+
+                        if rm_result.returncode == 0:
+                            console.print(f"[green]✓[/green] Removed container {container_id[:12]}")
+                            stopped_count += 1
+                        else:
+                            console.print(f"[yellow]⚠[/yellow] Stopped but failed to remove container {container_id[:12]}")
                     else:
                         console.print(f"[red]✗[/red] Failed to stop container {container_id[:12]}")
 
@@ -2853,9 +2971,9 @@ def cleanup_containers(ctx: click.Context, dry_run: bool, all: bool) -> None:
             console.print(f"[yellow]Warning:[/yellow] Error processing {worktree_path.name}: {e}")
 
     if dry_run:
-        console.print(f"\n[dim]Dry run complete - no containers were actually stopped[/dim]")
+        console.print(f"\n[dim]Dry run complete - no containers were actually stopped or removed[/dim]")
     else:
-        console.print(f"\n[green]Stopped {stopped_count} container(s)[/green]")
+        console.print(f"\n[green]Stopped and removed {stopped_count} container(s)[/green]")
 
 
 @cleanup.command("dags")
