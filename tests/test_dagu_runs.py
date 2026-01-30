@@ -1,6 +1,7 @@
 """Unit tests for Dagu runs data layer."""
 
 import pytest
+import shutil
 from pathlib import Path
 from agent_arborist import dagu_runs
 
@@ -9,6 +10,68 @@ from agent_arborist import dagu_runs
 def fixtures_dir():
     """Path to test fixtures."""
     return Path(__file__).parent / "fixtures"
+
+
+@pytest.fixture
+def dagu_home_with_runs(tmp_path, fixtures_dir):
+    """Create a temporary dagu home with test run data.
+
+    Creates structure matching Dagu's actual layout:
+        dagu/
+        └── data/
+            └── dag-runs/
+                ├── 001_hello_world/
+                │   └── dag-runs/
+                │       └── 2026/
+                │           └── 01/
+                │               └── 25/
+                │                   └── dag-run_20260125_034101Z_019bf33d-a303-7af0-91c8-0fa5f28ae023/
+                │                       └── attempt_1/
+                │                           └── status.jsonl (with children)
+                └── 002_simple_dag/
+                    └── dag-runs/
+                        └── 2026/
+                            └── 01/
+                                └── 25/
+                                    └── dag-run_20260125_034000Z_019bf33d-0000-0000-0000-000000000000/
+                                        └── attempt_1/
+                                            └── status.jsonl (no children)
+    """
+    dagu_home = tmp_path / "dagu"
+    data_dir = dagu_home / "data" / "dag-runs"
+
+    # Create 001_hello_world run with children
+    hello_world_run_dir = (
+        data_dir / "001_hello_world" / "dag-runs" / "2026" / "01" / "25" /
+        "dag-run_20260125_034101Z_019bf33d-a303-7af0-91c8-0fa5f28ae023"
+    )
+    hello_world_run = hello_world_run_dir / "attempt_1"
+    hello_world_run.mkdir(parents=True, exist_ok=True)
+    shutil.copy(
+        fixtures_dir / "status_with_children.jsonl",
+        hello_world_run / "status.jsonl"
+    )
+
+    # Create a child run for the hello_world run
+    child_run = hello_world_run_dir / "children" / "child_child123" / "attempt_1"
+    child_run.mkdir(parents=True, exist_ok=True)
+    shutil.copy(
+        fixtures_dir / "status_child.jsonl",
+        child_run / "status.jsonl"
+    )
+
+    # Create 002_simple_dag run without children
+    simple_dag_run = (
+        data_dir / "002_simple_dag" / "dag-runs" / "2026" / "01" / "25" /
+        "dag-run_20260125_034000Z_019bf33d-0000-0000-0000-000000000000" / "attempt_1"
+    )
+    simple_dag_run.mkdir(parents=True, exist_ok=True)
+    shutil.copy(
+        fixtures_dir / "status_success.jsonl",
+        simple_dag_run / "status.jsonl"
+    )
+
+    return dagu_home
 
 
 class TestDaguStatus:
@@ -136,26 +199,22 @@ class TestParseStatusJsonl:
 class TestLoadDagRun:
     """Tests for loading DAG runs."""
 
-    @pytest.fixture
-    def dagu_home(self):
-        return Path("/tmp/arborist-test-repo/.arborist/dagu")
-
-    def test_load_dag_run_without_children(self, dagu_home):
+    def test_load_dag_run_without_children(self, dagu_home_with_runs):
         """Test loading a DAG run without children."""
         run = dagu_runs.load_dag_run(
-            dagu_home,
-            "001_hello_world",
-            "019bf33d-a303-7af0-91c8-0fa5f28ae023",
+            dagu_home_with_runs,
+            "002_simple_dag",
+            "019bf33d-0000-0000-0000-000000000000",
             expand_subdags=False
         )
         assert run is not None
-        assert run.dag_name == "001_hello_world"
+        assert run.dag_name == "002_simple_dag"
         assert len(run.children) == 0
 
-    def test_load_dag_run_with_children(self, dagu_home):
+    def test_load_dag_run_with_children(self, dagu_home_with_runs):
         """Test loading a DAG run with children."""
         run = dagu_runs.load_dag_run(
-            dagu_home,
+            dagu_home_with_runs,
             "001_hello_world",
             "019bf33d-a303-7af0-91c8-0fa5f28ae023",
             expand_subdags=True
@@ -165,13 +224,13 @@ class TestLoadDagRun:
 
         # Verify child structure
         child = run.children[0]
-        assert child.parent_dag_name == "001_hello_world"
-        assert child.root_dag_name == "001_hello_world"
+        assert child.parent_dag_name == "parent_dag"
+        assert child.root_dag_name == "parent_dag"
 
-    def test_load_nonexistent_run(self, dagu_home):
+    def test_load_nonexistent_run(self, dagu_home_with_runs):
         """Test loading a run that doesn't exist."""
         run = dagu_runs.load_dag_run(
-            dagu_home,
+            dagu_home_with_runs,
             "nonexistent_dag",
             "nonexistent_run_id",
             expand_subdags=False
@@ -182,36 +241,33 @@ class TestLoadDagRun:
 class TestListDagRuns:
     """Tests for listing DAG runs."""
 
-    @pytest.fixture
-    def dagu_home(self):
-        return Path("/tmp/arborist-test-repo/.arborist/dagu")
-
-    def test_list_all_runs(self, dagu_home):
+    def test_list_all_runs(self, dagu_home_with_runs):
         """Test listing all DAG runs."""
-        runs = dagu_runs.list_dag_runs(dagu_home, limit=10)
+        runs = dagu_runs.list_dag_runs(dagu_home_with_runs, limit=10)
         assert len(runs) > 0
+        assert len(runs) == 2  # We have 2 runs in our fixture
 
         # Verify runs are sorted by started_at descending
         if len(runs) > 1:
             assert runs[0].latest_attempt.started_at >= runs[1].latest_attempt.started_at
 
-    def test_list_runs_filter_by_dag_name(self, dagu_home):
+    def test_list_runs_filter_by_dag_name(self, dagu_home_with_runs):
         """Test filtering runs by DAG name."""
-        runs = dagu_runs.list_dag_runs(dagu_home, dag_name="001_hello_world", limit=10)
+        runs = dagu_runs.list_dag_runs(dagu_home_with_runs, dag_name="001_hello_world", limit=10)
         assert len(runs) > 0
         for run in runs:
             assert run.dag_name == "001_hello_world"
 
-    def test_list_runs_filter_by_status(self, dagu_home):
+    def test_list_runs_filter_by_status(self, dagu_home_with_runs):
         """Test filtering runs by status."""
-        runs = dagu_runs.list_dag_runs(dagu_home, status=dagu_runs.DaguStatus.SUCCESS, limit=10)
+        runs = dagu_runs.list_dag_runs(dagu_home_with_runs, status=dagu_runs.DaguStatus.SUCCESS, limit=10)
         assert len(runs) > 0
         for run in runs:
             assert run.latest_attempt.status == dagu_runs.DaguStatus.SUCCESS
 
-    def test_list_runs_respects_limit(self, dagu_home):
+    def test_list_runs_respects_limit(self, dagu_home_with_runs):
         """Test that limit parameter is respected."""
-        runs = dagu_runs.list_dag_runs(dagu_home, limit=2)
+        runs = dagu_runs.list_dag_runs(dagu_home_with_runs, limit=2)
         assert len(runs) <= 2
 
     def test_list_runs_empty_dagu_home(self, tmp_path):

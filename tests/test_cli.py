@@ -178,14 +178,14 @@ class TestSpecBranchCommands:
 
     def test_spec_branch_cleanup_all_help(self):
         runner = CliRunner()
-        result = runner.invoke(main, ["spec", "branch-cleanup-all", "--help"])
+        result = runner.invoke(main, ["cleanup", "branches", "--help"])
         assert result.exit_code == 0
         assert "--force" in result.output
 
     def test_spec_branch_cleanup_all_requires_spec_or_manifest(self):
-        """branch-cleanup-all requires spec or ARBORIST_MANIFEST."""
+        """cleanup branches requires spec or ARBORIST_MANIFEST."""
         runner = CliRunner()
-        result = runner.invoke(main, ["spec", "branch-cleanup-all"])
+        result = runner.invoke(main, ["cleanup", "branches"])
         assert result.exit_code != 0
         # Now shows helpful message about how to specify spec
         assert "No spec available" in result.output or "ARBORIST_MANIFEST" in result.output

@@ -1,0 +1,1 @@
+{"root":{"name":"parent_dag","id":"parent123"},"parent":{"name":"parent_dag","id":"parent123"},"name":"child1","dagRunId":"child123","attemptId":"att1","status":4,"nodes":[{"step":{"name":"child-step1"},"status":4,"startedAt":"2026-01-24T20:41:02-07:00","finishedAt":"2026-01-24T20:41:08-07:00"}],"startedAt":"2026-01-24T20:41:02-07:00","finishedAt":"2026-01-24T20:41:08-07:00"}

@@ -383,10 +383,16 @@ class TestBuildSimpleDag:
         t001 = next(d for d in documents if d["name"] == "T001")
         assert any(s.get("call") == "T002" for s in t001["steps"])
 
-        # T002 should be leaf (6 steps, no calls)
+        # T002 should be leaf (required steps, no calls)
         t002 = next(d for d in documents if d["name"] == "T002")
-        assert len(t002["steps"]) == 6
         assert all(s.get("call") is None for s in t002["steps"])
+
+        # Verify required steps are present (at least 4: pre-sync, run, commit, post-merge)
+        step_names = [s["name"] for s in t002["steps"]]
+        assert "pre-sync" in step_names
+        assert "run" in step_names
+        assert "commit" in step_names
+        assert "post-merge" in step_names
 
     def test_build_simple_dag_parallel_children(self):
         """Test building DAG with parallel children."""

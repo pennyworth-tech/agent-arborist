@@ -453,6 +453,26 @@ def sync_task(
     if not result.success:
         return result
 
+    # Copy .devcontainer/.env from git root to worktree if it exists
+    git_root = cwd or get_git_root()
+    source_env = git_root / ".devcontainer" / ".env"
+
+    if source_env.exists():
+        import shutil
+
+        # Ensure .devcontainer directory exists in worktree
+        worktree_devcontainer = worktree_path / ".devcontainer"
+        worktree_devcontainer.mkdir(parents=True, exist_ok=True)
+
+        # Copy the .env file
+        target_env = worktree_devcontainer / ".env"
+        try:
+            shutil.copy2(source_env, target_env)
+        except Exception as e:
+            # Non-fatal: log but don't fail the sync
+            import sys
+            print(f"Warning: Failed to copy .devcontainer/.env: {e}", file=sys.stderr)
+
     return GitResult(
         success=True,
         message=f"Task synced at {worktree_path}",

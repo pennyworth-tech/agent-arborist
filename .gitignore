@@ -32,3 +32,6 @@ Thumbs.db
 
 # Environment variables (secrets)
 .env
+
+# Test fixture .env files (user creates manually)
+tests/fixtures/**/.devcontainer/.env
