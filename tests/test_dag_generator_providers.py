@@ -35,6 +35,7 @@ from agent_arborist.runner import (
 pytestmark = [
     pytest.mark.provider,
     pytest.mark.flaky,
+    pytest.mark.timeout(600),  # 10 minute timeout per test
 ]
 
 
@@ -330,7 +331,6 @@ class TestGeminiProvider:
             assert_dag_structure(doc)
 
 
-@pytest.mark.skip(reason="ZAI tests temporarily disabled")
 class TestZaiProvider:
     """Tests for ZAI (zai-coding-plan/glm-4.7) provider DAG generation."""
 
@@ -370,7 +370,6 @@ class TestZaiProvider:
             assert_dag_structure(doc)
 
 
-@pytest.mark.skip(reason="Cerebras tests temporarily disabled")
 class TestCerebrasProvider:
     """Tests for Cerebras (cerebras/zai-glm-4.7) provider DAG generation."""
 
@@ -449,7 +448,6 @@ class TestMinimaxProvider:
             assert_dag_structure(doc)
 
 
-@pytest.mark.skip(reason="Parameterized provider tests temporarily disabled")
 class TestAllProvidersParameterized:
     """Parameterized tests across all providers."""
 
