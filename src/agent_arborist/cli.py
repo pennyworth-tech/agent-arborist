@@ -602,6 +602,148 @@ steps:
 
 
 # -----------------------------------------------------------------------------
+# Config commands
+# -----------------------------------------------------------------------------
+
+
+@main.group()
+def config() -> None:
+    """Configuration management."""
+    pass
+
+
+@config.command("show")
+@click.pass_context
+def config_show(ctx: click.Context) -> None:
+    """Show effective configuration (merged from all sources).
+
+    Displays the current configuration after merging:
+    - Global config (~/.arborist_config.json)
+    - Project config (.arborist/config.json)
+    - Environment variables
+
+    Output is JSON format for easy parsing.
+    """
+    import json as json_module
+
+    from agent_arborist.config import get_config
+
+    arborist_home = ctx.obj.get("arborist_home")
+    config = get_config(arborist_home=arborist_home)
+    print(json_module.dumps(config.to_dict(), indent=2))
+
+
+@config.command("init")
+@click.option("--global", "is_global", is_flag=True, help="Create global config at ~/.arborist_config.json")
+@click.option("--force", "-f", is_flag=True, help="Overwrite existing config file")
+@click.pass_context
+def config_init(ctx: click.Context, is_global: bool, force: bool) -> None:
+    """Initialize a configuration file with template.
+
+    Creates a commented configuration file with all available options.
+
+    By default, creates project config in .arborist/config.json.
+    Use --global to create ~/.arborist_config.json instead.
+    """
+    import json as json_module
+
+    from agent_arborist.config import (
+        generate_config_template,
+        get_global_config_path,
+        get_project_config_path,
+    )
+
+    if is_global:
+        config_path = get_global_config_path()
+    else:
+        arborist_home = ctx.obj.get("arborist_home")
+        if not arborist_home:
+            console.print("[red]Error:[/red] Not in an arborist project")
+            console.print("Run 'arborist init' first, or use --global for global config")
+            raise SystemExit(1)
+        config_path = get_project_config_path(arborist_home)
+
+    if config_path.exists() and not force:
+        console.print(f"[red]Error:[/red] Config file already exists: {config_path}")
+        console.print("Use --force to overwrite")
+        raise SystemExit(1)
+
+    # Ensure parent directory exists
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Generate and write template
+    template = generate_config_template()
+    config_path.write_text(json_module.dumps(template, indent=2))
+
+    console.print(f"[green]Created config file:[/green] {config_path}")
+
+
+@config.command("validate")
+@click.pass_context
+def config_validate(ctx: click.Context) -> None:
+    """Validate configuration files.
+
+    Checks both global and project config files for:
+    - Valid JSON syntax
+    - Valid field names (no unknown fields)
+    - Valid values (runners, modes, etc.)
+
+    Exits with code 0 if valid, non-zero if errors found.
+    """
+    from agent_arborist.config import (
+        ConfigLoadError,
+        ConfigValidationError,
+        get_global_config_path,
+        get_project_config_path,
+        load_config_file,
+    )
+
+    errors = []
+    validated = []
+
+    # Validate global config
+    global_path = get_global_config_path()
+    if global_path.exists():
+        try:
+            config = load_config_file(global_path, strict=True)
+            config.validate()
+            validated.append(f"Global config: {global_path}")
+        except ConfigLoadError as e:
+            errors.append(f"Global config ({global_path}): {e}")
+        except ConfigValidationError as e:
+            errors.append(f"Global config ({global_path}): {e}")
+
+    # Validate project config
+    arborist_home = ctx.obj.get("arborist_home")
+    if arborist_home:
+        project_path = get_project_config_path(arborist_home)
+        if project_path.exists():
+            try:
+                config = load_config_file(project_path, strict=True)
+                config.validate()
+                validated.append(f"Project config: {project_path}")
+            except ConfigLoadError as e:
+                errors.append(f"Project config ({project_path}): {e}")
+            except ConfigValidationError as e:
+                errors.append(f"Project config ({project_path}): {e}")
+
+    # Report results
+    if validated:
+        for v in validated:
+            console.print(f"[green]Valid:[/green] {v}")
+
+    if errors:
+        for e in errors:
+            console.print(f"[red]Error:[/red] {e}")
+        raise SystemExit(1)
+
+    if not validated and not errors:
+        console.print("[dim]No config files found to validate[/dim]")
+    else:
+        console.print("\n[green]All config files are valid![/green]")
+
+
+# -----------------------------------------------------------------------------
 # Task commands
 # -----------------------------------------------------------------------------
 

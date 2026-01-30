@@ -62,6 +62,24 @@ class DagConfig:
     repo_path: Path | None = None  # Path to target repo for devcontainer detection
     runner: str | None = None  # AI runner to use (claude, opencode, gemini)
     model: str | None = None  # Model to use (uses runner default if not specified)
+    arborist_config: Any = None  # ArboristConfig for step-specific settings
+
+    def get_step_runner_model(self, step: str) -> tuple[str | None, str | None]:
+        """Get runner/model for a specific step.
+
+        If arborist_config is set, uses step-specific config resolution.
+        Otherwise falls back to the runner/model fields.
+
+        Args:
+            step: Step name (e.g., "run", "post-merge")
+
+        Returns:
+            Tuple of (runner, model) - may be None if not configured
+        """
+        if self.arborist_config is not None:
+            from agent_arborist.config import get_step_runner_model
+            return get_step_runner_model(self.arborist_config, step)
+        return self.runner, self.model
 
 
 def build_arborist_command(
@@ -225,7 +243,8 @@ class SubDagBuilder:
             ))
 
         # Run (wraps AI runner subprocess with devcontainer exec if needed)
-        run_cmd = build_arborist_command(task_id, "run", self.config.runner, self.config.model)
+        run_runner, run_model = self.config.get_step_runner_model("run")
+        run_cmd = build_arborist_command(task_id, "run", run_runner, run_model)
         steps.append(SubDagStep(
             name="run",
             command=run_cmd,
@@ -250,7 +269,8 @@ class SubDagBuilder:
         ))
 
         # Post-merge (self-aware - wraps AI runner subprocess if needed)
-        post_merge_cmd = build_arborist_command(task_id, "post-merge", self.config.runner, self.config.model)
+        pm_runner, pm_model = self.config.get_step_runner_model("post-merge")
+        post_merge_cmd = build_arborist_command(task_id, "post-merge", pm_runner, pm_model)
         steps.append(SubDagStep(
             name="post-merge",
             command=post_merge_cmd,
@@ -327,7 +347,8 @@ class SubDagBuilder:
             ))
 
         # Complete step (depends on all children)
-        post_merge_cmd = build_arborist_command(task_id, "post-merge", self.config.runner, self.config.model)
+        pm_runner, pm_model = self.config.get_step_runner_model("post-merge")
+        post_merge_cmd = build_arborist_command(task_id, "post-merge", pm_runner, pm_model)
         complete_command = f"""arborist task run-test {task_id} &&
 {post_merge_cmd} &&
 arborist task post-cleanup {task_id}"""
