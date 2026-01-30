@@ -31,53 +31,52 @@ class GenerationResult:
 
 
 # Step 1: AI analyzes spec and outputs simple task structure
-TASK_ANALYSIS_PROMPT = '''Analyze the task specification and output a simple JSON structure describing the tasks.
+TASK_ANALYSIS_PROMPT = '''Extract and structure ALL tasks from the task specification files.
 
 TASK SPECIFICATION DIRECTORY: {spec_dir}
 
-Review all files in this directory to understand the tasks, their dependencies, and any groupings.
+INSTRUCTIONS:
+1. Read ALL markdown files in the directory
+2. Extract EVERY task entry - do not summarize, group, or skip tasks
+3. Preserve the original structure and ordering
+4. Identify task identifiers in whatever format they appear (T001, 1., letter codes, or generate sequential IDs if none exist)
+5. Identify groupings, phases, or hierarchies in the spec
+6. Parse dependencies from any notation used (arrows →, "depends on", indentation, or implied groupings)
 
 OUTPUT FORMAT - JSON only:
-```json
 {{
-  "description": "Brief project description",
+  "description": "Brief Project Description",
+  "total_tasks_found": <INTEGER - count ALL tasks you extracted>,
   "tasks": [
     {{
       "id": "T001",
-      "description": "What this task does",
-      "depends_on": [],
-      "parallel_with": []
-    }},
-    {{
-      "id": "T002",
-      "description": "What this task does",
-      "depends_on": ["T001"],
-      "parallel_with": []
-    }},
-    {{
-      "id": "T003",
-      "description": "Can run parallel with T004",
+      "description": "Full task description as written",
+      "grouping": "Phase 1: Setup",
       "depends_on": ["T002"],
-      "parallel_with": ["T004"]
-    }},
-    {{
-      "id": "T004",
-      "description": "Can run parallel with T003",
-      "depends_on": ["T002"],
-      "parallel_with": ["T003"]
+      "parallel_with": ["T003"],
+      "line_number": 12
     }}
   ]
 }}
-```
 
-RULES:
-1. Each task needs an ID (T001, T002, etc.) and description
-2. "depends_on" lists tasks that MUST complete before this task starts
-3. "parallel_with" lists tasks that can run at the same time (same dependencies)
-4. Tasks are executed in order: first those with no dependencies, then those whose dependencies are met
-5. If tasks share the same dependencies and can run together, mark them parallel_with each other
+CRITICAL RULES:
+1. Extract EVERY single task - count must match all task items in the spec
+2. Preserve original descriptions exactly as written
+3. Handle flexible ID formats: if no IDs exist, generate sequential ones (T001, T002, ...)
+4. Support various markdown patterns:
+   - Checkbox lists: "- [ ] description"
+   - Numbered lists: "1. description"
+   - Plain lists: "- description"
+   - Labeled items: "T001: description"
+5. If dependencies are unclear, infer from:
+   - Explicit dependency sections
+   - Sequential order within groups
+   - Arrow notation (→)
+   - Indentation levels
+6. Tasks with [P] or "parallel" markers should be marked parallel_with siblings
+7. Output ONLY valid JSON. No markdown fences. No explanation. Start with {{ on line 1.
 
-CRITICAL: Output ONLY valid JSON. No markdown fences. No explanation. Start with {{ on line 1.
+Remember: Your job is EXTRACTION and STRUCTURING, not generation. Keep all tasks intact.
 '''
 
 

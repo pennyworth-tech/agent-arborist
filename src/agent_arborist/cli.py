@@ -1638,8 +1638,8 @@ def spec_branch_create_all(ctx: click.Context) -> None:
     "--timeout",
     "-t",
     type=int,
-    default=120,
-    help="Timeout for AI inference in seconds (default: 120)",
+    default=600,
+    help="Timeout for AI inference in seconds (default: 600)",
 )
 @click.option(
     "--container-mode",
