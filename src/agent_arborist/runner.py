@@ -25,7 +25,7 @@ def _get_default_runner() -> RunnerType:
 
 def _get_default_model() -> str | None:
     """Get default model from environment."""
-    return os.environ.get(ARBORIST_DEFAULT_MODEL_ENV_VAR) or "sonnet"
+    return os.environ.get(ARBORIST_DEFAULT_MODEL_ENV_VAR) or "opus"
 
 
 # These are functions to allow dynamic resolution from env
