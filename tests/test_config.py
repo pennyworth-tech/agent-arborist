@@ -1059,8 +1059,8 @@ class TestDagBuilderConfig:
         assert dag_config.arborist_config is not None
         assert dag_config.arborist_config.steps["run"].runner == "opencode"
 
-    def test_dag_builder_uses_step_config(self, tmp_path):
-        """DAG builder should use step-specific runner/model from config."""
+    def test_dag_builder_does_not_embed_runner_model(self, tmp_path):
+        """DAG builder should NOT embed runner/model - resolved at runtime."""
         from agent_arborist.dag_builder import DagConfig, SubDagBuilder
         from agent_arborist.task_spec import TaskSpec, Phase, Task
         from agent_arborist.task_state import TaskTree, TaskNode
@@ -1091,32 +1091,35 @@ class TestDagBuilderConfig:
         builder = SubDagBuilder(dag_config)
         bundle = builder.build(spec, task_tree)
 
-        # Find the T001 subdag and check run command
+        # Find the T001 subdag
         t001_subdag = next((s for s in bundle.subdags if s.name == "T001"), None)
         assert t001_subdag is not None
 
-        # Find run step
+        # Verify run step does NOT contain runner/model (resolved at runtime)
         run_step = next((s for s in t001_subdag.steps if s.name == "run"), None)
         assert run_step is not None
-        assert "opencode" in run_step.command
-        assert "glm-4.7" in run_step.command
+        assert run_step.command == "arborist task run T001"
+        assert "--runner" not in run_step.command
+        assert "--model" not in run_step.command
 
-        # Find post-merge step
+        # Verify post-merge step does NOT contain runner/model
         post_merge_step = next(
             (s for s in t001_subdag.steps if s.name == "post-merge"), None
         )
         assert post_merge_step is not None
-        assert "gemini" in post_merge_step.command
-        assert "flash" in post_merge_step.command
+        assert post_merge_step.command == "arborist task post-merge T001"
+        assert "--runner" not in post_merge_step.command
+        assert "--model" not in post_merge_step.command
 
-    def test_dag_builder_uses_defaults_when_no_step_config(self, tmp_path):
-        """DAG builder should use defaults when no step config provided."""
-        from agent_arborist.dag_builder import DagConfig, SubDagBuilder
-        from agent_arborist.task_spec import TaskSpec, Phase, Task
-        from agent_arborist.task_state import TaskTree, TaskNode
+    def test_dag_config_get_step_runner_model_still_works(self, tmp_path):
+        """DagConfig.get_step_runner_model() should still resolve for other uses."""
+        from agent_arborist.dag_builder import DagConfig
 
         arborist_config = ArboristConfig(
-            defaults=DefaultsConfig(runner="claude", model="sonnet")
+            defaults=DefaultsConfig(runner="claude", model="sonnet"),
+            steps={
+                "run": StepConfig(runner="opencode", model="glm-4.7"),
+            }
         )
 
         dag_config = DagConfig(
@@ -1125,54 +1128,40 @@ class TestDagBuilderConfig:
             arborist_config=arborist_config,
         )
 
-        spec = TaskSpec(
-            project="Test",
-            total_tasks=1,
-            phases=[Phase(name="Phase 1", tasks=[Task(id="T001", description="Test task")])],
+        # get_step_runner_model() should return resolved values
+        run_runner, run_model = dag_config.get_step_runner_model("run")
+        assert run_runner == "opencode"
+        assert run_model == "glm-4.7"
+
+        # post-merge uses defaults
+        pm_runner, pm_model = dag_config.get_step_runner_model("post-merge")
+        assert pm_runner == "claude"
+        assert pm_model == "sonnet"
+
+    def test_dag_config_runner_model_as_cli_override(self, tmp_path):
+        """DagConfig runner/model fields act as CLI overrides when config present."""
+        from agent_arborist.dag_builder import DagConfig
+
+        arborist_config = ArboristConfig(
+            defaults=DefaultsConfig(runner="claude", model="sonnet"),
+            steps={
+                "run": StepConfig(runner="opencode", model="glm-4.7"),
+            }
         )
-        task_tree = TaskTree(spec_id="001-test")
-        task_tree.tasks = {"T001": TaskNode(task_id="T001", description="Test task")}
-        task_tree.root_tasks = ["T001"]
 
-        builder = SubDagBuilder(dag_config)
-        bundle = builder.build(spec, task_tree)
-
-        # Both steps should use claude/sonnet
-        t001_subdag = next((s for s in bundle.subdags if s.name == "T001"), None)
-        run_step = next((s for s in t001_subdag.steps if s.name == "run"), None)
-        assert "claude" in run_step.command
-        assert "sonnet" in run_step.command
-
-    def test_dag_builder_backward_compat_runner_model(self, tmp_path):
-        """DAG builder should work with old-style runner/model params."""
-        from agent_arborist.dag_builder import DagConfig, SubDagBuilder
-        from agent_arborist.task_spec import TaskSpec, Phase, Task
-        from agent_arborist.task_state import TaskTree, TaskNode
-
-        # Old-style: runner/model directly on DagConfig
+        # runner/model on DagConfig act as CLI overrides
         dag_config = DagConfig(
             name="test-spec",
             spec_id="001-test",
-            runner="opencode",
-            model="custom-model",
+            arborist_config=arborist_config,
+            runner="gemini",  # CLI override
+            model="flash",    # CLI override
         )
 
-        spec = TaskSpec(
-            project="Test",
-            total_tasks=1,
-            phases=[Phase(name="Phase 1", tasks=[Task(id="T001", description="Test task")])],
-        )
-        task_tree = TaskTree(spec_id="001-test")
-        task_tree.tasks = {"T001": TaskNode(task_id="T001", description="Test task")}
-        task_tree.root_tasks = ["T001"]
-
-        builder = SubDagBuilder(dag_config)
-        bundle = builder.build(spec, task_tree)
-
-        t001_subdag = next((s for s in bundle.subdags if s.name == "T001"), None)
-        run_step = next((s for s in t001_subdag.steps if s.name == "run"), None)
-        assert "opencode" in run_step.command
-        assert "custom-model" in run_step.command
+        # CLI override should take precedence
+        run_runner, run_model = dag_config.get_step_runner_model("run")
+        assert run_runner == "gemini"
+        assert run_model == "flash"
 
 
 # =============================================================================
@@ -1184,7 +1173,8 @@ class TestDagBuilderConfig:
 class TestE2EConfigWorkflow:
     """E2E tests for config system in real workflows.
 
-    These tests verify that config settings actually affect CLI behavior.
+    These tests verify that config settings actually affect CLI behavior
+    by running `dag build` and checking generated YAML files.
     """
 
     @pytest.fixture
@@ -1201,45 +1191,270 @@ class TestE2EConfigWorkflow:
 
         return main
 
-    def test_config_affects_dag_build_output(self, runner, main, tmp_path, monkeypatch):
-        """DAG build should use runner/model from project config."""
+    @pytest.fixture
+    def git_repo_with_config(self, tmp_path, monkeypatch):
+        """Create a git repo with arborist initialized and config file.
+
+        This fixture sets up a complete, realistic project structure:
+        - Git repository with initial commit
+        - Arborist initialized (.arborist/ directory)
+        - A spec file for DAG generation
+        - Config file with custom runner/model settings
+        """
+        import subprocess
+
+        original_cwd = os.getcwd()
+        os.chdir(tmp_path)
+
+        # Initialize git repo
+        subprocess.run(["git", "init"], capture_output=True, check=True)
+        readme = tmp_path / "README.md"
+        readme.write_text("# Test Project\n")
+        subprocess.run(["git", "add", "."], capture_output=True, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "init"],
+            capture_output=True,
+            check=True,
+            env={
+                **os.environ,
+                "GIT_AUTHOR_NAME": "Test",
+                "GIT_AUTHOR_EMAIL": "test@test.com",
+                "GIT_COMMITTER_NAME": "Test",
+                "GIT_COMMITTER_EMAIL": "test@test.com",
+            },
+        )
+
+        # Set HOME to tmp_path so global config doesn't interfere
         monkeypatch.setenv("HOME", str(tmp_path))
+        # Clear any env vars that would override config
         monkeypatch.delenv("ARBORIST_RUNNER", raising=False)
+        monkeypatch.delenv("ARBORIST_MODEL", raising=False)
         monkeypatch.delenv("ARBORIST_DEFAULT_RUNNER", raising=False)
+        monkeypatch.delenv("ARBORIST_DEFAULT_MODEL", raising=False)
+        monkeypatch.delenv("ARBORIST_STEP_RUN_RUNNER", raising=False)
+        monkeypatch.delenv("ARBORIST_STEP_RUN_MODEL", raising=False)
+        monkeypatch.delenv("ARBORIST_STEP_POST_MERGE_RUNNER", raising=False)
+        monkeypatch.delenv("ARBORIST_STEP_POST_MERGE_MODEL", raising=False)
 
-        # Create project structure
-        arborist_home = tmp_path / ".arborist"
-        arborist_home.mkdir()
-        (arborist_home / "dagu").mkdir()
+        # Initialize arborist
+        from click.testing import CliRunner
+        from agent_arborist.cli import main
 
-        # Create config with specific runner/model
-        config_file = arborist_home / "config.json"
+        cli_runner = CliRunner()
+        result = cli_runner.invoke(main, ["init"])
+        assert result.exit_code == 0, f"Init failed: {result.output}"
+
+        # Create spec directory with task file
+        spec_dir = tmp_path / "specs" / "test-spec"
+        spec_dir.mkdir(parents=True)
+        (spec_dir / "tasks.md").write_text("""# Tasks: Test Project
+
+**Project**: Test project
+**Total Tasks**: 2
+
+## Phase 1: Setup
+
+- [ ] T001 Create initial file
+- [ ] T002 Add feature (depends on T001)
+
+**Checkpoint**: Ready
+
+---
+
+## Dependencies
+
+```
+T001 → T002
+```
+""")
+
+        yield tmp_path
+
+        os.chdir(original_cwd)
+
+    def test_dag_build_does_not_embed_runner_model(self, runner, main, git_repo_with_config):
+        """Verify generated DAGs do NOT contain runner/model - resolved at runtime.
+
+        This test:
+        1. Creates project config with runner/model settings
+        2. Runs `arborist spec dag-build --no-ai`
+        3. Verifies generated YAML commands do NOT contain --runner/--model flags
+        """
+        import yaml
+
+        # Create project config with specific runner/model
+        config_file = git_repo_with_config / ".arborist" / "config.json"
         config_file.write_text(
             json.dumps(
                 {
                     "steps": {
-                        "run": {"runner": "opencode", "model": "test-model"},
-                        "post-merge": {"runner": "gemini", "model": "flash"},
+                        "run": {"runner": "opencode", "model": "config-run-model"},
+                        "post-merge": {"runner": "gemini", "model": "config-merge-model"},
                     }
                 }
             )
         )
 
-        # Create a simple spec
-        specs_dir = arborist_home / "specs" / "001-test"
-        specs_dir.mkdir(parents=True)
-        (specs_dir / "spec.md").write_text(
-            """# Test Spec
-## Tasks
-- [ ] T001: Simple test task
-"""
+        spec_dir = git_repo_with_config / "specs" / "test-spec"
+
+        # Run dag build (with --no-ai to skip AI generation)
+        result = runner.invoke(main, ["spec", "dag-build", str(spec_dir), "--no-ai"])
+        assert result.exit_code == 0, f"dag-build failed: {result.output}"
+
+        # Find generated DAG file
+        dagu_dir = git_repo_with_config / ".arborist" / "dagu" / "dags"
+        dag_files = list(dagu_dir.glob("*.yaml"))
+        assert len(dag_files) >= 1, f"No DAG files generated in {dagu_dir}"
+
+        # Read and parse all YAML documents
+        dag_content = dag_files[0].read_text()
+        documents = list(yaml.safe_load_all(dag_content))
+
+        # Find run and post-merge steps in task subdags
+        run_commands = []
+        post_merge_commands = []
+
+        for doc in documents:
+            if not doc:
+                continue
+            for step in doc.get("steps", []):
+                cmd = step.get("command", "")
+                if step.get("name") == "run":
+                    run_commands.append(cmd)
+                elif step.get("name") == "post-merge":
+                    post_merge_commands.append(cmd)
+
+        # Verify run commands do NOT contain runner/model (resolved at runtime)
+        assert len(run_commands) > 0, "No 'run' steps found in generated DAG"
+        for cmd in run_commands:
+            assert "--runner" not in cmd, f"Unexpected --runner in run command: {cmd}"
+            assert "--model" not in cmd, f"Unexpected --model in run command: {cmd}"
+            # Should be plain command like "arborist task run T001"
+            assert cmd.startswith("arborist task run "), f"Unexpected run command format: {cmd}"
+
+        # Verify post-merge commands do NOT contain runner/model
+        assert len(post_merge_commands) > 0, "No 'post-merge' steps found in generated DAG"
+        for cmd in post_merge_commands:
+            assert "--runner" not in cmd, f"Unexpected --runner in post-merge command: {cmd}"
+            assert "--model" not in cmd, f"Unexpected --model in post-merge command: {cmd}"
+
+    def test_config_resolves_at_runtime_via_get_step_runner_model(self, runner, main, git_repo_with_config):
+        """Verify config resolution works correctly via get_step_runner_model.
+
+        This test verifies the runtime resolution logic by calling get_step_runner_model
+        directly with a loaded config.
+        """
+        from agent_arborist.config import get_config, get_step_runner_model
+
+        # Create project config with step-specific settings
+        config_file = git_repo_with_config / ".arborist" / "config.json"
+        config_file.write_text(
+            json.dumps(
+                {
+                    "defaults": {"runner": "claude", "model": "sonnet"},
+                    "steps": {
+                        "run": {"runner": "opencode", "model": "glm-4.7"},
+                    }
+                }
+            )
         )
 
-        # Verify config is loaded correctly
-        result = runner.invoke(main, ["--home", str(arborist_home), "config", "show"])
-        assert result.exit_code == 0
-        config = json.loads(result.output)
-        assert config["steps"]["run"]["runner"] == "opencode"
+        # Load config
+        config = get_config(arborist_home=git_repo_with_config / ".arborist")
+
+        # Verify step-specific resolution
+        run_runner, run_model = get_step_runner_model(config, "run")
+        assert run_runner == "opencode"
+        assert run_model == "glm-4.7"
+
+        # Verify default fallback for post-merge (no step-specific config)
+        pm_runner, pm_model = get_step_runner_model(config, "post-merge")
+        assert pm_runner == "claude"
+        assert pm_model == "sonnet"
+
+    def test_cli_override_at_runtime(self, runner, main, git_repo_with_config):
+        """Verify CLI --runner/--model override works via get_step_runner_model.
+
+        CLI args should take precedence over config at runtime.
+        """
+        from agent_arborist.config import get_config, get_step_runner_model
+
+        # Create project config
+        config_file = git_repo_with_config / ".arborist" / "config.json"
+        config_file.write_text(
+            json.dumps(
+                {
+                    "defaults": {"runner": "opencode", "model": "config-model"},
+                }
+            )
+        )
+
+        config = get_config(arborist_home=git_repo_with_config / ".arborist")
+
+        # CLI override should take precedence
+        run_runner, run_model = get_step_runner_model(
+            config, "run", cli_runner="claude", cli_model="cli-override-model"
+        )
+        assert run_runner == "claude"
+        assert run_model == "cli-override-model"
+
+    def test_env_var_override_at_runtime(self, runner, main, git_repo_with_config, monkeypatch):
+        """Verify env var override works at runtime via get_step_runner_model.
+        """
+        from agent_arborist.config import get_config, get_step_runner_model
+
+        # Create project config with defaults
+        config_file = git_repo_with_config / ".arborist" / "config.json"
+        config_file.write_text(
+            json.dumps(
+                {
+                    "defaults": {"runner": "opencode", "model": "config-default-model"},
+                }
+            )
+        )
+
+        # Set env vars to override config defaults
+        monkeypatch.setenv("ARBORIST_RUNNER", "gemini")
+        monkeypatch.setenv("ARBORIST_MODEL", "env-override-model")
+
+        # Config loading applies env overrides
+        config = get_config(arborist_home=git_repo_with_config / ".arborist")
+
+        # Env vars should have overridden defaults
+        run_runner, run_model = get_step_runner_model(config, "run")
+        assert run_runner == "gemini"
+        assert run_model == "env-override-model"
+
+    def test_step_specific_env_override_at_runtime(self, runner, main, git_repo_with_config, monkeypatch):
+        """Verify step-specific env vars work at runtime.
+        """
+        from agent_arborist.config import get_config, get_step_runner_model
+
+        # Create project config
+        config_file = git_repo_with_config / ".arborist" / "config.json"
+        config_file.write_text(
+            json.dumps(
+                {
+                    "defaults": {"runner": "claude", "model": "sonnet"},
+                }
+            )
+        )
+
+        # Set step-specific env vars (only for 'run' step)
+        monkeypatch.setenv("ARBORIST_STEP_RUN_RUNNER", "opencode")
+        monkeypatch.setenv("ARBORIST_STEP_RUN_MODEL", "step-env-model")
+
+        config = get_config(arborist_home=git_repo_with_config / ".arborist")
+
+        # 'run' step should use step-specific env override
+        run_runner, run_model = get_step_runner_model(config, "run")
+        assert run_runner == "opencode"
+        assert run_model == "step-env-model"
+
+        # 'post-merge' step should use defaults (no step-specific override)
+        pm_runner, pm_model = get_step_runner_model(config, "post-merge")
+        assert pm_runner == "claude"
+        assert pm_model == "sonnet"
 
 
 @pytest.mark.provider

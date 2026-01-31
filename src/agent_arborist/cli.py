@@ -957,9 +957,13 @@ def task_run(ctx: click.Context, task_id: str, timeout: int, runner: str | None,
     # Get worktree path
     worktree_path = get_worktree_path(manifest.spec_id, task_id)
 
-    # Get runner type and model early for echo
-    runner_type = runner or get_default_runner()
-    resolved_model = model or get_default_model()
+    # Resolve runner/model from config (CLI args override config)
+    from agent_arborist.config import get_config, get_step_runner_model
+    arborist_home = ctx.obj.get("arborist_home")
+    arborist_config = get_config(arborist_home=arborist_home)
+    runner_type, resolved_model = get_step_runner_model(
+        arborist_config, step="run", cli_runner=runner, cli_model=model
+    )
 
     if ctx.obj.get("echo_for_testing"):
         echo_command(
@@ -1345,9 +1349,13 @@ def task_post_merge(ctx: click.Context, task_id: str, timeout: int, runner: str 
     task_branch = task_info.branch
     parent_branch = task_info.parent_branch
 
-    # Get runner and model (use CLI params or defaults)
-    runner_type = runner or get_default_runner()
-    resolved_model = model or get_default_model()
+    # Resolve runner/model from config (CLI args override config)
+    from agent_arborist.config import get_config, get_step_runner_model
+    arborist_home = ctx.obj.get("arborist_home")
+    arborist_config = get_config(arborist_home=arborist_home)
+    runner_type, resolved_model = get_step_runner_model(
+        arborist_config, step="post-merge", cli_runner=runner, cli_model=model
+    )
 
     # Get the task worktree (where we'll do the merge work)
     task_worktree = find_worktree_for_branch(task_branch)
@@ -1897,6 +1905,14 @@ def spec_dag_build(
         except ArboristHomeError:
             repo_path = None
 
+        # Load arborist config for step-specific runner/model settings
+        arborist_home = ctx.obj.get("arborist_home")
+        try:
+            from agent_arborist.config import get_config
+            arborist_config = get_config(arborist_home=arborist_home)
+        except Exception:
+            arborist_config = None
+
         dag_name_safe = dag_name.replace("-", "_")
         config = DagConfig(
             name=dag_name_safe,
@@ -1906,6 +1922,7 @@ def spec_dag_build(
             repo_path=repo_path,
             runner=runner,
             model=model,
+            arborist_config=arborist_config,
         )
         builder = DagBuilder(config)
         dag_yaml = builder.build_yaml(task_spec)
