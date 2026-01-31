@@ -267,16 +267,99 @@ def _output_text_result(result: StepResult, ctx: click.Context) -> None:
                 console.print(f"[dim]{result.error}[/dim]")
 
 
-def _print_dag_tree(dag_run: dagu_runs.DagRun, console: Console, prefix: str = "", is_last: bool = True) -> None:
-    """Print a DAG run and its children as a tree.
+def _dag_run_to_json(dag_run: dagu_runs.DagRun) -> dict:
+    """Convert DagRun to JSON-serializable dict (fully recursive).
+
+    Args:
+        dag_run: The DAG run to convert
+
+    Returns:
+        JSON-serializable dictionary with full recursive structure
+    """
+    attempt = dag_run.latest_attempt
+
+    result = {
+        "dag_name": dag_run.dag_name,
+        "run_id": dag_run.run_id,
+        "status": attempt.status.to_name() if attempt else "unknown",
+        "status_code": attempt.status.value if attempt else None,
+        "started_at": attempt.started_at.isoformat() if attempt and attempt.started_at else None,
+        "finished_at": attempt.finished_at.isoformat() if attempt and attempt.finished_at else None,
+        "root_dag_name": dag_run.root_dag_name,
+        "root_dag_id": dag_run.root_dag_id,
+        "parent_dag_name": dag_run.parent_dag_name,
+        "parent_dag_id": dag_run.parent_dag_id,
+        "error": attempt.error if attempt else None,
+        "outputs": attempt.outputs.get("outputs") if attempt and attempt.outputs else None,
+        "steps": [],
+        "children": [],
+        "run_dir": str(dag_run.run_dir) if dag_run.run_dir else None,
+        "outputs_file": str(dag_run.outputs_file) if dag_run.outputs_file else None,
+    }
+
+    if attempt:
+        # Add duration
+        if attempt.started_at and attempt.finished_at:
+            duration_seconds = (attempt.finished_at - attempt.started_at).total_seconds()
+            result["duration_seconds"] = duration_seconds
+            result["duration_human"] = dagu_runs._format_duration(attempt.started_at, attempt.finished_at)
+
+        # Add steps with V1 fields
+        for step in attempt.steps:
+            step_data = {
+                "name": step.name,
+                "status": step.status.to_name(),
+                "status_code": step.status.value,
+                "started_at": step.started_at.isoformat() if step.started_at else None,
+                "finished_at": step.finished_at.isoformat() if step.finished_at else None,
+                "exit_code": step.exit_code,
+                "error": step.error,
+                "output": step.output,
+                "child_dag_name": step.child_dag_name,
+                "child_run_ids": step.child_run_ids,
+            }
+
+            # Add step duration
+            if step.started_at and step.finished_at:
+                step_duration = (step.finished_at - step.started_at).total_seconds()
+                step_data["duration_seconds"] = step_duration
+                step_data["duration_human"] = dagu_runs._format_duration(step.started_at, step.finished_at)
+
+            result["steps"].append(step_data)
+
+        # RECURSIVE: Add children
+        for child in dag_run.children:
+            result["children"].append(_dag_run_to_json(child))
+
+    return result
+
+
+def _print_dag_tree(
+    dag_run: dagu_runs.DagRun,
+    console: Console,
+    prefix: str = "",
+    is_last: bool = True,
+    show_outputs: bool = False,
+) -> None:
+    """Print a DAG run and its children as a fully recursive tree.
 
     Args:
         dag_run: The DAG run to print
         console: Rich console for output
         prefix: Prefix for tree drawing characters
         is_last: Whether this is the last child at this level
+        show_outputs: Whether to display step outputs
     """
     from agent_arborist import dagu_runs
+
+    # Status symbols with colors
+    status_symbols = {
+        dagu_runs.DaguStatus.SUCCESS: ("✓", "green"),
+        dagu_runs.DaguStatus.FAILED: ("✗", "red"),
+        dagu_runs.DaguStatus.RUNNING: ("◐", "yellow"),
+        dagu_runs.DaguStatus.PENDING: ("○", "dim"),
+        dagu_runs.DaguStatus.SKIPPED: ("⊘", "dim"),
+    }
 
     attempt = dag_run.latest_attempt
     if not attempt:
@@ -285,83 +368,64 @@ def _print_dag_tree(dag_run: dagu_runs.DagRun, console: Console, prefix: str = "
     # Print this DAG's steps
     for i, step in enumerate(attempt.steps):
         is_last_step = i == len(attempt.steps) - 1
-        has_children = step.child_dag_name and dag_run.children
+        has_matching_children = step.child_dag_name and any(
+            c.dag_name == step.child_dag_name for c in dag_run.children
+        )
 
         # Determine tree characters
-        if is_last_step:
-            connector = "└──" if not prefix else prefix + "└──"
+        if is_last_step and not has_matching_children:
+            step_connector = prefix + "└── "
             child_prefix = prefix + "    "
         else:
-            connector = "├──" if not prefix else prefix + "├──"
+            step_connector = prefix + "├── "
             child_prefix = prefix + "│   "
 
-        # Format status
-        status_name = step.status.to_name()
-        if step.status == dagu_runs.DaguStatus.SUCCESS:
-            status_str = f"[green]{status_name}[/green]"
-        elif step.status == dagu_runs.DaguStatus.FAILED:
-            status_str = f"[red]{status_name}[/red]"
-        elif step.status == dagu_runs.DaguStatus.RUNNING:
-            status_str = f"[yellow]{status_name}[/yellow]"
-        else:
-            status_str = status_name
-
-        # Format duration
+        # Format step line with status symbol
+        status_sym, status_color = status_symbols.get(step.status, ("?", "white"))
         duration_str = dagu_runs._format_duration(step.started_at, step.finished_at)
+        step_line = f"{step_connector}[{status_color}]{status_sym} {step.name}[/{status_color}] ({duration_str})"
+        console.print(step_line)
 
-        # Print step
-        line = f"{connector} {step.name} {status_str} ({duration_str})"
-        console.print(line)
+        # Print error if step failed
+        if step.status == dagu_runs.DaguStatus.FAILED:
+            if step.exit_code is not None:
+                console.print(f"{child_prefix}[dim]Exit code: {step.exit_code}[/dim]")
+            if step.error:
+                console.print(f"{child_prefix}[red]Error: {step.error}[/red]")
 
-        # If this is a call step with children, print them
+        # Print step output if available and requested
+        if show_outputs and step.output:
+            for key, value in step.output.items():
+                truncated = str(value)[:80] + ("..." if len(str(value)) > 80 else "")
+                console.print(f"{child_prefix}[cyan]{key}:[/cyan] {truncated}")
+
+        # RECURSIVE: Print matching child DAGs
         if step.child_dag_name:
-            # Find matching children
             matching_children = [c for c in dag_run.children if c.dag_name == step.child_dag_name]
 
             for child_idx, child in enumerate(matching_children):
-                is_last_child = child_idx == len(matching_children) - 1
+                is_last_child = child_idx == len(matching_children) - 1 and is_last_step
 
-                # Determine child prefix
-                if is_last_step:
-                    child_connector = child_prefix + "└──"
-                    grandchild_prefix = child_prefix + "    "
-                else:
-                    child_connector = child_prefix + "├──"
-                    grandchild_prefix = child_prefix + "│   "
-
-                # Print child DAG name
+                # Print child DAG header
                 child_attempt = child.latest_attempt
-                child_status = child_attempt.status.to_name() if child_attempt else "unknown"
+                child_status = child_attempt.status if child_attempt else dagu_runs.DaguStatus.PENDING
+                child_sym, child_color = status_symbols.get(child_status, ("?", "white"))
                 child_duration = dagu_runs._format_duration(
                     child_attempt.started_at, child_attempt.finished_at
                 ) if child_attempt else "N/A"
 
-                console.print(f"{child_connector} {child.dag_name} {child_status} ({child_duration})")
+                child_header = f"{child_prefix}[{child_color}]{child_sym} {child.dag_name}[/{child_color}] ({child_duration})"
+                console.print(child_header)
 
-                # Recursively print child's steps
-                for step_idx, child_step in enumerate(child_attempt.steps if child_attempt else []):
-                    is_last_grandchild = step_idx == len((child_attempt.steps if child_attempt else [])) - 1
+                # Print child DAG error if present
+                if child_attempt and child_attempt.error:
+                    nested_prefix = child_prefix + "    "
+                    console.print(f"{nested_prefix}[red]Error: {child_attempt.error}[/red]")
 
-                    if is_last_grandchild:
-                        step_connector = grandchild_prefix + "└──"
-                    else:
-                        step_connector = grandchild_prefix + "├──"
-
-                    child_step_status = child_step.status.to_name()
-                    if child_step.status == dagu_runs.DaguStatus.SUCCESS:
-                        child_status_str = f"[green]{child_step_status}[/green]"
-                    elif child_step.status == dagu_runs.DaguStatus.FAILED:
-                        child_status_str = f"[red]{child_step_status}[/red]"
-                    elif child_step.status == dagu_runs.DaguStatus.RUNNING:
-                        child_status_str = f"[yellow]{child_step_status}[/yellow]"
-                    else:
-                        child_status_str = child_step_status
-
-                    child_step_duration = dagu_runs._format_duration(
-                        child_step.started_at, child_step.finished_at
-                    )
-
-                    console.print(f"{step_connector} {child_step.name} {child_status_str} ({child_step_duration})")
+                # RECURSIVE CALL for child's steps (this enables unlimited depth)
+                if child_attempt:
+                    nested_prefix = child_prefix + ("    " if is_last_child else "│   ")
+                    _print_dag_tree(child, console, nested_prefix, is_last_child, show_outputs)
 
 
 @click.group()
@@ -2510,26 +2574,34 @@ def dag_run_status(
 @dag.command("run-show")
 @click.argument("dag_name", required=False)
 @click.option("--run-id", "-r", help="Specific run ID (default: most recent)")
-@click.option("--logs", is_flag=True, help="Include step logs in output")
 @click.option("--step", "-s", help="Show details for a specific step")
 @click.option("--expand-subdags", "-e", is_flag=True, help="Expand sub-DAG tree hierarchy")
+@click.option("--outputs", is_flag=True, help="Include step and DAG outputs")
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON")
 @click.pass_context
 def dag_run_show(
     ctx: click.Context,
     dag_name: str | None,
     run_id: str | None,
-    logs: bool,
     step: str | None,
     expand_subdags: bool,
+    outputs: bool,
     as_json: bool,
 ) -> None:
     """Show details of a DAG run.
 
     DAG_NAME is the name of the DAG (default: current spec-id).
 
-    Displays step-by-step execution details, timing, and optionally logs.
+    Displays step-by-step execution details, timing, and status.
     With --expand-subdags, shows the full hierarchy of sub-DAG executions.
+    With --outputs, includes captured step outputs from outputs.json.
+
+    Examples:
+        arborist dag run-show                    # Show latest run
+        arborist dag run-show --json             # Output as JSON
+        arborist dag run-show -e                 # Expand sub-DAG hierarchy
+        arborist dag run-show -e --outputs       # Include captured outputs
+        arborist dag run-show -s "run"           # Filter to specific step
     """
     spec_id = ctx.obj.get("spec_id")
     dagu_home = ctx.obj.get("dagu_home")
@@ -2543,9 +2615,9 @@ def dag_run_show(
             spec_id=spec_id or "none",
             dag_name=resolved_dag_name or "none",
             run_id=run_id or "latest",
-            logs=str(logs),
             step=step or "all",
             expand_subdags=str(expand_subdags),
+            outputs=str(outputs),
             json=str(as_json),
             dagu_home=str(dagu_home) if dagu_home else "none",
         )
@@ -2576,8 +2648,8 @@ def dag_run_show(
         raise SystemExit(1)
 
     # If using new options, use data layer instead of dagu CLI
-    if expand_subdags or as_json:
-        import json
+    if expand_subdags or as_json or outputs:
+        import json as json_module
 
         # If no run_id specified, get the latest run
         if not run_id:
@@ -2587,9 +2659,13 @@ def dag_run_show(
                 return
             run_id = runs[0].run_id
 
-        # Load the DAG run with optional sub-DAG expansion
+        # Load the DAG run with optional sub-DAG expansion and outputs
         dag_run = dagu_runs.load_dag_run(
-            Path(dagu_home), resolved_dag_name, run_id, expand_subdags=expand_subdags
+            Path(dagu_home),
+            resolved_dag_name,
+            run_id,
+            expand_subdags=expand_subdags,
+            include_outputs=outputs,
         )
 
         if not dag_run:
@@ -2602,66 +2678,10 @@ def dag_run_show(
             return
 
         if as_json:
-            # Output as JSON
-            json_data = {
-                "dag_name": dag_run.dag_name,
-                "run_id": dag_run.run_id,
-                "status": attempt.status.to_name(),
-                "started_at": attempt.started_at.isoformat() if attempt.started_at else None,
-                "finished_at": attempt.finished_at.isoformat() if attempt.finished_at else None,
-            }
-
-            # Add duration
-            if attempt.started_at and attempt.finished_at:
-                duration_seconds = (attempt.finished_at - attempt.started_at).total_seconds()
-                json_data["duration_seconds"] = duration_seconds
-
-            # Add steps
-            json_data["steps"] = []
-            for step in attempt.steps:
-                step_data = {
-                    "name": step.name,
-                    "status": step.status.to_name(),
-                    "started_at": step.started_at.isoformat() if step.started_at else None,
-                    "finished_at": step.finished_at.isoformat() if step.finished_at else None,
-                }
-                if step.child_dag_name:
-                    step_data["child_dag_name"] = step.child_dag_name
-                    step_data["child_run_ids"] = step.child_run_ids
-                json_data["steps"].append(step_data)
-
-            # Add children if expanded
-            if expand_subdags:
-                json_data["children"] = []
-                for child in dag_run.children:
-                    child_attempt = child.latest_attempt
-                    child_data = {
-                        "dag_name": child.dag_name,
-                        "run_id": child.run_id,
-                        "status": child_attempt.status.to_name() if child_attempt else "unknown",
-                        "started_at": child_attempt.started_at.isoformat() if child_attempt and child_attempt.started_at else None,
-                        "finished_at": child_attempt.finished_at.isoformat() if child_attempt and child_attempt.finished_at else None,
-                        "parent_dag_name": child.parent_dag_name,
-                        "parent_dag_id": child.parent_dag_id,
-                        "root_dag_name": child.root_dag_name,
-                        "root_dag_id": child.root_dag_id,
-                    }
-
-                    # Add child steps
-                    if child_attempt:
-                        child_data["steps"] = []
-                        for step in child_attempt.steps:
-                            child_step_data = {
-                                "name": step.name,
-                                "status": step.status.to_name(),
-                                "started_at": step.started_at.isoformat() if step.started_at else None,
-                                "finished_at": step.finished_at.isoformat() if step.finished_at else None,
-                            }
-                            child_data["steps"].append(child_step_data)
-
-                    json_data["children"].append(child_data)
-
-            console.print(json.dumps(json_data, indent=2))
+            # Use recursive JSON helper for full output
+            json_data = _dag_run_to_json(dag_run)
+            # Use print() instead of console.print() to avoid Rich's syntax highlighting
+            print(json_module.dumps(json_data, indent=2))
         else:
             # Output as tree with expanded sub-DAGs
             console.print(f"[bold cyan]{dag_run.dag_name}[/bold cyan]")
@@ -2682,9 +2702,13 @@ def dag_run_show(
             console.print(f"[dim]Status:[/dim] {status_display}")
             console.print(f"[dim]Duration:[/dim] {duration_str}")
 
+            # Show error if present
+            if attempt.error:
+                console.print(f"[red]Error:[/red] {attempt.error}")
+
             # Show sub-DAG hierarchy
-            console.print("\n[bold]Sub-DAG Hierarchy:[/bold]")
-            _print_dag_tree(dag_run, console=console, prefix="")
+            console.print("\n[bold]Steps:[/bold]")
+            _print_dag_tree(dag_run, console=console, prefix="", show_outputs=outputs)
 
         return
 
@@ -2734,30 +2758,6 @@ def dag_run_show(
             else:
                 # Show all steps
                 console.print(output)
-
-            # If logs requested, try to find and display log files
-            if logs:
-                console.print("\n[bold]Logs:[/bold]")
-                # Look for log files in dagu's data directory
-                log_dir = Path(dagu_home) / "data" / resolved_dag_name
-                if log_dir.exists():
-                    log_files = list(log_dir.glob("**/*.log"))
-                    if log_files:
-                        for log_file in log_files[:5]:  # Limit to 5 logs
-                            if step and step.lower() not in log_file.name.lower():
-                                continue
-                            console.print(f"\n[dim]--- {log_file.name} ---[/dim]")
-                            try:
-                                log_content = log_file.read_text()
-                                console.print(log_content[:2000])  # Limit output
-                                if len(log_content) > 2000:
-                                    console.print("[dim]... (truncated)[/dim]")
-                            except Exception as e:
-                                console.print(f"[dim]Could not read log: {e}[/dim]")
-                    else:
-                        console.print("[dim]No log files found[/dim]")
-                else:
-                    console.print("[dim]No log directory found[/dim]")
         else:
             if "no" in result.stderr.lower() or "not found" in result.stderr.lower():
                 console.print("[dim]No runs found for this DAG[/dim]")
