@@ -156,8 +156,10 @@ class TestDagRunShowHelp:
         assert result.exit_code == 0
         assert "details" in result.output.lower()
         assert "--run-id" in result.output
-        assert "--logs" in result.output
+        assert "--outputs" in result.output
         assert "--step" in result.output
+        assert "--expand-subdags" in result.output
+        assert "--json" in result.output
 
 
 # -----------------------------------------------------------------------------
@@ -223,10 +225,10 @@ class TestDagEchoForTesting:
         runner = CliRunner()
         result = runner.invoke(
             main,
-            ["--echo-for-testing", "dag", "run-show", "my-dag", "--logs", "--step", "T001"],
+            ["--echo-for-testing", "dag", "run-show", "my-dag", "--outputs", "--step", "T001"],
         )
         assert result.exit_code == 0
-        assert "logs=True" in result.output
+        assert "outputs=True" in result.output
         assert "step=T001" in result.output
 
     def test_echo_dag_run_defaults_to_spec_id(self):
@@ -268,6 +270,25 @@ class TestDagEchoForTesting:
         runner = CliRunner()
         result = runner.invoke(main, ["--echo-for-testing", "dag", "run-show", "my-dag", "--json"])
         assert result.exit_code == 0
+        assert "json=True" in result.output
+
+    def test_echo_dag_run_show_outputs(self):
+        """Echo test for dag run-show with --outputs."""
+        runner = CliRunner()
+        result = runner.invoke(main, ["--echo-for-testing", "dag", "run-show", "my-dag", "--outputs"])
+        assert result.exit_code == 0
+        assert "outputs=True" in result.output
+
+    def test_echo_dag_run_show_all_v1_flags(self):
+        """Echo test for dag run-show with all V1 flags."""
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            ["--echo-for-testing", "dag", "run-show", "my-dag", "-e", "--outputs", "--json"]
+        )
+        assert result.exit_code == 0
+        assert "expand_subdags=True" in result.output
+        assert "outputs=True" in result.output
         assert "json=True" in result.output
 
 
