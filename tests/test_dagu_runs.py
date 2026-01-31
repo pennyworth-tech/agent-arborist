@@ -274,3 +274,176 @@ class TestListDagRuns:
         """Test listing runs with empty Dagu home."""
         runs = dagu_runs.list_dag_runs(tmp_path)
         assert len(runs) == 0
+
+
+class TestOutputsParsing:
+    """Tests for outputs.json parsing (V1 feature)."""
+
+    def test_parse_outputs_json_valid(self, tmp_path):
+        """Test parsing valid outputs.json."""
+        import json
+        outputs_content = {
+            "metadata": {"dagName": "test", "dagRunId": "abc123"},
+            "outputs": {"result": "success", "count": 42}
+        }
+        outputs_file = tmp_path / "outputs.json"
+        outputs_file.write_text(json.dumps(outputs_content))
+
+        result = dagu_runs.parse_outputs_json(outputs_file)
+        assert result == outputs_content
+
+    def test_parse_outputs_json_missing(self, tmp_path):
+        """Test parsing missing outputs.json returns empty dict."""
+        result = dagu_runs.parse_outputs_json(tmp_path / "missing.json")
+        assert result == {}
+
+    def test_parse_outputs_json_invalid(self, tmp_path):
+        """Test parsing invalid JSON handles errors gracefully."""
+        outputs_file = tmp_path / "invalid.json"
+        outputs_file.write_text("{ invalid json")
+        result = dagu_runs.parse_outputs_json(outputs_file)
+        assert result == {}
+
+    def test_load_step_output(self):
+        """Test extracting step output from outputs dict."""
+        outputs = {"outputs": {"step1": {"result": "ok"}, "step2": {"value": 42}}}
+        assert dagu_runs.load_step_output(outputs, "step1") == {"result": "ok"}
+        assert dagu_runs.load_step_output(outputs, "step2") == {"value": 42}
+        assert dagu_runs.load_step_output(outputs, "missing") is None
+
+    def test_load_step_output_empty_outputs(self):
+        """Test extracting step output from empty outputs dict."""
+        assert dagu_runs.load_step_output({}, "step1") is None
+        assert dagu_runs.load_step_output({"outputs": {}}, "step1") is None
+
+
+class TestErrorParsing:
+    """Tests for error/exit code extraction from status.jsonl (V1 feature)."""
+
+    def test_parse_status_with_error_and_exit_code(self, tmp_path):
+        """Test parsing status.jsonl with error and exit code."""
+        import json
+        status_data = {
+            "dagRunId": "test123",
+            "attemptId": "att1",
+            "status": 2,  # FAILED
+            "startedAt": "2026-01-25T00:00:00Z",
+            "finishedAt": "2026-01-25T00:00:10Z",
+            "error": "DAG failed",
+            "nodes": [
+                {"step": {"name": "step1"}, "status": 4, "exitCode": 0},
+                {"step": {"name": "step2"}, "status": 2, "exitCode": 1, "error": "Command failed"}
+            ]
+        }
+        status_file = tmp_path / "status.jsonl"
+        status_file.write_text(json.dumps(status_data))
+
+        attempt = dagu_runs.parse_status_jsonl(status_file)
+
+        assert attempt.status == dagu_runs.DaguStatus.FAILED
+        assert attempt.error == "DAG failed"
+
+        # Check step 1 (success)
+        step1 = next(s for s in attempt.steps if s.name == "step1")
+        assert step1.exit_code == 0
+        assert step1.error is None
+
+        # Check step 2 (failed)
+        step2 = next(s for s in attempt.steps if s.name == "step2")
+        assert step2.exit_code == 1
+        assert step2.error == "Command failed"
+
+    def test_parse_status_without_error_fields(self, fixtures_dir):
+        """Test parsing status.jsonl without error fields still works."""
+        path = fixtures_dir / "status_success.jsonl"
+        attempt = dagu_runs.parse_status_jsonl(path)
+
+        assert attempt.error is None
+        for step in attempt.steps:
+            assert step.exit_code is None
+            assert step.error is None
+
+
+class TestRecursiveLoadingWithOutputs:
+    """Tests for recursive child loading with outputs (V1 feature)."""
+
+    def test_load_dag_run_with_outputs(self, tmp_path):
+        """Test loading DAG run with outputs enabled."""
+        import json
+
+        # Create test structure
+        dagu_home = tmp_path / "dagu"
+        run_dir = (
+            dagu_home / "data" / "dag-runs" / "test_dag" / "dag-runs" /
+            "2026" / "01" / "31" / "dag-run_20260131_000000Z_run123"
+        )
+        attempt_dir = run_dir / "attempt_1"
+        attempt_dir.mkdir(parents=True)
+
+        status_data = {
+            "dagRunId": "run123", "name": "test_dag", "attemptId": "att1",
+            "status": 4, "startedAt": "2026-01-31T00:00:00Z", "finishedAt": "2026-01-31T00:01:00Z",
+            "root": {"name": "test_dag", "id": "run123"}, "parent": {},
+            "nodes": [{"step": {"name": "step1"}, "status": 4}]
+        }
+        (attempt_dir / "status.jsonl").write_text(json.dumps(status_data))
+
+        # Add outputs.json
+        outputs_data = {
+            "metadata": {"dagName": "test_dag"},
+            "outputs": {"step1": {"result": "success"}}
+        }
+        (attempt_dir / "outputs.json").write_text(json.dumps(outputs_data))
+
+        # Load with include_outputs=True
+        dag_run = dagu_runs.load_dag_run(
+            dagu_home, "test_dag", "run123",
+            expand_subdags=False, include_outputs=True
+        )
+
+        assert dag_run is not None
+        assert dag_run.latest_attempt.outputs is not None
+        assert dag_run.latest_attempt.outputs.get("outputs", {}).get("step1") == {"result": "success"}
+        assert dag_run.outputs_file is not None
+        assert dag_run.run_dir is not None
+
+        # Check per-step output
+        step1 = dag_run.latest_attempt.steps[0]
+        assert step1.output == {"result": "success"}
+
+    def test_load_dag_run_without_outputs(self, tmp_path):
+        """Test loading DAG run with include_outputs=False doesn't load outputs."""
+        import json
+
+        # Create test structure
+        dagu_home = tmp_path / "dagu"
+        run_dir = (
+            dagu_home / "data" / "dag-runs" / "test_dag" / "dag-runs" /
+            "2026" / "01" / "31" / "dag-run_20260131_000000Z_run456"
+        )
+        attempt_dir = run_dir / "attempt_1"
+        attempt_dir.mkdir(parents=True)
+
+        status_data = {
+            "dagRunId": "run456", "name": "test_dag", "attemptId": "att1",
+            "status": 4, "startedAt": "2026-01-31T00:00:00Z", "finishedAt": "2026-01-31T00:01:00Z",
+            "root": {"name": "test_dag", "id": "run456"}, "parent": {},
+            "nodes": [{"step": {"name": "step1"}, "status": 4}]
+        }
+        (attempt_dir / "status.jsonl").write_text(json.dumps(status_data))
+
+        # Add outputs.json (but should not be loaded)
+        outputs_data = {"outputs": {"step1": {"result": "success"}}}
+        (attempt_dir / "outputs.json").write_text(json.dumps(outputs_data))
+
+        # Load without include_outputs
+        dag_run = dagu_runs.load_dag_run(
+            dagu_home, "test_dag", "run456",
+            expand_subdags=False, include_outputs=False
+        )
+
+        assert dag_run is not None
+        assert dag_run.latest_attempt.outputs is None
+        assert dag_run.latest_attempt.steps[0].output is None
+        # outputs_file should still be set (it exists), just not loaded
+        assert dag_run.outputs_file is not None
