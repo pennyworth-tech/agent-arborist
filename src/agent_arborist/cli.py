@@ -121,6 +121,51 @@ def output_result(result: StepResult, ctx: click.Context) -> None:
         _output_text_result(result, ctx)
 
 
+def _check_skip_and_output(
+    task_id: str,
+    step_type: str,
+    result_class: type,
+    ctx: click.Context,
+    **extra_fields,
+) -> bool:
+    """Check if step should be skipped and output result if so.
+
+    This is used by task commands to check if a step was already completed
+    in a previous run (via restart context).
+
+    Args:
+        task_id: The task ID
+        step_type: The step type (e.g., "pre-sync", "run", "commit")
+        result_class: The StepResult subclass to use for output
+        ctx: Click context for output formatting
+        **extra_fields: Additional fields to set on the result
+
+    Returns:
+        True if step was skipped (caller should return early), False otherwise
+    """
+    from agent_arborist.restart_context import should_skip_step
+
+    should_skip, reason = should_skip_step(task_id, step_type)
+
+    if should_skip:
+        # Build skipped result with extra fields
+        result = result_class(
+            success=True,
+            skipped=True,
+            skip_reason=reason,
+            **extra_fields,
+        )
+        output_result(result, ctx)
+        console.print(f"[dim]✓ Skipped {step_type}:[/dim] {reason}")
+        return True
+
+    if reason:
+        # Log why we're running (e.g., integrity check failed)
+        console.print(f"[dim]→ Running {step_type}:[/dim] {reason}")
+
+    return False
+
+
 def _count_changed_files(worktree_path: Path) -> int:
     """Count files changed in worktree since last commit."""
     try:
@@ -1010,6 +1055,18 @@ def task_pre_sync(ctx: click.Context, task_id: str) -> None:
         )
         return
 
+    # Check if step should be skipped (restart support)
+    if _check_skip_and_output(
+        task_id,
+        "pre-sync",
+        PreSyncResult,
+        ctx,
+        worktree_path=str(worktree_path),
+        branch=task_info.branch,
+        parent_branch=task_info.parent_branch,
+    ):
+        return
+
     # Sync the task (create worktree and sync from parent)
     result = sync_task(task_info.branch, task_info.parent_branch, worktree_path)
 
@@ -1101,6 +1158,17 @@ def task_run(ctx: click.Context, task_id: str, timeout: int, runner: str | None,
             timeout=str(timeout),
             worktree=str(worktree_path),
         )
+        return
+
+    # Check if step should be skipped (restart support)
+    if _check_skip_and_output(
+        task_id,
+        "run",
+        RunResult,
+        ctx,
+        runner=runner_type,
+        model=resolved_model,
+    ):
         return
 
     if not worktree_path.exists():
@@ -1235,6 +1303,10 @@ def task_commit(ctx: click.Context, task_id: str) -> None:
         )
         return
 
+    # Check if step should be skipped (restart support)
+    if _check_skip_and_output(task_id, "commit", CommitResult, ctx):
+        return
+
     if not worktree_path.exists():
         console.print(f"[red]Error:[/red] Worktree not found at {worktree_path}")
         raise SystemExit(1)
@@ -1359,6 +1431,10 @@ def task_run_test(ctx: click.Context, task_id: str, cmd: str | None) -> None:
             cmd=cmd or "auto",
             worktree=str(worktree_path),
         )
+        return
+
+    # Check if step should be skipped (restart support)
+    if _check_skip_and_output(task_id, "run-test", RunTestResult, ctx):
         return
 
     # For parent tasks, check children are complete
@@ -1504,6 +1580,17 @@ def task_post_merge(ctx: click.Context, task_id: str, timeout: int, runner: str 
         )
         return
 
+    # Check if step should be skipped (restart support)
+    if _check_skip_and_output(
+        task_id,
+        "post-merge",
+        PostMergeResult,
+        ctx,
+        source_branch=task_branch,
+        merged_into=parent_branch,
+    ):
+        return
+
     if not ctx.obj.get("quiet"):
         console.print(f"[cyan]Merging {task_branch} → {parent_branch} (squash)[/cyan]")
 
@@ -1625,6 +1712,10 @@ def task_post_cleanup(ctx: click.Context, task_id: str, keep_branch: bool) -> No
         )
         return
 
+    # Check if step should be skipped (restart support)
+    if _check_skip_and_output(task_id, "post-cleanup", PostCleanupResult, ctx):
+        return
+
     result = cleanup_task(task_branch, worktree_path, delete_branch=not keep_branch)
 
     # Build step result
@@ -1662,8 +1753,17 @@ def task_container_up(ctx: click.Context, task_id: str) -> None:
     import os
     import subprocess
 
+    from agent_arborist.step_results import ContainerUpResult
+
+    worktree_path = os.environ.get("ARBORIST_WORKTREE", "")
+
+    # Check if this step should be skipped (restart support)
+    if _check_skip_and_output(
+        task_id, "container-up", ContainerUpResult, ctx, worktree_path=worktree_path
+    ):
+        return
+
     manifest_path = os.environ.get("ARBORIST_MANIFEST")
-    worktree_path = os.environ.get("ARBORIST_WORKTREE")
 
     if not manifest_path:
         console.print("[red]Error:[/red] ARBORIST_MANIFEST environment variable not set")
@@ -1701,13 +1801,43 @@ def task_container_up(ctx: click.Context, task_id: str) -> None:
         )
 
         if result.returncode != 0:
+            step_result = ContainerUpResult(
+                success=False,
+                error=result.stderr,
+                worktree_path=str(worktree),
+            )
+            output_result(step_result, ctx)
             console.print(f"[red]Error starting container:[/red]")
             console.print(result.stderr)
             raise SystemExit(1)
 
+        # Try to extract container ID from output
+        container_id = None
+        if result.stdout:
+            import json as json_module
+            try:
+                output_data = json_module.loads(result.stdout)
+                container_id = output_data.get("containerId")
+            except json_module.JSONDecodeError:
+                pass
+
+        step_result = ContainerUpResult(
+            success=True,
+            worktree_path=str(worktree),
+            container_id=container_id,
+        )
+        output_result(step_result, ctx)
         console.print(f"[green]Container started successfully[/green]")
 
+    except SystemExit:
+        raise
     except Exception as e:
+        step_result = ContainerUpResult(
+            success=False,
+            error=str(e),
+            worktree_path=str(worktree) if worktree_path else "",
+        )
+        output_result(step_result, ctx)
         console.print(f"[red]Error:[/red] {e}")
         raise SystemExit(1)
 
@@ -1727,7 +1857,15 @@ def task_container_stop(ctx: click.Context, task_id: str) -> None:
     import os
     import subprocess
 
-    worktree_path = os.environ.get("ARBORIST_WORKTREE")
+    from agent_arborist.step_results import ContainerStopResult
+
+    worktree_path = os.environ.get("ARBORIST_WORKTREE", "")
+
+    # Check if this step should be skipped (restart support)
+    if _check_skip_and_output(
+        task_id, "container-stop", ContainerStopResult, ctx, worktree_path=worktree_path
+    ):
+        return
 
     if not worktree_path:
         console.print("[red]Error:[/red] ARBORIST_WORKTREE environment variable not set")
@@ -1760,12 +1898,26 @@ def task_container_stop(ctx: click.Context, task_id: str) -> None:
 
         # Command always succeeds due to || true
         # Check if any container was stopped
-        if result.stdout.strip():
+        container_stopped = bool(result.stdout.strip())
+        step_result = ContainerStopResult(
+            success=True,
+            worktree_path=str(worktree),
+            container_stopped=container_stopped,
+        )
+        output_result(step_result, ctx)
+
+        if container_stopped:
             console.print(f"[green]Container stopped successfully[/green]")
         else:
             console.print(f"[dim]No running container found for this worktree[/dim]")
 
     except Exception as e:
+        step_result = ContainerStopResult(
+            success=False,
+            error=str(e),
+            worktree_path=str(worktree) if worktree_path else "",
+        )
+        output_result(step_result, ctx)
         console.print(f"[red]Error:[/red] {e}")
         raise SystemExit(1)
 

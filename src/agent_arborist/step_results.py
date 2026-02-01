@@ -113,6 +113,28 @@ class PostCleanupResult(StepResultBase):
     cleaned_up: bool = False
 
 
+@dataclass
+class ContainerUpResult(StepResultBase):
+    """Result from task container-up step.
+
+    Captures devcontainer startup information.
+    """
+
+    worktree_path: str = ""
+    container_id: str | None = None
+
+
+@dataclass
+class ContainerStopResult(StepResultBase):
+    """Result from task container-stop step.
+
+    Captures devcontainer stop information.
+    """
+
+    worktree_path: str = ""
+    container_stopped: bool = False
+
+
 # Type alias for any step result
 StepResult = (
     PreSyncResult
@@ -121,4 +143,6 @@ StepResult = (
     | RunTestResult
     | PostMergeResult
     | PostCleanupResult
+    | ContainerUpResult
+    | ContainerStopResult
 )
