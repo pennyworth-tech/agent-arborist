@@ -915,6 +915,200 @@ def config_sync_queues(ctx: click.Context) -> None:
 
 
 # -----------------------------------------------------------------------------
+# Hooks commands
+# -----------------------------------------------------------------------------
+
+
+@main.group()
+def hooks() -> None:
+    """Hook system management and execution."""
+    pass
+
+
+@hooks.command("list")
+@click.pass_context
+def hooks_list(ctx: click.Context) -> None:
+    """List configured hooks and their injection points.
+
+    Shows all step definitions and where they are injected in the DAG.
+    """
+    from agent_arborist.config import get_config, VALID_HOOK_POINTS
+
+    arborist_home = ctx.obj.get("arborist_home")
+    config = get_config(arborist_home=arborist_home)
+
+    if not config.hooks.enabled:
+        console.print("[yellow]Hooks are not enabled[/yellow]")
+        console.print("Enable hooks in .arborist/config.json:")
+        console.print('  { "hooks": { "enabled": true, ... } }')
+        return
+
+    # Show step definitions
+    if config.hooks.step_definitions:
+        console.print("\n[bold]Step Definitions:[/bold]")
+        for name, step_def in config.hooks.step_definitions.items():
+            console.print(f"  [cyan]{name}[/cyan] ({step_def.type})")
+            if step_def.command:
+                console.print(f"    command: {step_def.command[:50]}...")
+            if step_def.prompt_file:
+                console.print(f"    prompt_file: {step_def.prompt_file}")
+            if step_def.class_path:
+                console.print(f"    class: {step_def.class_path}")
+    else:
+        console.print("\n[dim]No step definitions configured[/dim]")
+
+    # Show injections by hook point
+    console.print("\n[bold]Injections by Hook Point:[/bold]")
+    for hook_point in VALID_HOOK_POINTS:
+        injections = config.hooks.injections.get(hook_point, [])
+        if injections:
+            console.print(f"\n  [bold]{hook_point}[/bold]:")
+            for i, inj in enumerate(injections, 1):
+                step_name = inj.step or f"(inline {inj.type})"
+                tasks = ", ".join(inj.tasks) if inj.tasks != ["*"] else "all tasks"
+                console.print(f"    {i}. {step_name} → {tasks}")
+        else:
+            console.print(f"\n  [dim]{hook_point}: (none)[/dim]")
+
+
+@hooks.command("validate")
+@click.pass_context
+def hooks_validate(ctx: click.Context) -> None:
+    """Validate hooks configuration.
+
+    Checks that all step definitions are valid and all step references
+    in injections point to existing definitions.
+    """
+    from agent_arborist.config import get_config, ConfigValidationError
+
+    arborist_home = ctx.obj.get("arborist_home")
+
+    try:
+        config = get_config(arborist_home=arborist_home)
+    except ConfigValidationError as e:
+        console.print(f"[red]Configuration error:[/red] {e}")
+        raise SystemExit(1)
+
+    if not config.hooks.enabled:
+        console.print("[yellow]Hooks are not enabled[/yellow]")
+        console.print("[green]✓[/green] Configuration is valid (hooks disabled)")
+        return
+
+    try:
+        config.hooks.validate()
+        console.print("[green]✓[/green] Hooks configuration is valid")
+
+        # Show summary
+        n_defs = len(config.hooks.step_definitions)
+        n_inj = sum(len(inj) for inj in config.hooks.injections.values())
+        console.print(f"  {n_defs} step definition(s)")
+        console.print(f"  {n_inj} injection(s)")
+
+    except ConfigValidationError as e:
+        console.print(f"[red]Validation error:[/red] {e}")
+        raise SystemExit(1)
+
+
+@hooks.command("run")
+@click.option("--type", "step_type", required=True,
+              type=click.Choice(["shell", "llm_eval", "quality_check", "python"]),
+              help="Step type to execute")
+@click.option("--task", "task_id", help="Task ID for task-level hooks")
+@click.option("--command", help="Command for shell/quality_check steps")
+@click.option("--prompt-file", help="Prompt file for llm_eval steps")
+@click.option("--prompt-from-config", is_flag=True, help="Load prompt from config")
+@click.option("--min-score", type=float, help="Minimum score for quality_check")
+@click.option("--class", "class_path", help="Class path for python steps")
+@click.pass_context
+def hooks_run(
+    ctx: click.Context,
+    step_type: str,
+    task_id: str | None,
+    command: str | None,
+    prompt_file: str | None,
+    prompt_from_config: bool,
+    min_score: float | None,
+    class_path: str | None,
+) -> None:
+    """Execute a hook step.
+
+    This command is typically called by generated DAG commands, not directly.
+    It runs a single hook step and outputs the result as JSON.
+    """
+    import json
+    from pathlib import Path
+
+    from agent_arborist.config import get_config, StepDefinition
+    from agent_arborist.hooks import (
+        ExecutorContext,
+        StepContext,
+        get_executor,
+    )
+    from agent_arborist.hooks.prompt_loader import PromptLoader
+
+    arborist_home = ctx.obj.get("arborist_home")
+    if arborist_home:
+        arborist_home = Path(arborist_home)
+    else:
+        arborist_home = get_arborist_home()
+
+    config = get_config(arborist_home=arborist_home)
+
+    # Build step definition from command line args
+    step_def = StepDefinition(
+        type=step_type,
+        command=command,
+        prompt_file=prompt_file,
+        min_score=min_score,
+        class_path=class_path,
+    )
+
+    # Build step context
+    worktree_path = None
+    branch_name = "unknown"
+    parent_branch = "main"
+
+    if task_id:
+        # Try to get worktree info for the task
+        try:
+            worktree_path = Path(get_worktree_path(task_id))
+            branch_name = f"feature/{task_id}"
+        except Exception:
+            pass
+
+    spec_id = ctx.obj.get("spec_id") or "unknown"
+
+    step_ctx = StepContext(
+        task_id=task_id,
+        spec_id=spec_id,
+        worktree_path=worktree_path,
+        branch_name=branch_name,
+        parent_branch=parent_branch,
+        arborist_home=arborist_home,
+    )
+
+    # Build executor context
+    prompts_dir = arborist_home / config.hooks.prompts_dir
+
+    exec_ctx = ExecutorContext(
+        step_ctx=step_ctx,
+        step_def=step_def,
+        arborist_config=config,
+        prompts_dir=prompts_dir,
+    )
+
+    # Get executor and run
+    executor = get_executor(step_type)
+    result = executor.execute(exec_ctx)
+
+    # Output result as JSON
+    output_result(result, ctx)
+
+    if not result.success:
+        raise SystemExit(1)
+
+
+# -----------------------------------------------------------------------------
 # Task commands
 # -----------------------------------------------------------------------------
 
@@ -2201,6 +2395,7 @@ def spec_dag_build(
             runner=runner,
             model=model,
             arborist_config=arborist_config,
+            arborist_home=Path(arborist_home) if arborist_home else None,
         )
         builder = DagBuilder(config)
         dag_yaml = builder.build_yaml(task_spec)

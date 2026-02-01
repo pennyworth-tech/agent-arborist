@@ -38,4 +38,5 @@ markers = [
     "opencode: marks tests that require opencode CLI",
     "gemini: marks tests that require gemini CLI",
     "dagu: marks tests that require dagu CLI",
+    "slow: marks tests that are slow (real API calls, large operations)",
 ]

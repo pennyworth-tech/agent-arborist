@@ -856,3 +856,211 @@ steps:
 
         assert result.exit_code == 1
         assert "not found" in result.output
+
+
+class TestHooksCommands:
+    """Tests for hooks CLI commands."""
+
+    @pytest.fixture
+    def git_repo(self, tmp_path):
+        """Create a minimal git repo for hooks testing."""
+        original_cwd = os.getcwd()
+        os.chdir(tmp_path)
+        subprocess.run(["git", "init"], capture_output=True, check=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], capture_output=True)
+        (tmp_path / "README.md").write_text("# Test\n")
+        subprocess.run(["git", "add", "."], capture_output=True, check=True)
+        subprocess.run(["git", "commit", "-m", "init"], capture_output=True, check=True)
+
+        # Create .arborist directory
+        arborist_dir = tmp_path / ".arborist"
+        arborist_dir.mkdir()
+
+        yield tmp_path
+        os.chdir(original_cwd)
+
+    def test_hooks_group_help(self):
+        runner = CliRunner()
+        result = runner.invoke(main, ["hooks", "--help"])
+        assert result.exit_code == 0
+        assert "Hook system management" in result.output
+        assert "list" in result.output
+        assert "validate" in result.output
+        assert "run" in result.output
+
+    def test_hooks_list_disabled(self, git_repo):
+        runner = CliRunner()
+        result = runner.invoke(main, ["hooks", "list"])
+        assert result.exit_code == 0
+        assert "Hooks are not enabled" in result.output
+
+    def test_hooks_list_enabled(self, tmp_path, monkeypatch):
+        # Create a config with hooks enabled
+        arborist_dir = tmp_path / ".arborist"
+        arborist_dir.mkdir()
+        config = {
+            "hooks": {
+                "enabled": True,
+                "step_definitions": {
+                    "code_review": {
+                        "type": "llm_eval",
+                        "prompt": "Review this code"
+                    }
+                },
+                "injections": {
+                    "post_task": [
+                        {"step": "code_review", "tasks": ["*"]}
+                    ]
+                }
+            }
+        }
+        import json
+        (arborist_dir / "config.json").write_text(json.dumps(config))
+
+        monkeypatch.chdir(tmp_path)
+        # Initialize git repo
+        subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["hooks", "list"])
+        assert result.exit_code == 0
+        assert "Step Definitions:" in result.output
+        assert "code_review" in result.output
+        assert "llm_eval" in result.output
+        assert "Injections by Hook Point:" in result.output
+        assert "post_task" in result.output
+
+    def test_hooks_validate_disabled(self):
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            result = runner.invoke(main, ["hooks", "validate"])
+            assert result.exit_code == 0
+            assert "valid" in result.output.lower()
+
+    def test_hooks_validate_valid_config(self, tmp_path, monkeypatch):
+        # Create a valid config with hooks
+        arborist_dir = tmp_path / ".arborist"
+        arborist_dir.mkdir()
+        config = {
+            "hooks": {
+                "enabled": True,
+                "step_definitions": {
+                    "lint_check": {
+                        "type": "shell",
+                        "command": "npm run lint"
+                    }
+                },
+                "injections": {
+                    "post_task": [
+                        {"step": "lint_check", "tasks": ["*"]}
+                    ]
+                }
+            }
+        }
+        import json
+        (arborist_dir / "config.json").write_text(json.dumps(config))
+
+        monkeypatch.chdir(tmp_path)
+        subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["hooks", "validate"])
+        assert result.exit_code == 0
+        assert "✓" in result.output
+
+    def test_hooks_run_shell(self, git_repo):
+        runner = CliRunner()
+        result = runner.invoke(main, [
+            "hooks", "run",
+            "--type", "shell",
+            "--command", "echo hello"
+        ])
+        assert result.exit_code == 0, f"Failed: {result.output}"
+        # Output is JSON
+        import json
+        data = json.loads(result.output)
+        assert data["success"] is True
+        assert "hello" in data["stdout"]
+        assert data["return_code"] == 0
+
+    def test_hooks_run_shell_failure(self, git_repo):
+        runner = CliRunner()
+        result = runner.invoke(main, [
+            "hooks", "run",
+            "--type", "shell",
+            "--command", "exit 1"
+        ])
+        # CLI exits with 1 when hook step fails
+        assert result.exit_code == 1
+        import json
+        data = json.loads(result.output)
+        assert data["success"] is False
+        assert data["return_code"] == 1
+
+    def test_hooks_run_quality_check(self, git_repo):
+        """Quality check extracts score from percentage format like '85%'."""
+        runner = CliRunner()
+        result = runner.invoke(main, [
+            "hooks", "run",
+            "--type", "quality_check",
+            "--command", "echo '85%'",
+            "--min-score", "0.80"  # Score is normalized to 0-1
+        ])
+        assert result.exit_code == 0, f"Failed: {result.output}"
+        import json
+        data = json.loads(result.output)
+        assert "score" in data
+        # 85% is normalized to 0.85
+        assert data["score"] == 0.85
+        assert data["passed"] is True
+
+    def test_hooks_run_quality_check_below_threshold(self, git_repo):
+        """Quality check fails when score is below threshold."""
+        runner = CliRunner()
+        result = runner.invoke(main, [
+            "hooks", "run",
+            "--type", "quality_check",
+            "--command", "echo '50%'",
+            "--min-score", "0.80"  # Score is normalized to 0-1
+        ])
+        import json
+        data = json.loads(result.output)
+        # Default fail_on_threshold is True, so success should be False
+        # and CLI should exit with code 1
+        assert result.exit_code == 1
+        assert data["score"] == 0.50
+        assert data["passed"] is False
+        assert data["success"] is False
+
+    def test_hooks_run_requires_type(self):
+        runner = CliRunner()
+        result = runner.invoke(main, ["hooks", "run"])
+        assert result.exit_code != 0
+        assert "required" in result.output.lower() or "Missing" in result.output
+
+    def test_hooks_run_shell_empty_command(self, git_repo):
+        """Shell with empty command runs (executes empty string), which succeeds."""
+        runner = CliRunner()
+        result = runner.invoke(main, [
+            "hooks", "run",
+            "--type", "shell"
+        ])
+        # Empty command runs successfully
+        assert result.exit_code == 0, f"Failed: {result.output}"
+        import json
+        data = json.loads(result.output)
+        assert data["success"] is True
+
+    def test_hooks_run_with_task_id(self, git_repo):
+        runner = CliRunner()
+        result = runner.invoke(main, [
+            "hooks", "run",
+            "--type", "shell",
+            "--command", "echo task=$TASK_ID",
+            "--task", "T001"
+        ])
+        assert result.exit_code == 0, f"Failed: {result.output}"
+        import json
+        data = json.loads(result.output)
+        assert data["success"] is True

@@ -135,6 +135,68 @@ class ContainerStopResult(StepResultBase):
     container_stopped: bool = False
 
 
+# Hook step results
+
+
+@dataclass
+class ShellStepResult(StepResultBase):
+    """Result from a shell hook step.
+
+    Captures shell command execution results.
+    """
+
+    command: str = ""
+    return_code: int = 0
+    stdout: str = ""
+    stderr: str = ""
+    duration_seconds: float = 0.0
+
+
+@dataclass
+class LLMEvalResult(StepResultBase):
+    """Result from an LLM evaluation hook step.
+
+    Captures LLM evaluation with score and summary.
+    """
+
+    score: float = 0.0
+    summary: str = ""
+    raw_response: str = ""
+    runner: str = ""
+    model: str | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    duration_seconds: float = 0.0
+
+
+@dataclass
+class QualityCheckResult(StepResultBase):
+    """Result from a quality check hook step.
+
+    Captures quality check with extracted score and pass/fail status.
+    """
+
+    score: float = 0.0
+    min_score: float | None = None
+    passed: bool = True
+    command: str = ""
+    return_code: int = 0
+    output: str = ""
+    duration_seconds: float = 0.0
+
+
+@dataclass
+class CustomStepResult(StepResultBase):
+    """Result from a custom Python hook step.
+
+    Custom steps can store arbitrary data in the data field.
+    """
+
+    class_name: str = ""
+    data: dict[str, Any] = field(default_factory=dict)
+    duration_seconds: float = 0.0
+
+
 # Type alias for any step result
 StepResult = (
     PreSyncResult
@@ -145,4 +207,12 @@ StepResult = (
     | PostCleanupResult
     | ContainerUpResult
     | ContainerStopResult
+)
+
+# Type alias for hook step results
+HookStepResult = (
+    ShellStepResult
+    | LLMEvalResult
+    | QualityCheckResult
+    | CustomStepResult
 )

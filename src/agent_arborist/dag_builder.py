@@ -68,6 +68,7 @@ class DagConfig:
     runner: str | None = None  # AI runner to use (claude, opencode, gemini)
     model: str | None = None  # Model to use (uses runner default if not specified)
     arborist_config: Any = None  # ArboristConfig for step-specific settings
+    arborist_home: Path | None = None  # Path to .arborist directory for hooks
 
     def get_step_runner_model(self, step: str) -> tuple[str | None, str | None]:
         """Get runner/model for a specific step.
@@ -399,6 +400,44 @@ arborist task post-cleanup {task_id}"""
 
         return SubDag(name=task_id, steps=steps, env=env_vars)
 
+    def _apply_hooks(self, bundle: DagBundle) -> DagBundle:
+        """Apply hooks to the DAG bundle.
+
+        This is the post-AI hook application phase. Hooks are applied
+        deterministically based on configuration.
+
+        Args:
+            bundle: DAG bundle to augment
+
+        Returns:
+            Augmented DAG bundle
+        """
+        # Check if hooks are configured
+        arborist_config = self.config.arborist_config
+        if arborist_config is None:
+            return bundle
+
+        hooks_config = getattr(arborist_config, "hooks", None)
+        if hooks_config is None or not hooks_config.enabled:
+            return bundle
+
+        # Get arborist_home from config
+        arborist_home = self.config.arborist_home
+        if arborist_home is None:
+            arborist_home = get_arborist_home()
+
+        spec_id = self.config.spec_id or self.config.name
+
+        # Import and apply hooks
+        from agent_arborist.hooks import inject_hooks
+
+        return inject_hooks(
+            bundle=bundle,
+            hooks_config=hooks_config,
+            spec_id=spec_id,
+            arborist_home=arborist_home,
+        )
+
     def _step_to_dict(self, step: SubDagStep) -> dict[str, Any]:
         """Convert a SubDagStep to a dictionary for YAML serialization."""
         d: dict[str, Any] = {"name": step.name}
@@ -430,8 +469,15 @@ arborist task post-cleanup {task_id}"""
         return d
 
     def build_yaml(self, spec: TaskSpec, task_tree: TaskTree) -> str:
-        """Build multi-document DAGU YAML string from a TaskSpec."""
+        """Build multi-document DAGU YAML string from a TaskSpec.
+
+        If hooks are configured and enabled in arborist_config, they will
+        be applied to the DAG bundle after the base DAG is built.
+        """
         bundle = self.build(spec, task_tree)
+
+        # Apply hooks if configured (post-AI phase)
+        bundle = self._apply_hooks(bundle)
 
         # Custom YAML dumper for better formatting
         class CustomDumper(yaml.SafeDumper):
