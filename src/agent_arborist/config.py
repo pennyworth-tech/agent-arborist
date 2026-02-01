@@ -41,6 +41,7 @@ ENV_TIMEOUT_TASK_RUN = "ARBORIST_TIMEOUT_TASK_RUN"
 ENV_TIMEOUT_POST_MERGE = "ARBORIST_TIMEOUT_POST_MERGE"
 ENV_TEST_COMMAND = "ARBORIST_TEST_COMMAND"
 ENV_TEST_TIMEOUT = "ARBORIST_TEST_TIMEOUT"
+ENV_MAX_AI_TASKS = "ARBORIST_MAX_AI_TASKS"
 
 # Deprecated env vars (backward compatibility)
 ENV_DEFAULT_RUNNER_DEPRECATED = "ARBORIST_DEFAULT_RUNNER"
@@ -320,6 +321,41 @@ class PathsConfig:
 
 
 @dataclass
+class ConcurrencyConfig:
+    """Concurrency limiting configuration for AI tasks."""
+
+    max_ai_tasks: int = 2  # Default: 2 concurrent AI tasks
+
+    def validate(self) -> None:
+        """Validate concurrency values."""
+        if self.max_ai_tasks <= 0:
+            raise ConfigValidationError(
+                f"max_ai_tasks must be positive, got {self.max_ai_tasks}"
+            )
+
+    def to_dict(self, exclude_none: bool = False) -> dict[str, Any]:
+        """Convert to dictionary."""
+        return {"max_ai_tasks": self.max_ai_tasks}
+
+    @classmethod
+    def from_dict(
+        cls, data: dict[str, Any], strict: bool = False
+    ) -> "ConcurrencyConfig":
+        """Create from dictionary."""
+        if strict:
+            known_fields = {f.name for f in fields(cls)}
+            unknown = set(data.keys()) - known_fields
+            if unknown:
+                raise ConfigValidationError(
+                    f"Unknown fields in concurrency config: {', '.join(unknown)}"
+                )
+
+        return cls(
+            max_ai_tasks=data.get("max_ai_tasks", 2),
+        )
+
+
+@dataclass
 class ArboristConfig:
     """Main configuration container."""
 
@@ -335,11 +371,13 @@ class ArboristConfig:
     test: TestingConfig = field(default_factory=TestingConfig)
     paths: PathsConfig = field(default_factory=PathsConfig)
     runners: dict[str, RunnerConfig] = field(default_factory=dict)
+    concurrency: ConcurrencyConfig = field(default_factory=ConcurrencyConfig)
 
     def validate(self) -> None:
         """Validate entire configuration."""
         self.defaults.validate()
         self.timeouts.validate()
+        self.concurrency.validate()
 
         # Validate step names
         for step_name in self.steps:
@@ -360,6 +398,7 @@ class ArboristConfig:
             "test": self.test.to_dict(exclude_none),
             "paths": self.paths.to_dict(exclude_none),
             "runners": {k: v.to_dict(exclude_none) for k, v in self.runners.items()},
+            "concurrency": self.concurrency.to_dict(exclude_none),
         }
 
     @classmethod
@@ -374,6 +413,7 @@ class ArboristConfig:
                 "test",
                 "paths",
                 "runners",
+                "concurrency",
             }
             unknown = set(data.keys()) - known_fields
             if unknown:
@@ -407,6 +447,7 @@ class ArboristConfig:
             test=TestingConfig.from_dict(data.get("test", {}), strict),
             paths=PathsConfig.from_dict(data.get("paths", {}), strict),
             runners=runners,
+            concurrency=ConcurrencyConfig.from_dict(data.get("concurrency", {}), strict),
         )
 
 
@@ -522,6 +563,10 @@ def merge_configs(*configs: ArboristConfig) -> ArboristConfig:
             if runner_config.timeout is not None:
                 result.runners[runner_name].timeout = runner_config.timeout
 
+        # Merge concurrency (only non-default values)
+        if config.concurrency.max_ai_tasks != 2:
+            result.concurrency.max_ai_tasks = config.concurrency.max_ai_tasks
+
     return result
 
 
@@ -616,6 +661,15 @@ def apply_env_overrides(config: ArboristConfig) -> ArboristConfig:
             if step_name not in result.steps:
                 result.steps[step_name] = StepConfig()
             result.steps[step_name].model = step_model
+
+    # Concurrency overrides
+    if max_ai_tasks_str := os.environ.get(ENV_MAX_AI_TASKS):
+        try:
+            result.concurrency.max_ai_tasks = int(max_ai_tasks_str)
+        except ValueError:
+            raise ConfigValidationError(
+                f"{ENV_MAX_AI_TASKS} must be an integer, got '{max_ai_tasks_str}'"
+            )
 
     return result
 
@@ -805,6 +859,10 @@ def generate_config_template() -> dict[str, Any]:
                 },
                 "_comment": "Gemini runner configuration",
             },
+        },
+        "concurrency": {
+            "max_ai_tasks": 2,
+            "_comment_max_ai_tasks": "Maximum concurrent AI tasks (run + post-merge steps)",
         },
     }
 
