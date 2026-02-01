@@ -17,6 +17,9 @@ class StepResultBase:
     success: bool
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
     error: str | None = None
+    # Restart support: indicates step was skipped because already completed
+    skipped: bool = False
+    skip_reason: str | None = None
 
     def to_json(self) -> str:
         """Serialize to JSON string for stdout."""
