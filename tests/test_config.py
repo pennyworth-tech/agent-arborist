@@ -18,11 +18,16 @@ from agent_arborist.config import (
     ConfigLoadError,
     ConfigValidationError,
     DefaultsConfig,
+    HookInjection,
+    HooksConfig,
     PathsConfig,
     RunnerConfig,
     StepConfig,
+    StepDefinition,
     TestConfig,
     TimeoutConfig,
+    VALID_HOOK_POINTS,
+    VALID_STEP_TYPES,
     apply_env_overrides,
     generate_config_template,
     generate_config_template_string,
@@ -833,6 +838,425 @@ class TestConfigTemplate:
         assert "auto" in template_str
         assert "enabled" in template_str
         assert "disabled" in template_str
+
+
+# =============================================================================
+# Hooks Configuration Tests
+# =============================================================================
+
+
+class TestHooksConfigDataclasses:
+    """Unit tests for hooks config dataclass construction and defaults."""
+
+    def test_step_definition_has_correct_defaults(self):
+        """StepDefinition should have sensible defaults."""
+        step = StepDefinition(type="shell")
+        assert step.type == "shell"
+        assert step.prompt is None
+        assert step.prompt_file is None
+        assert step.command is None
+        assert step.timeout == 120
+        assert step.env == {}
+
+    def test_step_definition_llm_eval_type(self):
+        """StepDefinition for llm_eval should accept prompt."""
+        step = StepDefinition(
+            type="llm_eval",
+            prompt="Review the code in {{worktree_path}}",
+            runner="claude",
+            model="haiku",
+        )
+        assert step.type == "llm_eval"
+        assert "{{worktree_path}}" in step.prompt
+        assert step.runner == "claude"
+        assert step.model == "haiku"
+
+    def test_step_definition_prompt_file(self):
+        """StepDefinition can reference prompt file."""
+        step = StepDefinition(
+            type="llm_eval",
+            prompt_file="code_review.txt",
+        )
+        assert step.prompt_file == "code_review.txt"
+        assert step.prompt is None
+
+    def test_hook_injection_has_correct_defaults(self):
+        """HookInjection should have sensible defaults."""
+        inj = HookInjection(step="my_step")
+        assert inj.step == "my_step"
+        assert inj.tasks == ["*"]
+        assert inj.tasks_exclude == []
+        assert inj.after is None
+        assert inj.before is None
+
+    def test_hook_injection_inline_step(self):
+        """HookInjection can define inline step."""
+        inj = HookInjection(
+            type="shell",
+            command="npm run lint",
+            tasks=["T001", "T002"],
+        )
+        assert inj.type == "shell"
+        assert inj.command == "npm run lint"
+        assert inj.tasks == ["T001", "T002"]
+
+    def test_hook_injection_get_step_definition_inline(self):
+        """get_step_definition returns inline step for inline injection."""
+        inj = HookInjection(
+            type="shell",
+            command="npm run lint",
+            timeout=60,
+        )
+        step_def = inj.get_step_definition()
+        assert step_def is not None
+        assert step_def.type == "shell"
+        assert step_def.command == "npm run lint"
+        assert step_def.timeout == 60
+
+    def test_hook_injection_get_step_definition_reference(self):
+        """get_step_definition returns None for step references."""
+        inj = HookInjection(step="my_step")
+        step_def = inj.get_step_definition()
+        assert step_def is None
+
+    def test_hooks_config_has_correct_defaults(self):
+        """HooksConfig should have sensible defaults."""
+        config = HooksConfig()
+        assert config.enabled is False
+        assert config.prompts_dir == "prompts"
+        assert config.step_definitions == {}
+        assert config.injections == {}
+
+    def test_hooks_config_with_step_definitions(self):
+        """HooksConfig should store step definitions."""
+        config = HooksConfig(
+            enabled=True,
+            step_definitions={
+                "lint": StepDefinition(type="shell", command="npm run lint"),
+                "eval": StepDefinition(type="llm_eval", prompt="Review code"),
+            },
+        )
+        assert len(config.step_definitions) == 2
+        assert config.step_definitions["lint"].type == "shell"
+        assert config.step_definitions["eval"].type == "llm_eval"
+
+
+class TestHooksConfigValidation:
+    """Unit tests for hooks configuration validation."""
+
+    def test_invalid_step_type_raises_error(self):
+        """Invalid step type should raise ConfigValidationError."""
+        step = StepDefinition(type="invalid_type")
+        with pytest.raises(ConfigValidationError) as exc:
+            step.validate()
+        assert "invalid_type" in str(exc.value)
+        assert "type" in str(exc.value).lower()
+
+    def test_valid_step_types_accepted(self):
+        """Valid step types should pass validation."""
+        for step_type in VALID_STEP_TYPES:
+            if step_type == "llm_eval":
+                step = StepDefinition(type=step_type, prompt="test")
+            elif step_type == "shell":
+                step = StepDefinition(type=step_type, command="echo test")
+            elif step_type == "quality_check":
+                step = StepDefinition(type=step_type, command="pytest")
+            elif step_type == "python":
+                step = StepDefinition(type=step_type, class_path="mymodule.MyClass")
+            step.validate()  # Should not raise
+
+    def test_llm_eval_without_prompt_raises_error(self):
+        """llm_eval step without prompt or prompt_file should fail."""
+        step = StepDefinition(type="llm_eval")
+        with pytest.raises(ConfigValidationError) as exc:
+            step.validate()
+        assert "prompt" in str(exc.value).lower()
+
+    def test_shell_without_command_raises_error(self):
+        """shell step without command should fail."""
+        step = StepDefinition(type="shell")
+        with pytest.raises(ConfigValidationError) as exc:
+            step.validate()
+        assert "command" in str(exc.value).lower()
+
+    def test_python_without_class_raises_error(self):
+        """python step without class_path should fail."""
+        step = StepDefinition(type="python")
+        with pytest.raises(ConfigValidationError) as exc:
+            step.validate()
+        assert "class" in str(exc.value).lower()
+
+    def test_invalid_hook_point_raises_error(self):
+        """Invalid hook point should raise ConfigValidationError."""
+        config = HooksConfig(
+            enabled=True,
+            injections={
+                "invalid_point": [HookInjection(type="shell", command="echo")]
+            },
+        )
+        with pytest.raises(ConfigValidationError) as exc:
+            config.validate()
+        assert "invalid_point" in str(exc.value)
+
+    def test_valid_hook_points_accepted(self):
+        """Valid hook points should pass validation."""
+        for hook_point in VALID_HOOK_POINTS:
+            config = HooksConfig(
+                enabled=True,
+                injections={
+                    hook_point: [HookInjection(type="shell", command="echo")]
+                },
+            )
+            config.validate()  # Should not raise
+
+    def test_undefined_step_reference_raises_error(self):
+        """Reference to undefined step should fail validation."""
+        config = HooksConfig(
+            enabled=True,
+            injections={
+                "post_task": [HookInjection(step="nonexistent_step")]
+            },
+        )
+        with pytest.raises(ConfigValidationError) as exc:
+            config.validate()
+        assert "nonexistent_step" in str(exc.value)
+
+    def test_valid_step_reference_passes(self):
+        """Reference to defined step should pass validation."""
+        config = HooksConfig(
+            enabled=True,
+            step_definitions={
+                "my_lint": StepDefinition(type="shell", command="npm run lint")
+            },
+            injections={
+                "post_task": [HookInjection(step="my_lint")]
+            },
+        )
+        config.validate()  # Should not raise
+
+
+class TestHooksConfigSerialization:
+    """Unit tests for hooks config serialization."""
+
+    def test_step_definition_to_dict(self):
+        """StepDefinition.to_dict() returns correct structure."""
+        step = StepDefinition(
+            type="llm_eval",
+            prompt="Review code",
+            runner="claude",
+            model="haiku",
+            timeout=60,
+        )
+        d = step.to_dict()
+        assert d["type"] == "llm_eval"
+        assert d["prompt"] == "Review code"
+        assert d["runner"] == "claude"
+        assert d["model"] == "haiku"
+        assert d["timeout"] == 60
+
+    def test_step_definition_from_dict(self):
+        """StepDefinition.from_dict() creates correct instance."""
+        d = {
+            "type": "shell",
+            "command": "npm run lint",
+            "timeout": 30,
+            "env": {"NODE_ENV": "test"},
+        }
+        step = StepDefinition.from_dict(d)
+        assert step.type == "shell"
+        assert step.command == "npm run lint"
+        assert step.timeout == 30
+        assert step.env == {"NODE_ENV": "test"}
+
+    def test_hook_injection_to_dict(self):
+        """HookInjection.to_dict() returns correct structure."""
+        inj = HookInjection(
+            step="my_step",
+            tasks=["T001", "T002"],
+            after="run",
+        )
+        d = inj.to_dict()
+        assert d["step"] == "my_step"
+        assert d["tasks"] == ["T001", "T002"]
+        assert d["after"] == "run"
+
+    def test_hook_injection_from_dict(self):
+        """HookInjection.from_dict() creates correct instance."""
+        d = {
+            "type": "shell",
+            "command": "npm test",
+            "tasks_exclude": ["T003"],
+        }
+        inj = HookInjection.from_dict(d)
+        assert inj.type == "shell"
+        assert inj.command == "npm test"
+        assert inj.tasks == ["*"]
+        assert inj.tasks_exclude == ["T003"]
+
+    def test_hooks_config_round_trip(self):
+        """HooksConfig survives to_dict/from_dict round trip."""
+        original = HooksConfig(
+            enabled=True,
+            prompts_dir="my_prompts",
+            step_definitions={
+                "lint": StepDefinition(type="shell", command="npm lint"),
+                "eval": StepDefinition(type="llm_eval", prompt="Review"),
+            },
+            injections={
+                "post_task": [
+                    HookInjection(step="lint", tasks=["T001"]),
+                    HookInjection(step="eval"),
+                ],
+            },
+        )
+        d = original.to_dict()
+        restored = HooksConfig.from_dict(d)
+        assert restored.enabled is True
+        assert restored.prompts_dir == "my_prompts"
+        assert len(restored.step_definitions) == 2
+        assert restored.step_definitions["lint"].command == "npm lint"
+        assert len(restored.injections["post_task"]) == 2
+
+    def test_arborist_config_with_hooks_round_trip(self):
+        """ArboristConfig with hooks survives round trip."""
+        original = ArboristConfig(
+            defaults=DefaultsConfig(runner="claude"),
+            hooks=HooksConfig(
+                enabled=True,
+                step_definitions={
+                    "test": StepDefinition(type="shell", command="pytest")
+                },
+            ),
+        )
+        d = original.to_dict()
+        restored = ArboristConfig.from_dict(d)
+        assert restored.hooks.enabled is True
+        assert "test" in restored.hooks.step_definitions
+
+
+class TestHooksConfigMerging:
+    """Unit tests for hooks config merging."""
+
+    def test_merge_hooks_enabled_flag(self):
+        """Later config's enabled flag should win."""
+        config1 = ArboristConfig(hooks=HooksConfig(enabled=False))
+        config2 = ArboristConfig(hooks=HooksConfig(enabled=True))
+
+        merged = merge_configs(config1, config2)
+        assert merged.hooks.enabled is True
+
+    def test_merge_hooks_step_definitions(self):
+        """Step definitions should merge with later overriding."""
+        config1 = ArboristConfig(
+            hooks=HooksConfig(
+                step_definitions={
+                    "lint": StepDefinition(type="shell", command="eslint"),
+                    "test": StepDefinition(type="shell", command="jest"),
+                }
+            )
+        )
+        config2 = ArboristConfig(
+            hooks=HooksConfig(
+                step_definitions={
+                    "lint": StepDefinition(type="shell", command="npm lint"),
+                }
+            )
+        )
+
+        merged = merge_configs(config1, config2)
+        assert merged.hooks.step_definitions["lint"].command == "npm lint"
+        assert merged.hooks.step_definitions["test"].command == "jest"
+
+    def test_merge_hooks_injections_extend(self):
+        """Injections at same hook point should extend list."""
+        config1 = ArboristConfig(
+            hooks=HooksConfig(
+                enabled=True,
+                step_definitions={
+                    "lint": StepDefinition(type="shell", command="lint"),
+                    "test": StepDefinition(type="shell", command="test"),
+                },
+                injections={
+                    "post_task": [HookInjection(step="lint")],
+                }
+            )
+        )
+        config2 = ArboristConfig(
+            hooks=HooksConfig(
+                step_definitions={
+                    "lint": StepDefinition(type="shell", command="lint"),
+                    "test": StepDefinition(type="shell", command="test"),
+                },
+                injections={
+                    "post_task": [HookInjection(step="test")],
+                }
+            )
+        )
+
+        merged = merge_configs(config1, config2)
+        assert len(merged.hooks.injections["post_task"]) == 2
+
+
+class TestHooksConfigFileLoading:
+    """Tests for loading hooks config from files."""
+
+    def test_load_config_with_hooks(self, tmp_path):
+        """Config file with hooks section should load correctly."""
+        config_file = tmp_path / "config.json"
+        config_file.write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "enabled": True,
+                        "prompts_dir": "custom_prompts",
+                        "step_definitions": {
+                            "my_lint": {
+                                "type": "shell",
+                                "command": "npm run lint",
+                            }
+                        },
+                        "injections": {
+                            "post_task": [
+                                {"step": "my_lint", "tasks": ["*"]}
+                            ]
+                        },
+                    }
+                }
+            )
+        )
+
+        config = load_config_file(config_file)
+        assert config.hooks.enabled is True
+        assert config.hooks.prompts_dir == "custom_prompts"
+        assert "my_lint" in config.hooks.step_definitions
+        assert len(config.hooks.injections["post_task"]) == 1
+
+    def test_config_without_hooks_has_default(self, tmp_path):
+        """Config file without hooks should have default HooksConfig."""
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({"defaults": {"runner": "claude"}}))
+
+        config = load_config_file(config_file)
+        assert config.hooks.enabled is False
+        assert config.hooks.step_definitions == {}
+
+
+class TestHooksConfigTemplate:
+    """Tests for hooks section in config template."""
+
+    def test_template_has_hooks_section(self):
+        """Generated template should have hooks section."""
+        template = generate_config_template()
+        assert "hooks" in template
+        assert "enabled" in template["hooks"]
+        assert "step_definitions" in template["hooks"]
+        assert "injections" in template["hooks"]
+
+    def test_template_hooks_shows_example(self):
+        """Template hooks should show useful example."""
+        template_str = generate_config_template_string()
+        assert "hooks" in template_str
+        assert "llm_eval" in template_str or "shell" in template_str
 
 
 # =============================================================================

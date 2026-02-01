@@ -355,6 +355,316 @@ class ConcurrencyConfig:
         )
 
 
+# Valid hook points for injection
+VALID_HOOK_POINTS = ("pre_root", "post_roots", "pre_task", "post_task", "final")
+
+# Valid step types for hooks
+VALID_STEP_TYPES = ("llm_eval", "shell", "quality_check", "python")
+
+
+@dataclass
+class StepDefinition:
+    """Definition of a reusable hook step.
+
+    Step types:
+    - llm_eval: Run LLM with prompt, returns score + summary
+    - shell: Execute shell command
+    - quality_check: Run command and extract numeric score
+    - python: Custom Python class
+    """
+
+    type: str  # "llm_eval", "shell", "quality_check", "python"
+    # LLM eval options
+    prompt: str | list[str] | None = None
+    prompt_file: str | None = None
+    runner: str | None = None
+    model: str | None = None
+    # Shell options
+    command: str | None = None
+    working_dir: str | None = None
+    env: dict[str, str] = field(default_factory=dict)
+    # Quality check options
+    min_score: float | None = None
+    fail_on_threshold: bool = True
+    score_extraction: dict[str, Any] | None = None
+    # Python step options
+    class_path: str | None = None  # "module.ClassName"
+    step_config: dict[str, Any] = field(default_factory=dict)
+    # Common options
+    timeout: int = 120
+
+    def validate(self) -> None:
+        """Validate step definition."""
+        if self.type not in VALID_STEP_TYPES:
+            raise ConfigValidationError(
+                f"Invalid step type '{self.type}'. "
+                f"Valid types: {', '.join(VALID_STEP_TYPES)}"
+            )
+
+        if self.type == "llm_eval":
+            if not self.prompt and not self.prompt_file:
+                raise ConfigValidationError(
+                    "llm_eval step requires 'prompt' or 'prompt_file'"
+                )
+
+        if self.type == "shell":
+            if not self.command:
+                raise ConfigValidationError("shell step requires 'command'")
+
+        if self.type == "quality_check":
+            if not self.command:
+                raise ConfigValidationError("quality_check step requires 'command'")
+
+        if self.type == "python":
+            if not self.class_path:
+                raise ConfigValidationError(
+                    "python step requires 'class' (fully qualified class name)"
+                )
+
+    def to_dict(self, exclude_none: bool = False) -> dict[str, Any]:
+        """Convert to dictionary."""
+        result: dict[str, Any] = {"type": self.type}
+
+        if self.prompt is not None:
+            result["prompt"] = self.prompt
+        if self.prompt_file is not None:
+            result["prompt_file"] = self.prompt_file
+        if self.runner is not None:
+            result["runner"] = self.runner
+        if self.model is not None:
+            result["model"] = self.model
+        if self.command is not None:
+            result["command"] = self.command
+        if self.working_dir is not None:
+            result["working_dir"] = self.working_dir
+        if self.env:
+            result["env"] = self.env
+        if self.min_score is not None:
+            result["min_score"] = self.min_score
+        if not self.fail_on_threshold:  # Only include if non-default
+            result["fail_on_threshold"] = self.fail_on_threshold
+        if self.score_extraction is not None:
+            result["score_extraction"] = self.score_extraction
+        if self.class_path is not None:
+            result["class"] = self.class_path
+        if self.step_config:
+            result["config"] = self.step_config
+        if self.timeout != 120:  # Only include if non-default
+            result["timeout"] = self.timeout
+
+        return result
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "StepDefinition":
+        """Create from dictionary."""
+        return cls(
+            type=data.get("type", "shell"),
+            prompt=data.get("prompt"),
+            prompt_file=data.get("prompt_file"),
+            runner=data.get("runner"),
+            model=data.get("model"),
+            command=data.get("command"),
+            working_dir=data.get("working_dir"),
+            env=data.get("env", {}),
+            min_score=data.get("min_score"),
+            fail_on_threshold=data.get("fail_on_threshold", True),
+            score_extraction=data.get("score_extraction"),
+            class_path=data.get("class"),
+            step_config=data.get("config", {}),
+            timeout=data.get("timeout", 120),
+        )
+
+
+@dataclass
+class HookInjection:
+    """Definition of when/where to inject a step."""
+
+    step: str | None = None  # Reference to step_definitions key
+    type: str | None = None  # Inline step type (alternative to step reference)
+    tasks: list[str] = field(default_factory=lambda: ["*"])
+    tasks_exclude: list[str] = field(default_factory=list)
+    after: str | None = None  # Step name to inject after
+    before: str | None = None  # Step name to inject before
+    # Inline step definition fields (when not referencing step_definitions)
+    prompt: str | list[str] | None = None
+    prompt_file: str | None = None
+    command: str | None = None
+    runner: str | None = None
+    model: str | None = None
+    timeout: int | None = None
+
+    def to_dict(self, exclude_none: bool = False) -> dict[str, Any]:
+        """Convert to dictionary."""
+        result: dict[str, Any] = {}
+
+        if self.step is not None:
+            result["step"] = self.step
+        if self.type is not None:
+            result["type"] = self.type
+        if self.tasks != ["*"]:
+            result["tasks"] = self.tasks
+        if self.tasks_exclude:
+            result["tasks_exclude"] = self.tasks_exclude
+        if self.after is not None:
+            result["after"] = self.after
+        if self.before is not None:
+            result["before"] = self.before
+        if self.prompt is not None:
+            result["prompt"] = self.prompt
+        if self.prompt_file is not None:
+            result["prompt_file"] = self.prompt_file
+        if self.command is not None:
+            result["command"] = self.command
+        if self.runner is not None:
+            result["runner"] = self.runner
+        if self.model is not None:
+            result["model"] = self.model
+        if self.timeout is not None:
+            result["timeout"] = self.timeout
+
+        return result
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "HookInjection":
+        """Create from dictionary."""
+        return cls(
+            step=data.get("step"),
+            type=data.get("type"),
+            tasks=data.get("tasks", ["*"]),
+            tasks_exclude=data.get("tasks_exclude", []),
+            after=data.get("after"),
+            before=data.get("before"),
+            prompt=data.get("prompt"),
+            prompt_file=data.get("prompt_file"),
+            command=data.get("command"),
+            runner=data.get("runner"),
+            model=data.get("model"),
+            timeout=data.get("timeout"),
+        )
+
+    def get_step_definition(self) -> StepDefinition | None:
+        """Build inline StepDefinition if this is an inline injection.
+
+        Returns:
+            StepDefinition if this is an inline injection, None if it
+            references a named step.
+        """
+        if self.step is not None:
+            return None  # References a named step
+
+        if self.type is None:
+            return None
+
+        return StepDefinition(
+            type=self.type,
+            prompt=self.prompt,
+            prompt_file=self.prompt_file,
+            command=self.command,
+            runner=self.runner,
+            model=self.model,
+            timeout=self.timeout or 120,
+        )
+
+
+@dataclass
+class HooksConfig:
+    """Configuration for the hook system.
+
+    Hooks allow injecting additional steps into DAGs at strategic points.
+    Steps can be defined as reusable definitions or inline within injections.
+    """
+
+    enabled: bool = False
+    prompts_dir: str = "prompts"
+    step_definitions: dict[str, StepDefinition] = field(default_factory=dict)
+    injections: dict[str, list[HookInjection]] = field(default_factory=dict)
+
+    def validate(self) -> None:
+        """Validate hooks configuration."""
+        # Validate hook points
+        for hook_point in self.injections.keys():
+            if hook_point not in VALID_HOOK_POINTS:
+                raise ConfigValidationError(
+                    f"Invalid hook point '{hook_point}'. "
+                    f"Valid points: {', '.join(VALID_HOOK_POINTS)}"
+                )
+
+        # Validate step definitions
+        for name, step_def in self.step_definitions.items():
+            try:
+                step_def.validate()
+            except ConfigValidationError as e:
+                raise ConfigValidationError(
+                    f"Invalid step definition '{name}': {e}"
+                )
+
+        # Validate step references in injections
+        for hook_point, injection_list in self.injections.items():
+            for i, injection in enumerate(injection_list):
+                if injection.step is not None:
+                    if injection.step not in self.step_definitions:
+                        raise ConfigValidationError(
+                            f"Unknown step '{injection.step}' in {hook_point} "
+                            f"injection #{i+1}. Define it in step_definitions first."
+                        )
+                elif injection.type is not None:
+                    # Inline step - validate type
+                    if injection.type not in VALID_STEP_TYPES:
+                        raise ConfigValidationError(
+                            f"Invalid inline step type '{injection.type}' in "
+                            f"{hook_point} injection #{i+1}. "
+                            f"Valid types: {', '.join(VALID_STEP_TYPES)}"
+                        )
+                else:
+                    raise ConfigValidationError(
+                        f"Injection #{i+1} in {hook_point} requires either "
+                        f"'step' (reference) or 'type' (inline)"
+                    )
+
+    def to_dict(self, exclude_none: bool = False) -> dict[str, Any]:
+        """Convert to dictionary."""
+        result: dict[str, Any] = {
+            "enabled": self.enabled,
+        }
+
+        if self.prompts_dir != "prompts":
+            result["prompts_dir"] = self.prompts_dir
+
+        if self.step_definitions:
+            result["step_definitions"] = {
+                name: step.to_dict(exclude_none)
+                for name, step in self.step_definitions.items()
+            }
+
+        if self.injections:
+            result["injections"] = {
+                point: [inj.to_dict(exclude_none) for inj in injections]
+                for point, injections in self.injections.items()
+            }
+
+        return result
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "HooksConfig":
+        """Create from dictionary."""
+        step_defs = {}
+        for name, step_data in data.get("step_definitions", {}).items():
+            step_defs[name] = StepDefinition.from_dict(step_data)
+
+        injections = {}
+        for hook_point, injection_list in data.get("injections", {}).items():
+            injections[hook_point] = [
+                HookInjection.from_dict(inj) for inj in injection_list
+            ]
+
+        return cls(
+            enabled=data.get("enabled", False),
+            prompts_dir=data.get("prompts_dir", "prompts"),
+            step_definitions=step_defs,
+            injections=injections,
+        )
+
+
 @dataclass
 class ArboristConfig:
     """Main configuration container."""
@@ -372,6 +682,7 @@ class ArboristConfig:
     paths: PathsConfig = field(default_factory=PathsConfig)
     runners: dict[str, RunnerConfig] = field(default_factory=dict)
     concurrency: ConcurrencyConfig = field(default_factory=ConcurrencyConfig)
+    hooks: HooksConfig = field(default_factory=HooksConfig)
 
     def validate(self) -> None:
         """Validate entire configuration."""
@@ -388,9 +699,13 @@ class ArboristConfig:
                 )
             self.steps[step_name].validate()
 
+        # Validate hooks (only if enabled)
+        if self.hooks.enabled:
+            self.hooks.validate()
+
     def to_dict(self, exclude_none: bool = False) -> dict[str, Any]:
         """Convert to dictionary."""
-        return {
+        result = {
             "version": self.version,
             "defaults": self.defaults.to_dict(exclude_none),
             "timeouts": self.timeouts.to_dict(exclude_none),
@@ -400,6 +715,10 @@ class ArboristConfig:
             "runners": {k: v.to_dict(exclude_none) for k, v in self.runners.items()},
             "concurrency": self.concurrency.to_dict(exclude_none),
         }
+        # Only include hooks if enabled or has content
+        if self.hooks.enabled or self.hooks.step_definitions or self.hooks.injections:
+            result["hooks"] = self.hooks.to_dict(exclude_none)
+        return result
 
     @classmethod
     def from_dict(cls, data: dict[str, Any], strict: bool = False) -> "ArboristConfig":
@@ -414,6 +733,7 @@ class ArboristConfig:
                 "paths",
                 "runners",
                 "concurrency",
+                "hooks",
             }
             unknown = set(data.keys()) - known_fields
             if unknown:
@@ -448,6 +768,7 @@ class ArboristConfig:
             paths=PathsConfig.from_dict(data.get("paths", {}), strict),
             runners=runners,
             concurrency=ConcurrencyConfig.from_dict(data.get("concurrency", {}), strict),
+            hooks=HooksConfig.from_dict(data.get("hooks", {})),
         )
 
 
@@ -566,6 +887,22 @@ def merge_configs(*configs: ArboristConfig) -> ArboristConfig:
         # Merge concurrency (only non-default values)
         if config.concurrency.max_ai_tasks != 2:
             result.concurrency.max_ai_tasks = config.concurrency.max_ai_tasks
+
+        # Merge hooks
+        if config.hooks.enabled:
+            result.hooks.enabled = True
+        if config.hooks.prompts_dir != "prompts":
+            result.hooks.prompts_dir = config.hooks.prompts_dir
+        # Step definitions are merged (later definitions override)
+        for name, step_def in config.hooks.step_definitions.items():
+            result.hooks.step_definitions[name] = copy.deepcopy(step_def)
+        # Injections are merged (later injections extend existing lists)
+        for hook_point, injections in config.hooks.injections.items():
+            if hook_point not in result.hooks.injections:
+                result.hooks.injections[hook_point] = []
+            result.hooks.injections[hook_point].extend(
+                copy.deepcopy(inj) for inj in injections
+            )
 
     return result
 
@@ -863,6 +1200,42 @@ def generate_config_template() -> dict[str, Any]:
         "concurrency": {
             "max_ai_tasks": 2,
             "_comment_max_ai_tasks": "Maximum concurrent AI tasks (run + post-merge steps)",
+        },
+        "hooks": {
+            "enabled": False,
+            "_comment_enabled": "Enable hook system for DAG augmentation",
+            "prompts_dir": "prompts",
+            "_comment_prompts_dir": "Directory for prompt files (relative to .arborist)",
+            "step_definitions": {
+                "_comment": "Reusable step definitions referenced by injections",
+                "example_lint": {
+                    "type": "shell",
+                    "command": "cd {{worktree_path}} && npm run lint",
+                    "timeout": 60,
+                },
+                "example_eval": {
+                    "type": "llm_eval",
+                    "prompt_file": "code_review.txt",
+                    "runner": "claude",
+                    "model": "haiku",
+                },
+            },
+            "injections": {
+                "_comment": "Hook points: pre_root, post_roots, pre_task, post_task, final",
+                "post_task": [
+                    {
+                        "step": "example_lint",
+                        "tasks": ["*"],
+                        "_comment": "Run lint after each task",
+                    }
+                ],
+                "final": [
+                    {
+                        "step": "example_eval",
+                        "_comment": "Run eval at end of DAG",
+                    }
+                ],
+            },
         },
     }
 
