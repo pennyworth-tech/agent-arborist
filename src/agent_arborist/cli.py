@@ -2963,6 +2963,250 @@ def dag_run_list(
         console.print(table)
 
 
+@dag.command("restart")
+@click.argument("spec_name", required=False)
+@click.option("--run-id", "-r", help="Dagu run ID to restart (default: latest)")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt")
+@click.pass_context
+def dag_restart(
+    ctx: click.Context,
+    spec_name: str | None,
+    run_id: str | None,
+    yes: bool,
+) -> None:
+    """Restart a DAG execution, skipping steps that already completed.
+
+    Analyzes the previous run to determine which steps completed successfully.
+    When the DAG runs again, completed steps will be skipped as no-ops.
+
+    Automatically selects the appropriate Dagu command based on DAG status:
+    - If RUNNING: stops the DAG first, then retries
+    - If COMPLETED/FAILED: retries directly
+
+    To start a fresh run without skipping, use: arborist dag run <spec>
+    """
+    import json
+
+    from agent_arborist.restart_context import (
+        build_restart_context,
+        RestartContext,
+    )
+
+    spec_id = ctx.obj.get("spec_id")
+    dagu_home = ctx.obj.get("dagu_home")
+    arborist_home = ctx.obj.get("arborist_home")
+
+    # Resolve spec name
+    resolved_spec_name = spec_name or spec_id
+
+    if ctx.obj.get("echo_for_testing"):
+        echo_command(
+            "dag restart",
+            spec_name=resolved_spec_name or "none",
+            run_id=run_id or "latest",
+            yes=str(yes),
+            dagu_home=str(dagu_home) if dagu_home else "none",
+        )
+        return
+
+    # Check DAGU_HOME is set
+    if not dagu_home:
+        console.print("[red]Error:[/red] DAGU_HOME not set")
+        console.print("Run 'arborist init' first to initialize the project")
+        raise SystemExit(1)
+
+    # Check arborist_home
+    if not arborist_home:
+        console.print("[red]Error:[/red] ARBORIST_HOME not set")
+        raise SystemExit(1)
+
+    arborist_home = Path(arborist_home)
+    dagu_home = Path(dagu_home)
+
+    # Resolve spec name
+    if not resolved_spec_name:
+        console.print("[red]Error:[/red] No spec specified and none detected from git")
+        console.print("Provide a spec name or use --spec option")
+        raise SystemExit(1)
+
+    # Find source run ID and get its status
+    source_run_id, dag_status = _find_source_run_id_and_status(
+        dagu_home, resolved_spec_name, run_id
+    )
+
+    console.print(f"[cyan]Analyzing run:[/cyan] {source_run_id} (status: {dag_status.to_name()})")
+
+    # Build restart context
+    try:
+        context = build_restart_context(
+            resolved_spec_name, source_run_id, dagu_home, arborist_home
+        )
+    except Exception as e:
+        console.print(f"[red]Error building restart context:[/red] {e}")
+        raise SystemExit(1)
+
+    # Save context
+    context_dir = arborist_home / "restart-contexts"
+    context_dir.mkdir(parents=True, exist_ok=True)
+
+    context_file = context_dir / f"{resolved_spec_name}_{source_run_id}.json"
+    context.save(context_file)
+
+    console.print(f"[green]✓[/green] Restart context saved to {context_file}")
+
+    # Display summary
+    _print_restart_summary(context)
+
+    # Confirm unless --yes flag
+    if not yes and not click.confirm("\nProceed with restart?"):
+        console.print("Cancelled")
+        return
+
+    # Check dagu is installed
+    dagu_path = shutil.which("dagu")
+    if not dagu_path:
+        console.print("[red]Error:[/red] dagu not found in PATH")
+        raise SystemExit(1)
+
+    # Build environment with ARBORIST_RESTART_CONTEXT
+    env = os.environ.copy()
+    env["ARBORIST_RESTART_CONTEXT"] = str(context_file)
+    env[DAGU_HOME_ENV_VAR] = str(dagu_home)
+
+    # Find DAG file
+    dag_path = dagu_home / "dags" / f"{resolved_spec_name}.yaml"
+    if not dag_path.exists():
+        console.print(f"[red]Error:[/red] DAG file not found: {dag_path}")
+        raise SystemExit(1)
+
+    # Set ARBORIST_MANIFEST if exists
+    manifest_path = dag_path.with_suffix(".json")
+    if manifest_path.exists():
+        env["ARBORIST_MANIFEST"] = str(manifest_path)
+
+    # Select appropriate Dagu command based on status
+    if dag_status == dagu_runs.DaguStatus.RUNNING:
+        # Stop running DAG first
+        console.print("\n[cyan]Stopping running DAG...[/cyan]")
+        stop_cmd = [dagu_path, "stop", str(dag_path)]
+        stop_result = subprocess.run(stop_cmd, env=env, capture_output=True, text=True)
+        if stop_result.returncode != 0:
+            console.print(f"[yellow]Warning:[/yellow] Stop command returned: {stop_result.stderr}")
+
+    # Use dagu retry for the actual restart
+    dagu_cmd = [dagu_path, "retry", "--run-id", source_run_id, str(dag_path)]
+
+    console.print(f"\n[cyan]Executing:[/cyan] {' '.join(dagu_cmd)}\n")
+
+    try:
+        result = subprocess.run(dagu_cmd, env=env, capture_output=True, text=True)
+
+        if result.returncode == 0:
+            console.print("[green]OK:[/green] DAG restart completed")
+            if result.stdout and not ctx.obj.get("quiet"):
+                console.print(result.stdout)
+        else:
+            console.print("[red]Error:[/red] DAG restart failed")
+            if result.stderr:
+                console.print(f"[dim]{result.stderr}[/dim]")
+            if result.stdout:
+                console.print(f"[dim]{result.stdout}[/dim]")
+            raise SystemExit(1)
+
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise SystemExit(1)
+
+
+def _find_source_run_id_and_status(
+    dagu_home: Path, spec_name: str, provided_run_id: str | None
+) -> tuple[str, dagu_runs.DaguStatus]:
+    """Find the run ID to restart from and its current status.
+
+    Args:
+        dagu_home: Path to Dagu home directory
+        spec_name: Name of the spec/DAG
+        provided_run_id: Optionally provided run ID
+
+    Returns:
+        Tuple of (run_id, status)
+
+    Raises:
+        SystemExit: If no run found
+    """
+    if provided_run_id:
+        # Load the specific run to get its status
+        dag_run = dagu_runs.load_dag_run(dagu_home, spec_name, provided_run_id)
+        if not dag_run or not dag_run.latest_attempt:
+            console.print(f"[red]Error:[/red] Run {provided_run_id} not found")
+            raise SystemExit(1)
+        return provided_run_id, dag_run.latest_attempt.status
+
+    # Try current running run first
+    running_runs = dagu_runs.list_dag_runs(
+        dagu_home, dag_name=spec_name, status=dagu_runs.DaguStatus.RUNNING, limit=1
+    )
+    if running_runs:
+        run = running_runs[0]
+        console.print(f"[dim]Using current running run:[/dim] {run.run_id}")
+        return run.run_id, dagu_runs.DaguStatus.RUNNING
+
+    # Use latest run (any status)
+    latest_runs = dagu_runs.list_dag_runs(dagu_home, dag_name=spec_name, limit=1)
+    if latest_runs:
+        run = latest_runs[0]
+        status = run.latest_attempt.status if run.latest_attempt else dagu_runs.DaguStatus.PENDING
+        console.print(f"[dim]Using latest run:[/dim] {run.run_id}")
+        return run.run_id, status
+
+    console.print("[red]Error:[/red] No previous run found")
+    console.print("[dim]Hint: Use 'arborist dag run <spec>' to start a new run[/dim]")
+    raise SystemExit(1)
+
+
+def _print_restart_summary(context: "RestartContext") -> None:
+    """Print summary of what will be skipped vs run.
+
+    Args:
+        context: The restart context to summarize
+    """
+    table = Table(title="Restart Summary")
+    table.add_column("Task", style="cyan")
+    table.add_column("Status", style="magenta")
+    table.add_column("Steps Completed", justify="right")
+    table.add_column("Steps to Run", justify="right")
+
+    total_completed = 0
+    total_to_run = 0
+
+    for task_id, task_ctx in sorted(context.tasks.items()):
+        completed = sum(1 for s in task_ctx.steps.values() if s.completed)
+        to_run = len(task_ctx.steps) - completed
+
+        total_completed += completed
+        total_to_run += to_run
+
+        total = len(task_ctx.steps)
+        status = "✓ Complete" if to_run == 0 else "○ Partial"
+
+        table.add_row(
+            task_id,
+            status,
+            f"{completed}/{total}",
+            f"{to_run}" if to_run > 0 else "—",
+        )
+
+    console.print(table)
+
+    console.print(f"\n[bold]Total:[/bold] {total_completed} steps already complete, {total_to_run} to run")
+
+    if total_to_run == 0:
+        console.print(
+            "[yellow]Warning:[/yellow] All steps already complete. "
+            "Consider running a fresh DAG instead."
+        )
+
+
 @dag.command("dashboard")
 @click.option("--port", "-p", type=int, default=8080, help="Port to run dashboard on")
 @click.option("--host", "-H", default="127.0.0.1", help="Host to bind to")
