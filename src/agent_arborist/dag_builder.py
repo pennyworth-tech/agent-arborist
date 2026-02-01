@@ -30,6 +30,11 @@ class SubDagStep:
     call: str | None = None  # Subdag name to call (None if command step)
     depends: list[str] = field(default_factory=list)
     output: str | None = None  # Dagu output variable name for stdout capture
+    queue: str | None = None  # DAGU queue for concurrency limiting
+
+
+# Queue name for AI tasks (run and post-merge steps)
+AI_TASK_QUEUE = "arborist:ai"
 
 
 @dataclass
@@ -249,6 +254,7 @@ class SubDagBuilder:
             command=build_arborist_command(task_id, "run"),
             depends=["container-up"] if self._use_containers else ["pre-sync"],
             output=output_var("run"),
+            queue=AI_TASK_QUEUE,  # Rate limited
         ))
 
         # Commit (runs git on host)
@@ -274,6 +280,7 @@ class SubDagBuilder:
             command=build_arborist_command(task_id, "post-merge"),
             depends=["run-test"],
             output=output_var("post-merge"),
+            queue=AI_TASK_QUEUE,  # Rate limited
         ))
 
         # Container lifecycle: Stop container for this worktree (but don't remove it)
@@ -346,6 +353,7 @@ class SubDagBuilder:
 
         # Complete step (depends on all children)
         # Runner/model resolved at runtime via config
+        # Note: This step includes post-merge which is an AI task, so it gets the queue
         complete_command = f"""arborist task run-test {task_id} &&
 arborist task post-merge {task_id} &&
 arborist task post-cleanup {task_id}"""
@@ -355,6 +363,7 @@ arborist task post-cleanup {task_id}"""
             command=complete_command,
             depends=child_call_names,
             output=output_var("complete"),
+            queue=AI_TASK_QUEUE,  # Rate limited (includes post-merge)
         ))
 
         # Add environment variable for worktree path
@@ -384,6 +393,8 @@ arborist task post-cleanup {task_id}"""
             d["depends"] = step.depends
         if step.output is not None:
             d["output"] = step.output
+        if step.queue is not None:
+            d["queue"] = step.queue
 
         return d
 
