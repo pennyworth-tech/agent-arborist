@@ -152,7 +152,15 @@ class SubDagBuilder:
         return DagBundle(root=root, subdags=subdags)
 
     def _build_root_dag(self, task_tree: TaskTree) -> SubDag:
-        """Build the root DAG with branches-setup and linear task calls."""
+        """Build the root DAG with branches-setup and linear task calls.
+
+        Optionally auto-detects and includes restart context if one exists
+        for this spec.
+        """
+        from rich.console import Console
+        from agent_arborist.restart_context import find_latest_restart_context
+
+        console = Console(stderr=True)
         steps: list[SubDagStep] = []
 
         # First step: branches-setup
@@ -176,13 +184,23 @@ class SubDagBuilder:
 
         # Create root DAG
         spec_id = self.config.spec_id or self.config.name
+        arborist_home = get_arborist_home()
+
+        env = [
+            f"ARBORIST_MANIFEST={spec_id}.json",
+            f"ARBORIST_CONTAINER_MODE={self.config.container_mode.value}",
+        ]
+
+        # Auto-detect and add restart context if exists
+        restart_context = find_latest_restart_context(spec_id, arborist_home)
+        if restart_context:
+            env.append(f"ARBORIST_RESTART_CONTEXT={restart_context}")
+            console.print(f"[dim]Using restart context:[/dim] {restart_context}")
+
         return SubDag(
             name=self.config.name,
             description=self.config.description,
-            env=[
-                f"ARBORIST_MANIFEST={spec_id}.json",
-                f"ARBORIST_CONTAINER_MODE={self.config.container_mode.value}",
-            ],
+            env=env,
             steps=steps,
             is_root=True,
         )
