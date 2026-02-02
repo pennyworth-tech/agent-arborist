@@ -28,6 +28,7 @@ Automated Task Tree Executor - DAG workflow orchestration with Dagu.
 
 - [Part 5: Hooks System](./05-hooks-system/README.md)
 - [Part 6: Container Support](./06-container-support/README.md)
+- [Part 7: Telemetry and Visualization](./07-telemetry-and-visualization/README.md)
 
 ## Appendices
 
@@ -39,3 +40,4 @@ Automated Task Tree Executor - DAG workflow orchestration with Dagu.
 - [Quick Start](./01-getting-started/02-quick-start.md)
 - [Configuration](./03-configuration/README.md)
 - [CLI Commands](./04-using-the-cli/README.md)
+- [Visualization](./07-telemetry-and-visualization/README.md)
