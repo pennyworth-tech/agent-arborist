@@ -852,68 +852,6 @@ def config_validate(ctx: click.Context) -> None:
         console.print("\n[green]All config files are valid![/green]")
 
 
-@config.command("sync-queues")
-@click.pass_context
-def config_sync_queues(ctx: click.Context) -> None:
-    """Sync concurrency config to DAGU queue definitions.
-
-    Reads the arborist configuration and generates DAGU queue config
-    for concurrency limiting. This creates or updates the queue definition
-    in ~/.config/dagu/config.yaml (or $DAGU_HOME/config.yaml).
-
-    The queue 'arborist:ai' is used to limit concurrent AI tasks
-    (run and post-merge steps).
-
-    Example:
-        arborist config sync-queues
-    """
-    import os
-    from pathlib import Path
-
-    import yaml
-
-    from agent_arborist.config import get_config
-    from agent_arborist.dag_builder import AI_TASK_QUEUE
-
-    arborist_home = ctx.obj.get("arborist_home")
-    config = get_config(arborist_home)
-
-    # Determine DAGU config path
-    dagu_home = Path(os.environ.get("DAGU_HOME", "~/.config/dagu")).expanduser()
-    dagu_config_path = dagu_home / "config.yaml"
-
-    # Read existing config or create new
-    if dagu_config_path.exists():
-        try:
-            dagu_config = yaml.safe_load(dagu_config_path.read_text()) or {}
-        except yaml.YAMLError as e:
-            console.print(f"[red]Error parsing DAGU config:[/red] {e}")
-            raise SystemExit(1)
-    else:
-        dagu_config = {}
-
-    # Set queue config
-    dagu_config["queues"] = {
-        "enabled": True,
-        "config": [
-            {
-                "name": AI_TASK_QUEUE,
-                "maxConcurrency": config.concurrency.max_ai_tasks,
-            }
-        ],
-    }
-
-    # Write back
-    dagu_config_path.parent.mkdir(parents=True, exist_ok=True)
-    dagu_config_path.write_text(yaml.dump(dagu_config, default_flow_style=False, sort_keys=False))
-
-    console.print(f"[green]✓[/green] Queue config synced to {dagu_config_path}")
-    console.print(
-        f"[green]✓[/green] Queue '{AI_TASK_QUEUE}' set to max "
-        f"{config.concurrency.max_ai_tasks} concurrent tasks"
-    )
-
-
 # -----------------------------------------------------------------------------
 # Hooks commands
 # -----------------------------------------------------------------------------

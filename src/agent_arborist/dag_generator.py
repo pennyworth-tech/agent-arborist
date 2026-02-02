@@ -8,7 +8,7 @@ This module generates multi-document YAML with subdags:
 
 import re
 import yaml
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -245,200 +245,18 @@ def validate_and_fix_multi_doc(documents: list[dict]) -> tuple[list[dict], list[
 
 
 @dataclass
+@dataclass
 class TaskInfo:
-    """Simple task info from AI analysis."""
+    """Simple task info from AI analysis.
+
+    This is the intermediate format from AI parsing, which gets
+    converted to SimpleTask for the unified DAG builder.
+    """
+
     id: str
     description: str
-    depends_on: list[str]
-    parallel_with: list[str]
-
-
-def build_dag_from_tasks(
-    dag_name: str,
-    description: str,
-    tasks: list[TaskInfo],
-    manifest_path: str,
-    container_mode: ContainerMode = ContainerMode.AUTO,
-    repo_path: Path | None = None,
-) -> str:
-    """Build full DAGU DAG YAML from simple task list.
-
-    Step 2 & 3: Add the standard task pattern and boilerplate.
-
-    Args:
-        dag_name: Name for the DAG
-        description: DAG description
-        tasks: List of tasks with dependencies
-        manifest_path: Path to manifest JSON file
-        container_mode: Container execution mode
-        repo_path: Path to repo for devcontainer detection
-    """
-    dag_name_safe = dag_name.replace("-", "_")
-
-    # Check if we should use containers
-    use_containers = should_use_container(container_mode, repo_path)
-
-    # Build root DAG steps
-    root_steps = [
-        {"name": "branches-setup", "command": "arborist spec branch-create-all"}
-    ]
-
-    # Group tasks by their dependencies to find parallel groups
-    # Tasks with same depends_on can potentially run in parallel
-    dep_groups: dict[tuple, list[TaskInfo]] = {}
-    for task in tasks:
-        key = tuple(sorted(task.depends_on))
-        if key not in dep_groups:
-            dep_groups[key] = []
-        dep_groups[key].append(task)
-
-    # Build execution order - topological sort
-    completed: set[str] = set()
-    task_by_id = {t.id: t for t in tasks}
-    ordered_groups: list[list[TaskInfo]] = []
-
-    while len(completed) < len(tasks):
-        # Find tasks whose dependencies are all completed
-        ready = []
-        for task in tasks:
-            if task.id in completed:
-                continue
-            if all(dep in completed for dep in task.depends_on):
-                ready.append(task)
-
-        if not ready:
-            # Circular dependency - just add remaining
-            ready = [t for t in tasks if t.id not in completed]
-
-        # Group ready tasks that are parallel_with each other
-        parallel_groups: list[list[TaskInfo]] = []
-        used = set()
-        for task in ready:
-            if task.id in used:
-                continue
-            group = [task]
-            used.add(task.id)
-            for other in ready:
-                if other.id in used:
-                    continue
-                if task.id in other.parallel_with or other.id in task.parallel_with:
-                    group.append(other)
-                    used.add(other.id)
-            parallel_groups.append(group)
-
-        ordered_groups.extend(parallel_groups)
-        for task in ready:
-            completed.add(task.id)
-
-    # Build root DAG call steps
-    prev_deps = ["branches-setup"]
-    for group in ordered_groups:
-        group_step_names = []
-        for task in sorted(group, key=lambda t: t.id):
-            step = {
-                "name": f"c-{task.id}",
-                "call": task.id,
-                "depends": prev_deps.copy(),
-            }
-            root_steps.append(step)
-            group_step_names.append(f"c-{task.id}")
-        prev_deps = group_step_names
-
-    # Build root DAG document
-    root_dag = {
-        "name": dag_name_safe,
-        "description": description,
-        "env": [
-            f"ARBORIST_MANIFEST={manifest_path}",
-            f"ARBORIST_CONTAINER_MODE={container_mode.value}",
-        ],
-        "steps": root_steps,
-    }
-
-    # Build subdag for each task with standard pattern
-    subdags = []
-    for task in sorted(tasks, key=lambda t: t.id):
-        steps = []
-
-        # Pre-sync (runs on host to create worktree)
-        steps.append({
-            "name": "pre-sync",
-            "command": f"arborist task pre-sync {task.id}",
-        })
-
-        # Container lifecycle: Start container (AFTER worktree exists)
-        if use_containers:
-            steps.append({
-                "name": "container-up",
-                "command": f"arborist task container-up {task.id}",
-                "depends": ["pre-sync"],
-            })
-
-        # Run (self-aware - wraps AI runner subprocess if needed)
-        steps.append({
-            "name": "run",
-            "command": f"arborist task run {task.id}",
-            "depends": ["container-up"] if use_containers else ["pre-sync"],
-        })
-
-        # Commit (runs git on host)
-        steps.append({
-            "name": "commit",
-            "command": f"arborist task commit {task.id}",
-            "depends": ["run"],
-        })
-
-        # Run-test (self-aware - wraps test command subprocess if needed)
-        steps.append({
-            "name": "run-test",
-            "command": f"arborist task run-test {task.id}",
-            "depends": ["commit"],
-        })
-
-        # Post-merge (self-aware - wraps AI runner subprocess if needed)
-        steps.append({
-            "name": "post-merge",
-            "command": f"arborist task post-merge {task.id}",
-            "depends": ["run-test"],
-        })
-
-        # Container lifecycle: Stop container (but don't remove it)
-        if use_containers:
-            steps.append({
-                "name": "container-down",
-                "command": f"arborist task container-stop {task.id}",
-                "depends": ["post-merge"],
-            })
-
-        # Compute worktree path for ARBORIST_WORKTREE env var
-        try:
-            arborist_home = get_arborist_home()
-            worktree_path = arborist_home / "worktrees" / dag_name / task.id
-            env_vars = [
-                f"ARBORIST_MANIFEST={manifest_path}",
-                f"ARBORIST_WORKTREE={worktree_path}",
-                f"ARBORIST_CONTAINER_MODE={container_mode.value}",
-            ]
-        except Exception:
-            env_vars = [
-                f"ARBORIST_MANIFEST={manifest_path}",
-                f"ARBORIST_CONTAINER_MODE={container_mode.value}",
-            ]
-
-        subdag = {
-            "name": task.id,
-            "steps": steps,
-            "env": env_vars,
-        }
-        subdags.append(subdag)
-
-    # Serialize to multi-document YAML
-    documents = [root_dag] + subdags
-    yaml_parts = []
-    for doc in documents:
-        yaml_parts.append(yaml.dump(doc, default_flow_style=False, sort_keys=False))
-
-    return "---\n".join(yaml_parts)
+    depends_on: list[str] = field(default_factory=list)
+    parallel_with: list[str] = field(default_factory=list)
 
 
 class DagGenerator:
@@ -536,61 +354,37 @@ class DagGenerator:
                 raw_output=result.output,
             )
 
-        # Step 2 & 3: Build full DAG YAML (with container support)
-        manifest = manifest_path or f"{dag_name}.json"
+        # Convert TaskInfo to SimpleTask for unified builder
+        from agent_arborist.dag_builder import SimpleTask, build_dag_yaml
+
+        simple_tasks = [
+            SimpleTask(
+                id=t.id,
+                description=t.description,
+                depends_on=t.depends_on,
+                parallel_with=t.parallel_with,
+            )
+            for t in tasks
+        ]
+
+        # Step 2-4: Build DAG with hooks via unified builder
         description = data.get("description", f"DAG for {dag_name}")
 
-        yaml_content = build_dag_from_tasks(
-            dag_name,
-            description,
-            tasks,
-            manifest,
+        yaml_content = build_dag_yaml(
+            tasks=simple_tasks,
+            dag_name=dag_name,
+            description=description,
+            arborist_config=self.arborist_config,
+            arborist_home=self.arborist_home,
             container_mode=self.container_mode,
             repo_path=self.repo_path,
         )
-
-        # Step 4: Apply hooks if configured
-        yaml_content = self._apply_hooks(yaml_content, dag_name)
 
         return GenerationResult(
             success=True,
             yaml_content=yaml_content,
             raw_output=result.output,
         )
-
-    def _apply_hooks(self, yaml_content: str, spec_id: str) -> str:
-        """Apply hooks to generated DAG YAML if configured.
-
-        Args:
-            yaml_content: Generated YAML content
-            spec_id: Spec identifier for hook context
-
-        Returns:
-            YAML with hooks injected (or original if hooks not configured)
-        """
-        if self.arborist_config is None:
-            return yaml_content
-
-        hooks_config = getattr(self.arborist_config, "hooks", None)
-        if hooks_config is None or not hooks_config.enabled:
-            return yaml_content
-
-        if self.arborist_home is None:
-            return yaml_content
-
-        # Import here to avoid circular imports
-        from agent_arborist.dag_builder import parse_yaml_to_bundle, bundle_to_yaml
-        from agent_arborist.hooks import inject_hooks
-
-        # Parse YAML -> DagBundle -> inject hooks -> back to YAML
-        bundle = parse_yaml_to_bundle(yaml_content)
-        bundle = inject_hooks(
-            bundle=bundle,
-            hooks_config=hooks_config,
-            spec_id=spec_id,
-            arborist_home=self.arborist_home,
-        )
-        return bundle_to_yaml(bundle)
 
     def _extract_json(self, output: str) -> str | None:
         """Extract JSON content from AI output."""
