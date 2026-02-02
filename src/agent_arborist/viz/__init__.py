@@ -43,6 +43,7 @@ from agent_arborist.viz.renderers import (
     OutputFormat,
     ASCIIRenderer,
     JSONRenderer,
+    SVGRenderer,
 )
 
 
@@ -72,6 +73,8 @@ def render_tree(
         renderer = ASCIIRenderer()
     elif format == OutputFormat.JSON:
         renderer = JSONRenderer()
+    elif format == OutputFormat.SVG:
+        renderer = SVGRenderer()
     else:
         # For now, fall back to ASCII for unsupported formats
         renderer = ASCIIRenderer()

@@ -4394,7 +4394,12 @@ def viz_export(
                 (out_path / "tree.txt").write_text(output)
                 exported.append("tree.txt")
 
-            # SVG and PNG would require additional renderer implementations
+            elif fmt == "svg":
+                output = render_tree(tree, format=OutputFormat.SVG, show_metrics=True)
+                (out_path / "tree.svg").write_text(output)
+                exported.append("tree.svg")
+
+            # PNG would require cairosvg for SVG to PNG conversion
 
         console.print(f"[green]Exported to {output_dir}:[/green]")
         for f in exported:
@@ -4402,6 +4407,55 @@ def viz_export(
 
     except ImportError as e:
         console.print(f"[red]Error:[/red] Visualization module not available: {e}")
+        raise SystemExit(1)
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise SystemExit(1)
+
+
+@main.command("dashboard")
+@click.option("--port", "-p", default=8080, help="Port to run dashboard on")
+@click.option("--host", default="127.0.0.1", help="Host to bind to")
+@click.option("--open/--no-open", default=True, help="Open browser automatically")
+@click.pass_context
+def dashboard(ctx: click.Context, port: int, host: str, open: bool) -> None:
+    """Launch the Arborist visualization dashboard.
+
+    Starts a local web server with interactive DAG run visualization,
+    metrics dendrograms, and quality score tracking.
+
+    Examples:
+        arborist dashboard                    # Launch on default port 8080
+        arborist dashboard --port 3000        # Custom port
+        arborist dashboard --no-open          # Don't open browser
+    """
+    dagu_home = ctx.obj.get("dagu_home")
+
+    if ctx.obj.get("echo_for_testing"):
+        echo_command("dashboard", port=port, host=host, open=open)
+        return
+
+    try:
+        from agent_arborist.viz.server import run_server
+        from agent_arborist.home import get_dagu_home
+
+        # Always use get_dagu_home() which finds it relative to ARBORIST_HOME
+        resolved_home = get_dagu_home()
+
+        console.print(f"[cyan]Starting Arborist Dashboard[/cyan]")
+        console.print(f"  URL: [bold]http://{host}:{port}[/bold]")
+        console.print(f"  DAGU_HOME: {resolved_home}")
+        console.print(f"  Press [bold]Ctrl+C[/bold] to stop\n")
+
+        if open:
+            import webbrowser
+            webbrowser.open(f"http://{host}:{port}")
+
+        run_server(host=host, port=port, dagu_home=resolved_home)
+
+    except ImportError as e:
+        console.print(f"[red]Error:[/red] Dashboard requires additional dependencies: {e}")
+        console.print("[yellow]Install with:[/yellow] pip install agent-arborist[dashboard]")
         raise SystemExit(1)
     except Exception as e:
         console.print(f"[red]Error:[/red] {e}")
