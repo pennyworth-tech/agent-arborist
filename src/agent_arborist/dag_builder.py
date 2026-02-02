@@ -618,3 +618,139 @@ def build_dag_from_file(
         output_path.write_text(yaml_content)
 
     return yaml_content
+
+
+def parse_yaml_to_bundle(yaml_content: str) -> DagBundle:
+    """Parse a multi-document DAGU YAML string into a DagBundle.
+
+    This is the inverse of DagBuilder.build_yaml() - it reconstructs
+    the DagBundle from YAML so hooks can be injected.
+
+    Args:
+        yaml_content: Multi-document YAML string
+
+    Returns:
+        DagBundle with root and subdags populated
+    """
+    documents = list(yaml.safe_load_all(yaml_content))
+
+    if not documents:
+        raise ValueError("No YAML documents found")
+
+    # First document is root DAG
+    root_dict = documents[0]
+    root = SubDag(
+        name=root_dict.get("name", "root"),
+        description=root_dict.get("description", ""),
+        env=root_dict.get("env", []),
+        is_root=True,
+        steps=[
+            SubDagStep(
+                name=s.get("name", ""),
+                command=s.get("command"),
+                call=s.get("call"),
+                depends=s.get("depends", []),
+                output=s.get("output"),
+                queue=s.get("queue"),
+            )
+            for s in root_dict.get("steps", [])
+        ],
+    )
+
+    # Remaining documents are subdags
+    subdags = []
+    for doc in documents[1:]:
+        subdag = SubDag(
+            name=doc.get("name", ""),
+            description=doc.get("description", ""),
+            env=doc.get("env", []),
+            is_root=False,
+            steps=[
+                SubDagStep(
+                    name=s.get("name", ""),
+                    command=s.get("command"),
+                    call=s.get("call"),
+                    depends=s.get("depends", []),
+                    output=s.get("output"),
+                    queue=s.get("queue"),
+                )
+                for s in doc.get("steps", [])
+            ],
+        )
+        subdags.append(subdag)
+
+    return DagBundle(root=root, subdags=subdags)
+
+
+def bundle_to_yaml(bundle: DagBundle) -> str:
+    """Serialize a DagBundle back to multi-document YAML.
+
+    Args:
+        bundle: DagBundle to serialize
+
+    Returns:
+        Multi-document YAML string
+    """
+    # Custom YAML dumper for better formatting
+    class CustomDumper(yaml.SafeDumper):
+        pass
+
+    # Make lists flow-style for depends
+    def represent_list(dumper, data):
+        if all(isinstance(item, str) for item in data):
+            return dumper.represent_sequence(
+                "tag:yaml.org,2002:seq", data, flow_style=True
+            )
+        return dumper.represent_sequence("tag:yaml.org,2002:seq", data)
+
+    # Preserve multiline strings
+    def represent_str(dumper, data):
+        if "\n" in data:
+            return dumper.represent_scalar(
+                "tag:yaml.org,2002:str", data, style="|"
+            )
+        return dumper.represent_scalar("tag:yaml.org,2002:str", data)
+
+    CustomDumper.add_representer(list, represent_list)
+    CustomDumper.add_representer(str, represent_str)
+
+    def step_to_dict(step: SubDagStep) -> dict[str, Any]:
+        d: dict[str, Any] = {"name": step.name}
+        if step.command is not None:
+            d["command"] = step.command
+        if step.call is not None:
+            d["call"] = step.call
+        if step.depends:
+            d["depends"] = step.depends
+        if step.output is not None:
+            d["output"] = step.output
+        if step.queue is not None:
+            d["queue"] = step.queue
+        return d
+
+    def subdag_to_dict(subdag: SubDag) -> dict[str, Any]:
+        d: dict[str, Any] = {"name": subdag.name}
+        if subdag.description:
+            d["description"] = subdag.description
+        if subdag.env:
+            d["env"] = subdag.env
+        d["steps"] = [step_to_dict(step) for step in subdag.steps]
+        return d
+
+    # Build multi-document YAML
+    documents = []
+
+    # Root DAG first
+    root_dict = subdag_to_dict(bundle.root)
+    documents.append(yaml.dump(
+        root_dict, Dumper=CustomDumper, default_flow_style=False, sort_keys=False
+    ))
+
+    # Then all subdags
+    for subdag in bundle.subdags:
+        subdag_dict = subdag_to_dict(subdag)
+        documents.append(yaml.dump(
+            subdag_dict, Dumper=CustomDumper, default_flow_style=False, sort_keys=False
+        ))
+
+    return "---\n".join(documents)

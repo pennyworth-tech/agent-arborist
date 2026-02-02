@@ -2432,11 +2432,23 @@ def spec_dag_build(
         except ArboristHomeError:
             repo_path = None
 
+        # Load arborist config for hooks
+        arborist_home = ctx.obj.get("arborist_home")
+        arborist_config = None
+        if arborist_home:
+            try:
+                from agent_arborist.config import get_config
+                arborist_config = get_config(arborist_home=arborist_home)
+            except Exception:
+                pass
+
         # Generate using AI - pass the spec directory for AI to explore
         generator = DagGenerator(
             runner=runner_instance,
             container_mode=container_mode_enum,
             repo_path=repo_path,
+            arborist_config=arborist_config,
+            arborist_home=Path(arborist_home) if arborist_home else None,
         )
         result = generator.generate(spec_dir, dag_name, timeout=timeout, manifest_path=manifest_path_for_gen)
 

@@ -450,10 +450,14 @@ class DagGenerator:
         runner_type: RunnerType = DEFAULT_RUNNER,
         container_mode: ContainerMode = ContainerMode.AUTO,
         repo_path: Path | None = None,
+        arborist_config: Any = None,
+        arborist_home: Path | None = None,
     ):
         self.runner = runner or get_runner(runner_type)
         self.container_mode = container_mode
         self.repo_path = repo_path
+        self.arborist_config = arborist_config
+        self.arborist_home = arborist_home
 
     def generate(
         self,
@@ -545,11 +549,48 @@ class DagGenerator:
             repo_path=self.repo_path,
         )
 
+        # Step 4: Apply hooks if configured
+        yaml_content = self._apply_hooks(yaml_content, dag_name)
+
         return GenerationResult(
             success=True,
             yaml_content=yaml_content,
             raw_output=result.output,
         )
+
+    def _apply_hooks(self, yaml_content: str, spec_id: str) -> str:
+        """Apply hooks to generated DAG YAML if configured.
+
+        Args:
+            yaml_content: Generated YAML content
+            spec_id: Spec identifier for hook context
+
+        Returns:
+            YAML with hooks injected (or original if hooks not configured)
+        """
+        if self.arborist_config is None:
+            return yaml_content
+
+        hooks_config = getattr(self.arborist_config, "hooks", None)
+        if hooks_config is None or not hooks_config.enabled:
+            return yaml_content
+
+        if self.arborist_home is None:
+            return yaml_content
+
+        # Import here to avoid circular imports
+        from agent_arborist.dag_builder import parse_yaml_to_bundle, bundle_to_yaml
+        from agent_arborist.hooks import inject_hooks
+
+        # Parse YAML -> DagBundle -> inject hooks -> back to YAML
+        bundle = parse_yaml_to_bundle(yaml_content)
+        bundle = inject_hooks(
+            bundle=bundle,
+            hooks_config=hooks_config,
+            spec_id=spec_id,
+            arborist_home=self.arborist_home,
+        )
+        return bundle_to_yaml(bundle)
 
     def _extract_json(self, output: str) -> str | None:
         """Extract JSON content from AI output."""
