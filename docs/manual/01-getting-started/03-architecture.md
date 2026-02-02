@@ -83,9 +83,10 @@ Tracks execution progress:
 
 Executes tasks with AI:
 - Claude, OpenCode, Gemini runners
-- Pre-sync, run, commit, test, post-merge steps
+- Pre-sync, run, commit, post-merge, cleanup steps
 - Worktree management
 - Conflict handling
+- Optional devcontainer support
 
 ## Data Flow
 
@@ -102,10 +103,9 @@ sequenceDiagram
     Dagu->>TaskRunner: Execute task step
 
     TaskRunner->>Worktree: Create worktree
-    TaskRunner->>AI: Run AI
+    TaskRunner->>AI: Run AI (in host or container)
     AI-->>TaskRunner: Result
     TaskRunner->>Worktree: Commit
-    TaskRunner->>Worktree: Run tests (optional)
     TaskRunner->>Worktree: Merge to parent
 
     TaskRunner-->>Dagu: Step complete

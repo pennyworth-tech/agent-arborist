@@ -45,8 +45,7 @@ Location: `.arborist/config.json`
     "container_mode": "enabled"
   },
   "timeouts": {
-    "task_run": 3600,
-    "test": 300
+    "task_run": 3600
   },
   "hooks": {
     "pre_sync": "scripts/pre-sync.sh"

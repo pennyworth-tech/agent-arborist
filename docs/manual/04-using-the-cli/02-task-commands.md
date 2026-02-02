@@ -10,7 +10,7 @@ arborist task run T001 --runner claude --model sonnet
 arborist task run T001 --timeout 1800
 ```
 
-Steps: pre-sync, run AI, commit, test, post-merge, cleanup
+Steps: pre-sync, run AI, commit, post-merge, cleanup
 
 ## Task Status
 
@@ -35,13 +35,6 @@ arborist task commit T001
 ```
 
 Commit changes to task branch.
-
-## Test
-
-```bash
-arborist task run-test T001
-arborist task run-test T001 --cmd pytest
-```
 
 ## Post-merge  
 

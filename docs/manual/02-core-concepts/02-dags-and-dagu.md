@@ -54,9 +54,6 @@ steps:
   - name: "commit"
     command: "arborist task commit T001"
 
-  - name: "test"
-    command: "arborist task run-test T001"
-
   - name: "post-merge"
     command: "arborist task post-merge T001"
 

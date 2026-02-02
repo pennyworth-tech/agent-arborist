@@ -27,6 +27,7 @@ Automated Task Tree Executor - DAG workflow orchestration with Dagu.
   - [Other Commands](./04-using-the-cli/05-other-commands.md)
 
 - [Part 5: Hooks System](./05-hooks-system/README.md)
+- [Part 6: Container Support](./06-container-support/README.md)
 
 ## Appendices
 

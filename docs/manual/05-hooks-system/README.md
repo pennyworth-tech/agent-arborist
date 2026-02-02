@@ -14,8 +14,6 @@ From [`src/agent_arborist/dag_builder.py`](../../src/agent_arborist/dag_builder.
 - `post_run` - After AI task execution  
 - `pre_commit` - Before committing changes
 - `post_commit` - After committing changes
-- `pre_test` - Before running tests
-- `post_test` - After running tests
 - `pre_merge` - Before merging to parent
 - `post_merge` - After merging to parent
 - `cleanup` - During cleanup phase
@@ -26,8 +24,7 @@ From [`src/agent_arborist/dag_builder.py`](../../src/agent_arborist/dag_builder.
 {
   "hooks": {
     "pre_sync": "scripts/pre-sync.sh",
-    "post_run": "scripts/post-run.sh",
-    "pre_test": "scripts/lint.sh"
+    "post_run": "scripts/post-run.sh"
   }
 }
 ```
