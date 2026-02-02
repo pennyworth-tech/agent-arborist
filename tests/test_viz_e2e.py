@@ -803,20 +803,11 @@ def check_claude_available():
     return shutil.which("claude") is not None
 
 
-def check_anthropic_api_key():
-    """Check if ANTHROPIC_API_KEY is set."""
-    return os.environ.get("ANTHROPIC_API_KEY") is not None
-
-
 @pytest.mark.slow
 @pytest.mark.claude
 @pytest.mark.skipif(
     not check_claude_available(),
     reason="claude CLI not available"
-)
-@pytest.mark.skipif(
-    not check_anthropic_api_key(),
-    reason="ANTHROPIC_API_KEY not set"
 )
 class TestRealAIRunner:
     """Test visualization with real AI runner execution.
@@ -1051,9 +1042,10 @@ def test_intentional_failure():
 
 
 @pytest.mark.slow
+@pytest.mark.claude
 @pytest.mark.skipif(
-    not check_anthropic_api_key(),
-    reason="ANTHROPIC_API_KEY not set"
+    not check_claude_available(),
+    reason="claude CLI not available"
 )
 class TestLLMAsJudge:
     """Use LLM to evaluate visualization quality.
