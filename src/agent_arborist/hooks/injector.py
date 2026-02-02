@@ -252,11 +252,14 @@ class HookInjector:
         if injection.after:
             depends.append(injection.after)
 
+        # Use object form for output to preserve snake_case key in outputs.json
+        # Dagu converts string outputs to camelCase, but respects explicit keys
+        output_var = f"{step_name}_result"
         return SubDagStep(
             name=step_name,
             command=command,
             depends=depends,
-            output=f"{step_name}_result",
+            output={"name": output_var, "key": output_var},
         )
 
     def _resolve_step_definition(

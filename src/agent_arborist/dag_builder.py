@@ -29,12 +29,7 @@ class SubDagStep:
     command: str | None = None  # Command to execute (None if calling subdag)
     call: str | None = None  # Subdag name to call (None if command step)
     depends: list[str] = field(default_factory=list)
-    output: str | None = None  # Dagu output variable name for stdout capture
-    queue: str | None = None  # DAGU queue for concurrency limiting
-
-
-# Queue name for AI tasks (run and post-merge steps)
-AI_TASK_QUEUE = "arborist:ai"
+    output: str | dict | None = None  # Dagu output: string or {name, key} dict
 
 
 @dataclass
@@ -130,7 +125,21 @@ class SubDagBuilder:
         """Build a complete DAG bundle from a TaskSpec and TaskTree.
 
         Args:
-            spec: Parsed task specification
+            spec: Parsed task specification (unused, kept for compatibility)
+            task_tree: Task hierarchy with parent/child relationships
+
+        Returns:
+            DagBundle with root DAG and all subdags
+        """
+        return self.build_from_tree(task_tree)
+
+    def build_from_tree(self, task_tree: TaskTree) -> DagBundle:
+        """Build a complete DAG bundle from a TaskTree.
+
+        This is the unified entry point for DAG building - both AI and
+        deterministic paths should use this method.
+
+        Args:
             task_tree: Task hierarchy with parent/child relationships
 
         Returns:
@@ -245,9 +254,14 @@ class SubDagBuilder:
         Use 'arborist cleanup' commands to clean up afterward.
         """
 
-        def output_var(step: str) -> str:
-            """Generate output variable name for a step."""
-            return f"{task_id}_{step.upper().replace('-', '_')}_RESULT"
+        def output_var(step: str) -> dict:
+            """Generate output config for a step.
+
+            Uses object form to preserve snake_case key in outputs.json.
+            Dagu converts string outputs to camelCase, but respects explicit keys.
+            """
+            var_name = f"{task_id}_{step.upper().replace('-', '_')}_RESULT"
+            return {"name": var_name, "key": var_name}
 
         steps: list[SubDagStep] = []
 
@@ -273,7 +287,6 @@ class SubDagBuilder:
             command=build_arborist_command(task_id, "run"),
             depends=["container-up"] if self._use_containers else ["pre-sync"],
             output=output_var("run"),
-            queue=AI_TASK_QUEUE,  # Rate limited
         ))
 
         # Commit (runs git on host)
@@ -299,7 +312,6 @@ class SubDagBuilder:
             command=build_arborist_command(task_id, "post-merge"),
             depends=["run-test"],
             output=output_var("post-merge"),
-            queue=AI_TASK_QUEUE,  # Rate limited
         ))
 
         # Container lifecycle: Stop container for this worktree (but don't remove it)
@@ -339,9 +351,14 @@ class SubDagBuilder:
         - complete step (depends on all children)
         """
 
-        def output_var(step: str) -> str:
-            """Generate output variable name for a step."""
-            return f"{task_id}_{step.upper().replace('-', '_')}_RESULT"
+        def output_var(step: str) -> dict:
+            """Generate output config for a step.
+
+            Uses object form to preserve snake_case key in outputs.json.
+            Dagu converts string outputs to camelCase, but respects explicit keys.
+            """
+            var_name = f"{task_id}_{step.upper().replace('-', '_')}_RESULT"
+            return {"name": var_name, "key": var_name}
 
         steps: list[SubDagStep] = []
 
@@ -372,7 +389,6 @@ class SubDagBuilder:
 
         # Complete step (depends on all children)
         # Runner/model resolved at runtime via config
-        # Note: This step includes post-merge which is an AI task, so it gets the queue
         complete_command = f"""arborist task run-test {task_id} &&
 arborist task post-merge {task_id} &&
 arborist task post-cleanup {task_id}"""
@@ -382,7 +398,6 @@ arborist task post-cleanup {task_id}"""
             command=complete_command,
             depends=child_call_names,
             output=output_var("complete"),
-            queue=AI_TASK_QUEUE,  # Rate limited (includes post-merge)
         ))
 
         # Add environment variable for worktree path
@@ -450,8 +465,6 @@ arborist task post-cleanup {task_id}"""
             d["depends"] = step.depends
         if step.output is not None:
             d["output"] = step.output
-        if step.queue is not None:
-            d["queue"] = step.queue
 
         return d
 
@@ -479,6 +492,17 @@ arborist task post-cleanup {task_id}"""
         # Apply hooks if configured (post-AI phase)
         bundle = self._apply_hooks(bundle)
 
+        return self._serialize_bundle(bundle)
+
+    def _serialize_bundle(self, bundle: DagBundle) -> str:
+        """Serialize a DagBundle to multi-document YAML.
+
+        Args:
+            bundle: DagBundle to serialize
+
+        Returns:
+            Multi-document YAML string
+        """
         # Custom YAML dumper for better formatting
         class CustomDumper(yaml.SafeDumper):
             pass
@@ -590,6 +614,124 @@ def _build_tree_from_spec(spec: TaskSpec, spec_id: str) -> TaskTree:
     return tree
 
 
+@dataclass
+class SimpleTask:
+    """Simple task representation for unified DAG building.
+
+    This is the common format that both AI and deterministic paths produce.
+    """
+
+    id: str
+    description: str
+    depends_on: list[str] = field(default_factory=list)
+    parallel_with: list[str] = field(default_factory=list)
+
+
+def build_tree_from_simple_tasks(
+    tasks: list[SimpleTask],
+    spec_id: str,
+    flat: bool = True,
+) -> TaskTree:
+    """Build a TaskTree from a list of SimpleTask objects.
+
+    This is used by DagGenerator to convert AI-extracted tasks into the
+    common TaskTree format used by SubDagBuilder.
+
+    Args:
+        tasks: List of simple task objects with id, description, depends_on
+        spec_id: Spec identifier
+        flat: If True, all tasks are root-level (AI mode). If False, build
+              hierarchy from dependencies (deterministic mode).
+
+    Returns:
+        TaskTree ready for SubDagBuilder
+    """
+    from agent_arborist.task_state import TaskNode
+
+    tree = TaskTree(spec_id=spec_id)
+
+    # Create all task nodes
+    for task in tasks:
+        tree.tasks[task.id] = TaskNode(
+            task_id=task.id,
+            description=task.description,
+        )
+
+    if not flat:
+        # Build hierarchy from dependencies (first dep = parent)
+        for task in tasks:
+            if task.depends_on and task.id in tree.tasks:
+                parent_id = task.depends_on[0]
+                if parent_id in tree.tasks:
+                    tree.tasks[task.id].parent_id = parent_id
+                    if task.id not in tree.tasks[parent_id].children:
+                        tree.tasks[parent_id].children.append(task.id)
+
+    # Find root tasks (no parent, or all tasks if flat)
+    tree.root_tasks = [
+        tid for tid, t in tree.tasks.items()
+        if t.parent_id is None
+    ]
+
+    return tree
+
+
+def build_dag_yaml(
+    tasks: list[SimpleTask],
+    dag_name: str,
+    description: str = "",
+    arborist_config: Any = None,
+    arborist_home: Path | None = None,
+    container_mode: ContainerMode = ContainerMode.AUTO,
+    repo_path: Path | None = None,
+) -> str:
+    """Unified DAG builder - single entry point for both AI and deterministic paths.
+
+    This function:
+    1. Converts tasks to TaskTree
+    2. Builds DagBundle via SubDagBuilder
+    3. Applies hooks if configured
+    4. Serializes to YAML
+
+    Args:
+        tasks: List of SimpleTask objects
+        dag_name: Name for the DAG
+        description: DAG description
+        arborist_config: ArboristConfig for hooks (optional)
+        arborist_home: Path to .arborist directory (optional)
+        container_mode: Container execution mode
+        repo_path: Path to repo for devcontainer detection
+
+    Returns:
+        Multi-document YAML string with hooks applied
+    """
+    dag_name_safe = dag_name.replace("-", "_")
+
+    # Build TaskTree from tasks
+    tree = build_tree_from_simple_tasks(tasks, dag_name)
+
+    # Create config for SubDagBuilder
+    config = DagConfig(
+        name=dag_name_safe,
+        description=description,
+        spec_id=dag_name,
+        container_mode=container_mode,
+        repo_path=repo_path,
+        arborist_config=arborist_config,
+        arborist_home=arborist_home,
+    )
+
+    # Build the bundle using SubDagBuilder
+    builder = SubDagBuilder(config)
+    bundle = builder.build_from_tree(tree)
+
+    # Apply hooks if configured
+    bundle = builder._apply_hooks(bundle)
+
+    # Serialize to YAML
+    return builder._serialize_bundle(bundle)
+
+
 def build_dag(spec: TaskSpec, name: str, description: str = "", spec_id: str = "") -> str:
     """Convenience function to build a DAG YAML from a TaskSpec."""
     config = DagConfig(name=name, description=description, spec_id=spec_id or name)
@@ -618,3 +760,135 @@ def build_dag_from_file(
         output_path.write_text(yaml_content)
 
     return yaml_content
+
+
+def parse_yaml_to_bundle(yaml_content: str) -> DagBundle:
+    """Parse a multi-document DAGU YAML string into a DagBundle.
+
+    This is the inverse of DagBuilder.build_yaml() - it reconstructs
+    the DagBundle from YAML so hooks can be injected.
+
+    Args:
+        yaml_content: Multi-document YAML string
+
+    Returns:
+        DagBundle with root and subdags populated
+    """
+    documents = list(yaml.safe_load_all(yaml_content))
+
+    if not documents:
+        raise ValueError("No YAML documents found")
+
+    # First document is root DAG
+    root_dict = documents[0]
+    root = SubDag(
+        name=root_dict.get("name", "root"),
+        description=root_dict.get("description", ""),
+        env=root_dict.get("env", []),
+        is_root=True,
+        steps=[
+            SubDagStep(
+                name=s.get("name", ""),
+                command=s.get("command"),
+                call=s.get("call"),
+                depends=s.get("depends", []),
+                output=s.get("output"),
+            )
+            for s in root_dict.get("steps", [])
+        ],
+    )
+
+    # Remaining documents are subdags
+    subdags = []
+    for doc in documents[1:]:
+        subdag = SubDag(
+            name=doc.get("name", ""),
+            description=doc.get("description", ""),
+            env=doc.get("env", []),
+            is_root=False,
+            steps=[
+                SubDagStep(
+                    name=s.get("name", ""),
+                    command=s.get("command"),
+                    call=s.get("call"),
+                    depends=s.get("depends", []),
+                    output=s.get("output"),
+                )
+                for s in doc.get("steps", [])
+            ],
+        )
+        subdags.append(subdag)
+
+    return DagBundle(root=root, subdags=subdags)
+
+
+def bundle_to_yaml(bundle: DagBundle) -> str:
+    """Serialize a DagBundle back to multi-document YAML.
+
+    Args:
+        bundle: DagBundle to serialize
+
+    Returns:
+        Multi-document YAML string
+    """
+    # Custom YAML dumper for better formatting
+    class CustomDumper(yaml.SafeDumper):
+        pass
+
+    # Make lists flow-style for depends
+    def represent_list(dumper, data):
+        if all(isinstance(item, str) for item in data):
+            return dumper.represent_sequence(
+                "tag:yaml.org,2002:seq", data, flow_style=True
+            )
+        return dumper.represent_sequence("tag:yaml.org,2002:seq", data)
+
+    # Preserve multiline strings
+    def represent_str(dumper, data):
+        if "\n" in data:
+            return dumper.represent_scalar(
+                "tag:yaml.org,2002:str", data, style="|"
+            )
+        return dumper.represent_scalar("tag:yaml.org,2002:str", data)
+
+    CustomDumper.add_representer(list, represent_list)
+    CustomDumper.add_representer(str, represent_str)
+
+    def step_to_dict(step: SubDagStep) -> dict[str, Any]:
+        d: dict[str, Any] = {"name": step.name}
+        if step.command is not None:
+            d["command"] = step.command
+        if step.call is not None:
+            d["call"] = step.call
+        if step.depends:
+            d["depends"] = step.depends
+        if step.output is not None:
+            d["output"] = step.output
+        return d
+
+    def subdag_to_dict(subdag: SubDag) -> dict[str, Any]:
+        d: dict[str, Any] = {"name": subdag.name}
+        if subdag.description:
+            d["description"] = subdag.description
+        if subdag.env:
+            d["env"] = subdag.env
+        d["steps"] = [step_to_dict(step) for step in subdag.steps]
+        return d
+
+    # Build multi-document YAML
+    documents = []
+
+    # Root DAG first
+    root_dict = subdag_to_dict(bundle.root)
+    documents.append(yaml.dump(
+        root_dict, Dumper=CustomDumper, default_flow_style=False, sort_keys=False
+    ))
+
+    # Then all subdags
+    for subdag in bundle.subdags:
+        subdag_dict = subdag_to_dict(subdag)
+        documents.append(yaml.dump(
+            subdag_dict, Dumper=CustomDumper, default_flow_style=False, sort_keys=False
+        ))
+
+    return "---\n".join(documents)

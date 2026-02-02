@@ -15,6 +15,13 @@ dev = [
     "pytest>=8.0",
     "pytest-cov>=4.0",
 ]
+dashboard = [
+    "fastapi>=0.109.0",
+    "uvicorn[standard]>=0.27.0",
+]
+viz = [
+    "agent-arborist[dashboard]",
+]
 
 [project.scripts]
 arborist = "agent_arborist.cli:main"
@@ -39,4 +46,5 @@ markers = [
     "gemini: marks tests that require gemini CLI",
     "dagu: marks tests that require dagu CLI",
     "slow: marks tests that are slow (real API calls, large operations)",
+    "e2e: end-to-end tests that run actual DAG executions",
 ]
