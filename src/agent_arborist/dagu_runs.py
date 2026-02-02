@@ -160,6 +160,16 @@ def parse_outputs_json(path: Path) -> dict:
         return {}
 
 
+def _snake_to_camel(name: str) -> str:
+    """Convert snake_case to camelCase.
+
+    Dagu converts output variable names to camelCase in outputs.json.
+    e.g., 'hook_post_task_run_tests_T001_result' -> 'hookPostTaskRunTestsT001Result'
+    """
+    parts = name.split("_")
+    return parts[0].lower() + "".join(p.capitalize() for p in parts[1:])
+
+
 def load_step_output(outputs: dict, step_name: str) -> dict | None:
     """Extract step output from parsed outputs.json.
 
@@ -169,8 +179,34 @@ def load_step_output(outputs: dict, step_name: str) -> dict | None:
 
     Returns:
         Step output dict, or None if not found
+
+    Note:
+        Dagu converts output variable names to camelCase in outputs.json.
+        Output values may be JSON strings that need parsing.
+        We try multiple key formats to find the output.
     """
-    return outputs.get("outputs", {}).get(step_name)
+    outputs_dict = outputs.get("outputs", {})
+
+    # Try multiple key formats (supporting both old camelCase and new snake_case)
+    keys_to_try = [
+        step_name,  # exact step name
+        f"{step_name}_result",  # with _result suffix (new snake_case format)
+        _snake_to_camel(step_name),  # camelCase version (legacy)
+        _snake_to_camel(f"{step_name}_result"),  # with _result suffix, camelCase (legacy)
+    ]
+
+    for key in keys_to_try:
+        if key in outputs_dict:
+            value = outputs_dict[key]
+            # Parse JSON string if needed
+            if isinstance(value, str):
+                try:
+                    return json.loads(value)
+                except json.JSONDecodeError:
+                    return {"raw": value}
+            return value
+
+    return None
 
 
 def parse_status_jsonl(path: Path) -> DagRunAttempt:

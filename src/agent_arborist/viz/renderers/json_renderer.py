@@ -55,8 +55,8 @@ class JSONRenderer:
             # Remove children beyond max depth
             result = {k: v for k, v in node_dict.items() if k != "children"}
             if "children" in node_dict and node_dict["children"]:
-                result["childrenCount"] = len(node_dict["children"])
-                result["childrenTruncated"] = True
+                result["children_count"] = len(node_dict["children"])
+                result["children_truncated"] = True
             return result
 
         # Recurse into children
@@ -93,14 +93,14 @@ class MetricsJSONRenderer:
             JSON string with metrics summary
         """
         data = {
-            "runId": tree.run_id,
-            "dagName": tree.dag_name,
+            "run_id": tree.run_id,
+            "dag_name": tree.dag_name,
             "status": tree.status,
             "summary": tree.get_summary(),
         }
 
         if include_by_task:
-            data["byTask"] = self._collect_task_metrics(tree)
+            data["by_task"] = self._collect_task_metrics(tree)
 
         indent = options.get("indent", 2)
         return json.dumps(data, indent=indent, default=str)
@@ -114,11 +114,11 @@ class MetricsJSONRenderer:
                 by_task[node.id] = {
                     "name": node.name,
                     "status": node.status,
-                    "testsRun": node.metrics.tests_run,
-                    "testsPassed": node.metrics.tests_passed,
-                    "testsFailed": node.metrics.tests_failed,
-                    "testsSkipped": node.metrics.tests_skipped,
-                    "durationSeconds": node.metrics.duration_seconds,
+                    "tests_run": node.metrics.tests_run,
+                    "tests_passed": node.metrics.tests_passed,
+                    "tests_failed": node.metrics.tests_failed,
+                    "tests_skipped": node.metrics.tests_skipped,
+                    "duration_seconds": node.metrics.duration_seconds,
                 }
 
         return by_task

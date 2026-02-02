@@ -71,49 +71,49 @@ class MetricsNode:
         result = {
             "id": self.id,
             "name": self.name,
-            "nodeType": self.node_type,
+            "node_type": self.node_type,
             "status": self.status,
-            "startedAt": self.started_at.isoformat() if self.started_at else None,
-            "finishedAt": self.finished_at.isoformat() if self.finished_at else None,
+            "started_at": self.started_at.isoformat() if self.started_at else None,
+            "finished_at": self.finished_at.isoformat() if self.finished_at else None,
         }
 
         if self.metrics:
             result["metrics"] = {
-                "testsRun": self.metrics.tests_run,
-                "testsPassed": self.metrics.tests_passed,
-                "testsFailed": self.metrics.tests_failed,
-                "testsSkipped": self.metrics.tests_skipped,
-                "codeQualityScore": self.metrics.code_quality_score,
-                "taskCompletionScore": self.metrics.task_completion_score,
-                "testCoverageDelta": self.metrics.test_coverage_delta,
-                "durationSeconds": self.metrics.duration_seconds,
+                "tests_run": self.metrics.tests_run,
+                "tests_passed": self.metrics.tests_passed,
+                "tests_failed": self.metrics.tests_failed,
+                "tests_skipped": self.metrics.tests_skipped,
+                "code_quality_score": self.metrics.code_quality_score,
+                "task_completion_score": self.metrics.task_completion_score,
+                "test_coverage_delta": self.metrics.test_coverage_delta,
+                "duration_seconds": self.metrics.duration_seconds,
             }
 
         if self.aggregated:
             result["aggregated"] = {
-                "totalTestsRun": self.aggregated.total_tests_run,
-                "totalTestsPassed": self.aggregated.total_tests_passed,
-                "totalTestsFailed": self.aggregated.total_tests_failed,
-                "totalTestsSkipped": self.aggregated.total_tests_skipped,
-                "avgCodeQuality": self.aggregated.avg_code_quality,
-                "avgTaskCompletion": self.aggregated.avg_task_completion,
-                "avgTestCoverageDelta": self.aggregated.avg_test_coverage_delta,
-                "totalDurationSeconds": self.aggregated.total_duration_seconds,
-                "childCount": self.aggregated.child_count,
-                "descendantCount": self.aggregated.descendant_count,
-                "childrenSucceeded": self.aggregated.children_succeeded,
-                "childrenFailed": self.aggregated.children_failed,
-                "childrenPending": self.aggregated.children_pending,
+                "total_tests_run": self.aggregated.total_tests_run,
+                "total_tests_passed": self.aggregated.total_tests_passed,
+                "total_tests_failed": self.aggregated.total_tests_failed,
+                "total_tests_skipped": self.aggregated.total_tests_skipped,
+                "avg_code_quality": self.aggregated.avg_code_quality,
+                "avg_task_completion": self.aggregated.avg_task_completion,
+                "avg_test_coverage_delta": self.aggregated.avg_test_coverage_delta,
+                "total_duration_seconds": self.aggregated.total_duration_seconds,
+                "child_count": self.aggregated.child_count,
+                "descendant_count": self.aggregated.descendant_count,
+                "children_succeeded": self.aggregated.children_succeeded,
+                "children_failed": self.aggregated.children_failed,
+                "children_pending": self.aggregated.children_pending,
             }
 
         if self.child_dag_name:
-            result["childDagName"] = self.child_dag_name
+            result["child_dag_name"] = self.child_dag_name
 
         if self.error:
             result["error"] = self.error
 
         if self.exit_code is not None:
-            result["exitCode"] = self.exit_code
+            result["exit_code"] = self.exit_code
 
         if include_children and self.children:
             result["children"] = [child.to_dict(include_children=True) for child in self.children]
@@ -143,11 +143,11 @@ class MetricsTree:
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
         return {
-            "dagName": self.dag_name,
-            "runId": self.run_id,
+            "dag_name": self.dag_name,
+            "run_id": self.run_id,
             "status": self.status,
-            "startedAt": self.started_at.isoformat() if self.started_at else None,
-            "finishedAt": self.finished_at.isoformat() if self.finished_at else None,
+            "started_at": self.started_at.isoformat() if self.started_at else None,
+            "finished_at": self.finished_at.isoformat() if self.finished_at else None,
             "root": self.root.to_dict(),
         }
 
@@ -170,16 +170,16 @@ class MetricsTree:
             pass_rate = agg.total_pass_rate
 
             return {
-                "totalTestsRun": agg.total_tests_run,
-                "totalTestsPassed": agg.total_tests_passed,
-                "totalTestsFailed": agg.total_tests_failed,
-                "totalTestsSkipped": agg.total_tests_skipped,
-                "passRate": pass_rate,
-                "avgCodeQuality": agg.avg_code_quality,
-                "avgTaskCompletion": agg.avg_task_completion,
-                "totalDurationSeconds": agg.total_duration_seconds,
-                "totalDuration": self._format_duration(agg.total_duration_seconds),
-                "nodeCount": agg.descendant_count + 1,
+                "total_tests_run": agg.total_tests_run,
+                "total_tests_passed": agg.total_tests_passed,
+                "total_tests_failed": agg.total_tests_failed,
+                "total_tests_skipped": agg.total_tests_skipped,
+                "pass_rate": pass_rate,
+                "avg_code_quality": agg.avg_code_quality,
+                "avg_task_completion": agg.avg_task_completion,
+                "total_duration_seconds": agg.total_duration_seconds,
+                "total_duration": self._format_duration(agg.total_duration_seconds),
+                "node_count": agg.descendant_count + 1,
             }
         return {}
 

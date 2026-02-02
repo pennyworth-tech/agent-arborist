@@ -29,7 +29,7 @@ class SubDagStep:
     command: str | None = None  # Command to execute (None if calling subdag)
     call: str | None = None  # Subdag name to call (None if command step)
     depends: list[str] = field(default_factory=list)
-    output: str | None = None  # Dagu output variable name for stdout capture
+    output: str | dict | None = None  # Dagu output: string or {name, key} dict
 
 
 @dataclass
@@ -254,9 +254,14 @@ class SubDagBuilder:
         Use 'arborist cleanup' commands to clean up afterward.
         """
 
-        def output_var(step: str) -> str:
-            """Generate output variable name for a step."""
-            return f"{task_id}_{step.upper().replace('-', '_')}_RESULT"
+        def output_var(step: str) -> dict:
+            """Generate output config for a step.
+
+            Uses object form to preserve snake_case key in outputs.json.
+            Dagu converts string outputs to camelCase, but respects explicit keys.
+            """
+            var_name = f"{task_id}_{step.upper().replace('-', '_')}_RESULT"
+            return {"name": var_name, "key": var_name}
 
         steps: list[SubDagStep] = []
 
@@ -346,9 +351,14 @@ class SubDagBuilder:
         - complete step (depends on all children)
         """
 
-        def output_var(step: str) -> str:
-            """Generate output variable name for a step."""
-            return f"{task_id}_{step.upper().replace('-', '_')}_RESULT"
+        def output_var(step: str) -> dict:
+            """Generate output config for a step.
+
+            Uses object form to preserve snake_case key in outputs.json.
+            Dagu converts string outputs to camelCase, but respects explicit keys.
+            """
+            var_name = f"{task_id}_{step.upper().replace('-', '_')}_RESULT"
+            return {"name": var_name, "key": var_name}
 
         steps: list[SubDagStep] = []
 
