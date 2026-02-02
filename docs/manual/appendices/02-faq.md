@@ -8,7 +8,7 @@ Frequently asked questions about Agent Arborist.
 
 Agent Arborist is an AI-powered tool that generates task specifications from natural language descriptions and creates executable workflows using DAGU. It simplifies workflow creation by leveraging AI capabilities to translate plain English requirements into structured workflows.
 
-**Learn more:** [Introduction](../01-getting-started/02-introduction.md)
+**Learn more:** [Introduction](../01-getting-started/01-introduction.md) | [Welcome](../00-introduction/00-welcome.md)
 
 ### What can I do with Agent Arborist?
 
@@ -435,7 +435,8 @@ Contributions welcome! See:
 ### Where can I get help?
 
 Resources:
-- [Documentation](../00-introduction/00-welcome.md)
+- [Welcome Guide](../00-introduction/00-welcome.md)
+- [Introduction](../01-getting-started/01-introduction.md)
 - [Troubleshooting](./01-troubleshooting.md)
 - GitHub Issues: Report bugs
 - GitHub Discussions: Ask questions
@@ -510,6 +511,6 @@ Yes! Agent Arborist can orchestrate workflows for:
 ## Still Have Questions?
 
 - Check [Troubleshooting](./01-troubleshooting.md)
-- Review [Documentation](../00-introduction/00-welcome.md)
+- Review [Welcome Guide](../00-introduction/00-welcome.md)
 - Open a [GitHub Discussion](https://github.com/your-org/agent-arborist/discussions)
 - Report a [GitHub Issue](https://github.com/your-org/agent-arborist/issues)

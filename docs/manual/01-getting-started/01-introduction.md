@@ -1,6 +1,6 @@
 # Introduction
 
-Agent Arborist is a CLI tool for orchestrating AI-driven task execution using directed acyclic graphs (DAGs) managed by Dagu.
+Agent Arborist orchestrates AI-driven task execution using directed acyclic graphs (DAGs) managed by Dagu.
 
 ## What is Agent Arborist?
 
@@ -10,6 +10,35 @@ Agent Arborist is a task tree executor that:
 - **Executes tasks with AI** using runners: claude, opencode, gemini
 - **Isolates changes** in Git worktrees
 - **Tracks progress** with task state management
+
+## What Problems Does It Solve?
+
+**Without Agent Arborist:**
+- You manually describe tasks to an AI, run them one by one, and manage Git branches yourself
+- Parallel task execution becomes complex and error-prone
+- Task failures require manual intervention and retry
+- History is fragmented across multiple AI conversations
+- Reproducibility is difficult
+
+**With Agent Arborist:**
+- Define your entire project as a structured markdown spec
+- Tasks execute automatically in the correct order based on dependencies
+- Parallel tasks run simultaneously for speed
+- Failures are tracked and can be retried independently
+- All execution is tracked in Git worktrees with full history
+- Complete reproducibility - run the same spec and get the same results
+
+## Who Is This For?
+
+**Software Developers:** Build features, refactor code, generate tests with AI orchestration
+
+**DevOps Engineers:** Automate infrastructure-as-code, deployment pipelines, configuration changes
+
+**Data Engineers:** Orchestrate ETL pipelines, data transformations, ML workflows
+
+**Teams:** Enable consistent, reproducible AI-driven development across your organization
+
+**Note:** This tool requires technical knowledge of Git, CLI tools, and your chosen AI runner.
 
 ## Key Concepts
 
