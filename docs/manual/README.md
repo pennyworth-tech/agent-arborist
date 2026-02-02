@@ -34,6 +34,7 @@ Automated Task Tree Executor - DAG workflow orchestration with Dagu.
 
 - [Troubleshooting](./appendices/01-troubleshooting.md)
 - [FAQ](./appendices/02-faq.md)
+- [CLI Reference](./appendices/03-cli-reference.md)
 
 ## Quick Links
 
