@@ -536,15 +536,128 @@ def version(check: bool) -> None:
 
 
 @main.command()
-def init() -> None:
+@click.option(
+    "--runner",
+    "-r",
+    type=click.Choice(["claude", "opencode", "gemini"]),
+    default=None,
+    help="Default AI runner to use",
+)
+@click.option(
+    "--model",
+    "-m",
+    default=None,
+    help="Default model to use with the runner",
+)
+@click.option(
+    "--no-config",
+    is_flag=True,
+    help="Don't create a default config.json file",
+)
+@click.option(
+    "--non-interactive",
+    "-n",
+    is_flag=True,
+    help="Run in non-interactive mode (use defaults)",
+)
+def init(
+    runner: str | None,
+    model: str | None,
+    no_config: bool,
+    non_interactive: bool,
+) -> None:
     """Initialize arborist in the current git repository.
 
-    Creates a .arborist/ directory in the git root.
-    Must be run from within a git repository.
+    Creates a .arborist/ directory in the git root with the following structure:
+    - config.json - Configuration file (tracked by git)
+    - dagu/dags/ - DAG definitions directory (tracked by git)
+    - dagu/data/ - DAG execution data (ignored by git)
+    - prompts/ - Hook prompt files (ignored by git)
+
+    By default, runs interactively to configure options. Use --non-interactive
+    to accept all defaults.
+
+    Examples:
+        arborist init                    # Interactive initialization
+        arborist init --non-interactive  # Use all defaults
+        arborist init --runner opencode  # Set default runner
+        arborist init --runner claude --model opus  # Set runner and model
     """
+    from agent_arborist.runner import get_default_runner, get_default_model
+
+    # Determine values (CLI flags > interactive > defaults)
+    final_runner = runner
+    final_model = model
+
+    if not non_interactive:
+        # Interactive mode - prompt for values not provided via flags
+        console.print("[bold]Initializing arborist...[/bold]\n")
+
+        if final_runner is None:
+            default_runner = get_default_runner()
+            final_runner = click.prompt(
+                "Default runner",
+                type=click.Choice(["claude", "opencode", "gemini"]),
+                default=default_runner,
+            )
+
+        if final_model is None:
+            default_model = get_default_model()
+            final_model = click.prompt(
+                "Default model",
+                default=default_model,
+            )
+
+        console.print()
+    else:
+        # Non-interactive mode - use defaults for missing values
+        if final_runner is None:
+            final_runner = get_default_runner()
+        if final_model is None:
+            final_model = get_default_model()
+
     try:
-        home = init_arborist_home()
+        home, result = init_arborist_home(
+            runner=final_runner,
+            model=final_model,
+            create_config=not no_config,
+        )
+
         console.print(f"[green]Initialized arborist at[/green] {home}")
+        console.print()
+
+        # Show created structure
+        console.print("[bold]Created directories:[/bold]")
+        for d in result["created_dirs"]:
+            rel_path = d.relative_to(home.parent)
+            console.print(f"  {rel_path}/")
+
+        if result["created_files"]:
+            console.print("\n[bold]Created files:[/bold]")
+            for f in result["created_files"]:
+                rel_path = f.relative_to(home.parent)
+                console.print(f"  {rel_path}")
+
+        # Show gitignore status
+        if result["gitignore"]:
+            console.print("\n[bold]Git tracking configuration:[/bold]")
+            gitignore = result["gitignore"]
+            if gitignore.get("added"):
+                console.print("  [green]✓[/green] Added .gitignore rules for arborist")
+                console.print(f"    - Ignored: dagu/data/, prompts/, worktrees/")
+                console.print(f"    - Tracked: config.json, dagu/dags/")
+            elif gitignore.get("updated"):
+                console.print("  [green]✓[/green] Updated .gitignore to new format")
+                console.print(f"    - Ignored: dagu/data/, prompts/, worktrees/")
+                console.print(f"    - Tracked: config.json, dagu/dags/")
+            else:
+                console.print("  [dim]✓ Gitignore already configured[/dim]")
+
+        console.print("\n[dim]Next steps:[/dim]")
+        console.print("  1. Review and edit .arborist/config.json")
+        console.print("  2. Commit the config and DAGs: git add .arborist/config.json .arborist/dagu/dags/")
+        console.print("  3. Start using arborist: arborist spec --help")
+
     except ArboristHomeError as e:
         console.print(f"[red]Error:[/red] {e}")
         raise SystemExit(1)
@@ -708,6 +821,139 @@ steps:
             Path(dag_ref).unlink(missing_ok=True)
 
     console.print("\n[green]All dagu checks passed![/green]")
+
+
+@doctor.command("check-git")
+@click.option(
+    "--fix",
+    is_flag=True,
+    help="Automatically fix any issues found",
+)
+@click.pass_context
+def doctor_check_git(ctx: click.Context, fix: bool) -> None:
+    """Check and optionally repair git tracking for arborist files.
+
+    Verifies that:
+    - .arborist/ directory is properly ignored by git
+    - config.json is tracked by git
+    - dagu/dags/ directory is tracked by git
+
+    Use --fix to automatically repair any issues.
+    """
+    from agent_arborist.home import get_git_root, check_gitignore_status, _update_gitignore_for_arborist
+    from agent_arborist.constants import ARBORIST_DIR_NAME, get_tracked_paths
+
+    console.print("[cyan]Checking git tracking for arborist...[/cyan]\n")
+
+    # Check if we're in a git repo
+    git_root = get_git_root()
+    if not git_root:
+        console.print("[red]FAIL:[/red] Not in a git repository")
+        raise SystemExit(1)
+
+    console.print(f"[green]OK:[/green] Git repository found at {git_root}")
+
+    # Check .arborist exists
+    arborist_dir = git_root / ARBORIST_DIR_NAME
+    if not arborist_dir.exists():
+        console.print(f"[red]FAIL:[/red] {ARBORIST_DIR_NAME}/ directory not found")
+        console.print("[dim]Run 'arborist init' first[/dim]")
+        raise SystemExit(1)
+
+    console.print(f"[green]OK:[/green] {ARBORIST_DIR_NAME}/ directory exists")
+
+    # Check gitignore status
+    status = check_gitignore_status(git_root)
+
+    console.print("\n[bold]Gitignore Status:[/bold]")
+
+    if status["properly_configured"]:
+        console.print(f"  [green]✓[/green] .gitignore is properly configured")
+        console.print(f"    - {ARBORIST_DIR_NAME}/ is ignored")
+        for path in status["tracked_paths"]:
+            console.print(f"    - {ARBORIST_DIR_NAME}/{path} is tracked")
+    else:
+        console.print(f"  [yellow]⚠[/yellow] .gitignore needs updates")
+
+        if not status["has_arborist_ignore"]:
+            console.print(f"    [red]✗[/red] {ARBORIST_DIR_NAME}/ is not ignored")
+        else:
+            console.print(f"    [green]✓[/green] {ARBORIST_DIR_NAME}/ is ignored")
+
+        for path in status["tracked_paths"]:
+            console.print(f"    [green]✓[/green] {ARBORIST_DIR_NAME}/{path} is tracked")
+
+        for path in status["missing_paths"]:
+            console.print(f"    [red]✗[/red] {ARBORIST_DIR_NAME}/{path} is not tracked")
+
+    # Check actual git tracking
+    console.print("\n[bold]Git Tracking Status:[/bold]")
+
+    try:
+        result = subprocess.run(
+            ["git", "check-ignore", str(arborist_dir)],
+            cwd=git_root,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            console.print(f"  [green]✓[/green] {ARBORIST_DIR_NAME}/ is ignored by git")
+        else:
+            console.print(f"  [yellow]⚠[/yellow] {ARBORIST_DIR_NAME}/ is NOT ignored")
+    except Exception as e:
+        console.print(f"  [yellow]⚠[/yellow] Could not check git ignore status: {e}")
+
+    # Check tracked files
+    for tracked_path in get_tracked_paths():
+        full_path = arborist_dir / tracked_path.rstrip("/")
+        if "*" in tracked_path:
+            # Skip glob patterns for individual checks
+            continue
+
+        if full_path.exists():
+            try:
+                result = subprocess.run(
+                    ["git", "check-ignore", str(full_path)],
+                    cwd=git_root,
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode == 0:
+                    console.print(f"  [red]✗[/red] {tracked_path} is ignored (should be tracked)")
+                else:
+                    console.print(f"  [green]✓[/green] {tracked_path} exists")
+            except Exception as e:
+                console.print(f"  [dim]  {tracked_path} exists (check failed: {e})[/dim]")
+        else:
+            console.print(f"  [dim]  {tracked_path} does not exist yet[/dim]")
+
+    # Fix issues if requested
+    if fix and not status["properly_configured"]:
+        console.print("\n[cyan]Fixing gitignore...[/cyan]")
+        fix_result = _update_gitignore_for_arborist(git_root)
+
+        if fix_result.get("added"):
+            console.print(f"  [green]✓[/green] Added arborist tracking rules to .gitignore")
+        elif fix_result.get("updated"):
+            console.print(f"  [green]✓[/green] Updated .gitignore format")
+        else:
+            console.print(f"  [dim]  No changes needed[/dim]")
+
+        # Re-check status
+        status = check_gitignore_status(git_root)
+        if status["properly_configured"]:
+            console.print("\n[green]Gitignore is now properly configured![/green]")
+            console.print("\n[dim]Remember to commit the tracked files:[/dim]")
+            console.print(f"  git add {ARBORIST_DIR_NAME}/config.json {ARBORIST_DIR_NAME}/dagu/dags/")
+        else:
+            console.print("\n[yellow]Some issues could not be automatically fixed[/yellow]")
+            for rec in status["recommendations"]:
+                console.print(f"  - {rec}")
+    elif not status["properly_configured"]:
+        console.print("\n[yellow]Recommendations:[/yellow]")
+        for rec in status["recommendations"]:
+            console.print(f"  - {rec}")
+        console.print(f"\n[dim]Run 'arborist doctor check-git --fix' to fix automatically[/dim]")
 
 
 # -----------------------------------------------------------------------------
