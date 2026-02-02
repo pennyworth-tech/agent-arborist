@@ -661,3 +661,638 @@ class TestIntegrationWithExistingCommands:
         assert "step-a" in viz_result.output
         assert "step-b" in run_show_result.output
         assert "step-b" in viz_result.output
+
+
+# -----------------------------------------------------------------------------
+# Test: Spec-Generated DAGs
+# -----------------------------------------------------------------------------
+
+
+class TestSpecGeneratedDAGs:
+    """Test visualization with DAGs that mirror spec-generated structure.
+
+    These tests create DAGs with the same structure as dag-build generates,
+    including nested sub-DAGs for each task. This tests the viz system's
+    ability to handle real-world DAG structures.
+    """
+
+    def test_viz_with_nested_task_subdags(self, git_repo, dagu_home, dags_dir):
+        """Test viz with DAG structure that mirrors spec-generated DAGs."""
+        # Create a structure similar to what dag-build generates:
+        # Root DAG calls task sub-DAGs, each task may call child tasks
+
+        # Task T003 (leaf task)
+        t003_dag = {
+            "name": "T003",
+            "steps": [
+                {"name": "pre-sync", "command": "echo 'T003 pre-sync'"},
+                {"name": "run", "command": "echo 'T003 implementing feature'", "depends": ["pre-sync"]},
+                {"name": "commit", "command": "echo 'T003 commit'", "depends": ["run"]},
+            ]
+        }
+        (dags_dir / "T003.yaml").write_text(yaml.dump(t003_dag))
+
+        # Task T002 (calls T003)
+        t002_dag = {
+            "name": "T002",
+            "steps": [
+                {"name": "pre-sync", "command": "echo 'T002 pre-sync'"},
+                {"name": "c-T003", "call": "T003", "depends": ["pre-sync"]},
+                {"name": "complete", "command": "echo 'T002 complete'", "depends": ["c-T003"]},
+            ]
+        }
+        (dags_dir / "T002.yaml").write_text(yaml.dump(t002_dag))
+
+        # Task T001 (calls T002)
+        t001_dag = {
+            "name": "T001",
+            "steps": [
+                {"name": "pre-sync", "command": "echo 'T001 pre-sync'"},
+                {"name": "c-T002", "call": "T002", "depends": ["pre-sync"]},
+                {"name": "complete", "command": "echo 'T001 complete'", "depends": ["c-T002"]},
+            ]
+        }
+        (dags_dir / "T001.yaml").write_text(yaml.dump(t001_dag))
+
+        # Root DAG (like 001-my-feature)
+        root_dag = {
+            "name": "spec-viz-test",
+            "steps": [
+                {"name": "branches-setup", "command": "echo 'Setting up branches'"},
+                {"name": "c-T001", "call": "T001", "depends": ["branches-setup"]},
+            ]
+        }
+        root_path = dags_dir / "spec-viz-test.yaml"
+        root_path.write_text(yaml.dump(root_dag))
+
+        # Run the root DAG
+        run_dag_and_wait(dagu_home, root_path, timeout=180)
+
+        # Visualize with expansion
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            ["viz", "tree", "spec-viz-test", "-e"],
+            env={"DAGU_HOME": str(dagu_home)},
+        )
+
+        assert result.exit_code == 0, f"Failed: {result.output}"
+        output = result.output
+
+        # Should show nested structure
+        assert "spec-viz-test" in output or "spec_viz_test" in output
+        assert "branches-setup" in output
+        # Should expand into sub-DAGs
+        assert "T001" in output or "t001" in output.lower()
+
+    def test_viz_json_shows_full_hierarchy(self, git_repo, dagu_home, dags_dir):
+        """Test that JSON output captures the full nested hierarchy."""
+        # Create nested DAGs
+        child_dag = {
+            "name": "child-task",
+            "steps": [
+                {"name": "child-step-1", "command": "echo 'Child 1'"},
+                {"name": "child-step-2", "command": "echo 'Child 2'", "depends": ["child-step-1"]},
+            ]
+        }
+        (dags_dir / "child-task.yaml").write_text(yaml.dump(child_dag))
+
+        parent_dag = {
+            "name": "parent-spec",
+            "steps": [
+                {"name": "setup", "command": "echo 'Setup'"},
+                {"name": "call-child", "call": "child-task", "depends": ["setup"]},
+                {"name": "teardown", "command": "echo 'Teardown'", "depends": ["call-child"]},
+            ]
+        }
+        parent_path = dags_dir / "parent-spec.yaml"
+        parent_path.write_text(yaml.dump(parent_dag))
+
+        run_dag_and_wait(dagu_home, parent_path, timeout=120)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            ["viz", "tree", "parent-spec", "-e", "-f", "json"],
+            env={"DAGU_HOME": str(dagu_home)},
+        )
+
+        assert result.exit_code == 0, f"Failed: {result.output}"
+
+        data = json.loads(result.output)
+
+        # Check structure
+        assert "root" in data
+        root = data["root"]
+
+        # Should have children (the steps)
+        assert "children" in root
+        children_names = [c["name"] for c in root["children"]]
+        assert "setup" in children_names
+        assert "call-child" in children_names
+        assert "teardown" in children_names
+
+
+# -----------------------------------------------------------------------------
+# Test: Real AI Runner (Claude Haiku)
+# -----------------------------------------------------------------------------
+
+
+def check_claude_available():
+    """Check if claude CLI is available."""
+    return shutil.which("claude") is not None
+
+
+def check_anthropic_api_key():
+    """Check if ANTHROPIC_API_KEY is set."""
+    return os.environ.get("ANTHROPIC_API_KEY") is not None
+
+
+@pytest.mark.slow
+@pytest.mark.claude
+@pytest.mark.skipif(
+    not check_claude_available(),
+    reason="claude CLI not available"
+)
+@pytest.mark.skipif(
+    not check_anthropic_api_key(),
+    reason="ANTHROPIC_API_KEY not set"
+)
+class TestRealAIRunner:
+    """Test visualization with real AI runner execution.
+
+    These tests use Claude Haiku for fast, cheap AI inference.
+    Marked as slow because they make real API calls.
+    """
+
+    def test_viz_with_claude_haiku_task(self, git_repo, dagu_home, dags_dir):
+        """Test viz tree with a DAG that uses Claude Haiku for a simple task."""
+        # Create a DAG that calls claude haiku for a trivial task
+        dag_content = {
+            "name": "test-claude-viz",
+            "env": [
+                {"name": "ANTHROPIC_API_KEY", "value": "${ANTHROPIC_API_KEY}"},
+            ],
+            "steps": [
+                {
+                    "name": "ai-task",
+                    "command": 'claude --model haiku -p "Reply with exactly: TASK_COMPLETE"',
+                },
+            ]
+        }
+        dag_path = dags_dir / "test-claude-viz.yaml"
+        dag_path.write_text(yaml.dump(dag_content))
+
+        # Run the DAG (may take a few seconds due to API call)
+        run_dag_and_wait(dagu_home, dag_path, timeout=120)
+
+        # Visualize
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            ["viz", "tree", "test-claude-viz"],
+            env={"DAGU_HOME": str(dagu_home)},
+        )
+
+        assert result.exit_code == 0, f"Failed: {result.output}"
+        assert "ai-task" in result.output
+
+        # Check timing is captured (AI tasks take real time)
+        # Duration format includes "s)" for seconds
+        output = result.output
+        assert "s)" in output or "ms)" in output  # Some duration shown
+
+    def test_viz_metrics_with_ai_task(self, git_repo, dagu_home, dags_dir):
+        """Test that metrics command works with AI-executed DAGs."""
+        dag_content = {
+            "name": "test-claude-metrics",
+            "env": [
+                {"name": "ANTHROPIC_API_KEY", "value": "${ANTHROPIC_API_KEY}"},
+            ],
+            "steps": [
+                {
+                    "name": "quick-ai-step",
+                    "command": 'claude --model haiku -p "Say OK"',
+                },
+            ]
+        }
+        dag_path = dags_dir / "test-claude-metrics.yaml"
+        dag_path.write_text(yaml.dump(dag_content))
+
+        run_dag_and_wait(dagu_home, dag_path, timeout=120)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            ["viz", "metrics", "test-claude-metrics"],
+            env={"DAGU_HOME": str(dagu_home)},
+        )
+
+        assert result.exit_code == 0, f"Failed: {result.output}"
+
+        # Parse JSON output
+        data = json.loads(result.output)
+        assert "summary" in data
+
+        # Duration should be non-trivial for AI task (> 0.1s typically)
+        duration = data["summary"].get("totalDurationSeconds", 0)
+        assert duration > 0.1, f"Expected non-trivial duration for AI task, got {duration}s"
+
+
+# -----------------------------------------------------------------------------
+# Test: Pytest Metrics Extraction
+# -----------------------------------------------------------------------------
+
+
+class TestPytestMetricsExtraction:
+    """Test that viz correctly extracts and displays pytest metrics."""
+
+    @pytest.fixture
+    def python_test_project(self, git_repo, dagu_home, dags_dir):
+        """Create a Python project with tests that output metrics."""
+        # Create a simple Python package with tests
+        src_dir = git_repo / "src"
+        src_dir.mkdir()
+        (src_dir / "__init__.py").write_text("")
+        (src_dir / "math_utils.py").write_text('''
+def add(a, b):
+    return a + b
+
+def multiply(a, b):
+    return a * b
+
+def divide(a, b):
+    if b == 0:
+        raise ValueError("Cannot divide by zero")
+    return a / b
+''')
+
+        tests_dir = git_repo / "tests"
+        tests_dir.mkdir()
+        (tests_dir / "__init__.py").write_text("")
+        (tests_dir / "test_math.py").write_text('''
+import pytest
+import sys
+sys.path.insert(0, str(pytest.importorskip("pathlib").Path(__file__).parent.parent / "src"))
+
+from math_utils import add, multiply, divide
+
+class TestAdd:
+    def test_add_positive(self):
+        assert add(2, 3) == 5
+
+    def test_add_negative(self):
+        assert add(-1, -1) == -2
+
+    def test_add_zero(self):
+        assert add(0, 0) == 0
+
+class TestMultiply:
+    def test_multiply_positive(self):
+        assert multiply(2, 3) == 6
+
+    def test_multiply_by_zero(self):
+        assert multiply(5, 0) == 0
+
+class TestDivide:
+    def test_divide_positive(self):
+        assert divide(6, 2) == 3
+
+    def test_divide_by_zero(self):
+        with pytest.raises(ValueError):
+            divide(1, 0)
+
+    def test_divide_float_result(self):
+        assert divide(5, 2) == 2.5
+''')
+
+        return git_repo
+
+    def test_viz_extracts_pytest_metrics(self, python_test_project, dagu_home, dags_dir):
+        """Test that running pytest produces metrics that viz can extract."""
+        project_dir = python_test_project
+
+        # Create a DAG that runs pytest and captures output
+        dag_content = {
+            "name": "test-pytest-metrics",
+            "steps": [
+                {
+                    "name": "run-tests",
+                    "dir": str(project_dir),
+                    "command": "python -m pytest tests/ -v --tb=short",
+                    "output": "RESULT",
+                },
+            ]
+        }
+        dag_path = dags_dir / "test-pytest-metrics.yaml"
+        dag_path.write_text(yaml.dump(dag_content))
+
+        # Run the DAG
+        run_dag_and_wait(dagu_home, dag_path, timeout=60)
+
+        # Check viz tree shows the test step
+        runner = CliRunner()
+        tree_result = runner.invoke(
+            main,
+            ["viz", "tree", "test-pytest-metrics"],
+            env={"DAGU_HOME": str(dagu_home)},
+        )
+
+        assert tree_result.exit_code == 0, f"Failed: {tree_result.output}"
+        assert "run-tests" in tree_result.output
+        # Should show success (all tests pass)
+        assert "✓" in tree_result.output
+
+    def test_viz_shows_test_failures(self, python_test_project, dagu_home, dags_dir):
+        """Test that viz correctly shows when tests fail."""
+        project_dir = python_test_project
+
+        # Add a failing test
+        tests_dir = project_dir / "tests"
+        (tests_dir / "test_failing.py").write_text('''
+def test_intentional_failure():
+    """This test is designed to fail."""
+    assert 1 == 2, "Intentional failure for testing"
+''')
+
+        # Create DAG with continueOn to see the failure in viz
+        dag_content = {
+            "name": "test-pytest-failure",
+            "steps": [
+                {
+                    "name": "run-failing-tests",
+                    "dir": str(project_dir),
+                    "command": "python -m pytest tests/test_failing.py -v",
+                    "continueOn": {"failure": True},
+                },
+            ]
+        }
+        dag_path = dags_dir / "test-pytest-failure.yaml"
+        dag_path.write_text(yaml.dump(dag_content))
+
+        run_dag_and_wait(dagu_home, dag_path, timeout=60)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            ["viz", "tree", "test-pytest-failure"],
+            env={"DAGU_HOME": str(dagu_home)},
+        )
+
+        assert result.exit_code == 0, f"Failed: {result.output}"
+        # Should show failure indicator
+        output = result.output
+        assert "✗" in output or "failed" in output.lower()
+
+
+# -----------------------------------------------------------------------------
+# Test: LLM-as-Judge for Visualization Quality
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(
+    not check_anthropic_api_key(),
+    reason="ANTHROPIC_API_KEY not set"
+)
+class TestLLMAsJudge:
+    """Use LLM to evaluate visualization quality.
+
+    These tests use Claude to judge whether the visualization output
+    is correct, complete, and useful.
+    """
+
+    def test_llm_judges_tree_completeness(self, git_repo, dagu_home, dags_dir):
+        """LLM evaluates whether viz tree output is complete and accurate."""
+        # Create a DAG with known structure
+        dag_content = {
+            "name": "test-llm-judge",
+            "steps": [
+                {"name": "setup-database", "command": "echo 'Setting up DB'"},
+                {"name": "run-migrations", "command": "echo 'Running migrations'", "depends": ["setup-database"]},
+                {"name": "seed-data", "command": "echo 'Seeding data'", "depends": ["run-migrations"]},
+                {"name": "start-server", "command": "echo 'Starting server'", "depends": ["seed-data"]},
+            ]
+        }
+        dag_path = dags_dir / "test-llm-judge.yaml"
+        dag_path.write_text(yaml.dump(dag_content))
+
+        run_dag_and_wait(dagu_home, dag_path, timeout=60)
+
+        # Get visualization output
+        runner = CliRunner()
+        viz_result = runner.invoke(
+            main,
+            ["viz", "tree", "test-llm-judge"],
+            env={"DAGU_HOME": str(dagu_home)},
+        )
+
+        assert viz_result.exit_code == 0
+
+        # Use Claude to judge the output
+        import subprocess
+        prompt = f'''You are evaluating a CLI visualization output.
+
+The DAG has these steps in order:
+1. setup-database
+2. run-migrations (depends on setup-database)
+3. seed-data (depends on run-migrations)
+4. start-server (depends on seed-data)
+
+Here is the visualization output:
+```
+{viz_result.output}
+```
+
+Evaluate this visualization. Answer with JSON only:
+{{
+  "shows_all_steps": true/false,  // Are all 4 step names visible?
+  "shows_hierarchy": true/false,  // Is there visual hierarchy/tree structure?
+  "shows_status": true/false,     // Are success/failure indicators shown?
+  "overall_quality": "good"/"acceptable"/"poor",
+  "issues": ["list", "of", "issues"] // Empty if none
+}}
+
+Respond with ONLY the JSON, no other text.'''
+
+        result = subprocess.run(
+            ["claude", "--model", "haiku", "-p", prompt],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+        # Parse LLM response
+        try:
+            # Extract JSON from response (may have markdown code blocks)
+            response = result.stdout.strip()
+            if "```" in response:
+                # Extract from code block
+                response = response.split("```")[1]
+                if response.startswith("json"):
+                    response = response[4:]
+                response = response.strip()
+
+            evaluation = json.loads(response)
+
+            # Assert quality criteria
+            assert evaluation.get("shows_all_steps", False), \
+                f"LLM says not all steps shown: {evaluation.get('issues', [])}"
+            assert evaluation.get("shows_status", False), \
+                f"LLM says status not shown: {evaluation.get('issues', [])}"
+            assert evaluation.get("overall_quality") in ("good", "acceptable"), \
+                f"LLM rated quality as poor: {evaluation.get('issues', [])}"
+
+        except json.JSONDecodeError:
+            # If LLM doesn't return valid JSON, check basic criteria manually
+            output = viz_result.output.lower()
+            assert "setup-database" in output
+            assert "run-migrations" in output
+            assert "seed-data" in output
+            assert "start-server" in output
+
+
+# -----------------------------------------------------------------------------
+# Test: Restart Scenario Stats Coherence
+# -----------------------------------------------------------------------------
+
+
+class TestRestartStatsCoherence:
+    """Test that visualization stats remain coherent across restart scenarios."""
+
+    def test_stats_coherent_after_restart(self, git_repo, dagu_home, dags_dir):
+        """Test that viz shows coherent stats after a DAG restart."""
+        # Create a DAG where one step fails
+        dag_content = {
+            "name": "test-restart-stats",
+            "steps": [
+                {"name": "step-1-ok", "command": "echo 'Step 1 OK'"},
+                {"name": "step-2-fail", "command": "exit 1", "depends": ["step-1-ok"]},
+                {"name": "step-3-after", "command": "echo 'Step 3'", "depends": ["step-2-fail"]},
+            ]
+        }
+        dag_path = dags_dir / "test-restart-stats.yaml"
+        dag_path.write_text(yaml.dump(dag_content))
+
+        # First run - will fail at step-2
+        run_dag_and_wait(dagu_home, dag_path, timeout=60)
+
+        # Get initial viz
+        runner = CliRunner()
+        result1 = runner.invoke(
+            main,
+            ["viz", "tree", "test-restart-stats"],
+            env={"DAGU_HOME": str(dagu_home)},
+        )
+
+        assert result1.exit_code == 0
+        output1 = result1.output
+
+        # Should show step-1 succeeded, step-2 failed
+        assert "step-1-ok" in output1
+        assert "step-2-fail" in output1
+
+        # Now fix the DAG and restart
+        dag_content_fixed = {
+            "name": "test-restart-stats",
+            "steps": [
+                {"name": "step-1-ok", "command": "echo 'Step 1 OK'"},
+                {"name": "step-2-fail", "command": "echo 'Step 2 now OK'", "depends": ["step-1-ok"]},
+                {"name": "step-3-after", "command": "echo 'Step 3'", "depends": ["step-2-fail"]},
+            ]
+        }
+        dag_path.write_text(yaml.dump(dag_content_fixed))
+
+        # Run again (simulating restart with fixed code)
+        run_dag_and_wait(dagu_home, dag_path, timeout=60)
+
+        # Get viz after "restart"
+        result2 = runner.invoke(
+            main,
+            ["viz", "tree", "test-restart-stats"],
+            env={"DAGU_HOME": str(dagu_home)},
+        )
+
+        assert result2.exit_code == 0
+        output2 = result2.output
+
+        # After successful run, all steps should show success
+        assert "step-1-ok" in output2
+        assert "step-2-fail" in output2  # Name is still "step-2-fail"
+        assert "step-3-after" in output2
+        # Should show success indicators
+        assert "✓" in output2
+
+    def test_metrics_aggregate_correctly_across_runs(self, git_repo, dagu_home, dags_dir):
+        """Test that metrics are computed from the latest run, not accumulated."""
+        dag_content = {
+            "name": "test-metrics-runs",
+            "steps": [
+                {"name": "task-a", "command": "echo 'A'"},
+                {"name": "task-b", "command": "echo 'B'", "depends": ["task-a"]},
+            ]
+        }
+        dag_path = dags_dir / "test-metrics-runs.yaml"
+        dag_path.write_text(yaml.dump(dag_content))
+
+        # Run twice
+        run_dag_and_wait(dagu_home, dag_path, timeout=60)
+        run_dag_and_wait(dagu_home, dag_path, timeout=60)
+
+        # Get metrics
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            ["viz", "metrics", "test-metrics-runs"],
+            env={"DAGU_HOME": str(dagu_home)},
+        )
+
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+
+        # Should show metrics for latest run only (2 steps, not 4)
+        # Check that we're showing the run, not accumulating
+        summary = data.get("summary", {})
+
+        # The step count in by_task should be 2 (not accumulated)
+        by_task = data.get("byTask", [])
+        if by_task:
+            assert len(by_task) == 2, f"Expected 2 tasks, got {len(by_task)}"
+
+    def test_viz_shows_most_recent_run(self, git_repo, dagu_home, dags_dir):
+        """Test that viz tree shows the most recent run when multiple exist."""
+        # Create and run a DAG multiple times with different outcomes
+        dag_content_v1 = {
+            "name": "test-multiple-runs",
+            "steps": [
+                {"name": "version-check", "command": "echo 'Version 1'"},
+            ]
+        }
+        dag_path = dags_dir / "test-multiple-runs.yaml"
+        dag_path.write_text(yaml.dump(dag_content_v1))
+
+        # First run
+        run_dag_and_wait(dagu_home, dag_path, timeout=60)
+
+        # Second run with different step
+        dag_content_v2 = {
+            "name": "test-multiple-runs",
+            "steps": [
+                {"name": "version-check", "command": "echo 'Version 2'"},
+                {"name": "new-step", "command": "echo 'New in V2'"},
+            ]
+        }
+        dag_path.write_text(yaml.dump(dag_content_v2))
+        run_dag_and_wait(dagu_home, dag_path, timeout=60)
+
+        # Viz should show latest run structure
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            ["viz", "tree", "test-multiple-runs"],
+            env={"DAGU_HOME": str(dagu_home)},
+        )
+
+        assert result.exit_code == 0
+        # Should show the new step from v2
+        assert "new-step" in result.output
