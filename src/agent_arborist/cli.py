@@ -4098,5 +4098,365 @@ def _check_dependencies() -> None:
         raise SystemExit(1)
 
 
+# -----------------------------------------------------------------------------
+# Visualization commands
+# -----------------------------------------------------------------------------
+
+
+@main.group()
+def viz() -> None:
+    """Visualization and metrics for DAG runs."""
+    pass
+
+
+@viz.command("tree")
+@click.argument("dag_name")
+@click.option("--run-id", "-r", help="Specific run ID (defaults to latest)")
+@click.option("--expand", "-e", is_flag=True, help="Expand sub-DAGs recursively")
+@click.option(
+    "--format", "-f", "output_format",
+    type=click.Choice(["ascii", "json", "svg"]),
+    default="ascii",
+    help="Output format (default: ascii)"
+)
+@click.option(
+    "--aggregation", "-a",
+    type=click.Choice(["totals", "averages", "both"]),
+    default="totals",
+    help="Aggregation strategy (default: totals)"
+)
+@click.option("--color-by", type=click.Choice(["status", "quality", "pass-rate"]), default="status")
+@click.option("--show-metrics", "-m", is_flag=True, help="Show metrics inline in tree")
+@click.option("--depth", "-d", type=int, default=None, help="Maximum tree depth to show")
+@click.pass_context
+def viz_tree(
+    ctx: click.Context,
+    dag_name: str,
+    run_id: str | None,
+    expand: bool,
+    output_format: str,
+    aggregation: str,
+    color_by: str,
+    show_metrics: bool,
+    depth: int | None,
+) -> None:
+    """Display metrics dendrogram for a DAG run.
+
+    DAG_NAME is the name of the DAG to visualize.
+
+    Examples:
+        arborist viz tree my-dag              # ASCII tree of latest run
+        arborist viz tree my-dag -e           # With expanded sub-DAGs
+        arborist viz tree my-dag -f json      # JSON output
+        arborist viz tree my-dag -m           # Show metrics inline
+    """
+    dagu_home = ctx.obj.get("dagu_home")
+
+    if ctx.obj.get("echo_for_testing"):
+        echo_command(
+            "viz tree",
+            dag_name=dag_name,
+            run_id=run_id or "latest",
+            expand=str(expand),
+            format=output_format,
+            aggregation=aggregation,
+        )
+        return
+
+    if not dagu_home:
+        console.print("[red]Error:[/red] DAGU_HOME not set")
+        console.print("Run 'arborist init' first to initialize the project")
+        raise SystemExit(1)
+
+    try:
+        from agent_arborist.viz import (
+            build_metrics_tree,
+            aggregate_tree,
+            render_tree,
+            AggregationStrategy,
+            OutputFormat,
+        )
+        from agent_arborist.dagu_runs import load_dag_run, list_dag_runs
+
+        # Find the run
+        dag_run = None
+
+        if run_id:
+            dag_run = load_dag_run(
+                Path(dagu_home),
+                dag_name,
+                run_id,
+                expand_subdags=expand,
+                include_outputs=True,
+            )
+        else:
+            # Get latest run for this DAG
+            runs = list_dag_runs(Path(dagu_home), dag_name=dag_name, limit=1)
+            if runs:
+                dag_run = load_dag_run(
+                    Path(dagu_home),
+                    runs[0].dag_name,
+                    runs[0].run_id,
+                    expand_subdags=expand,
+                    include_outputs=True,
+                )
+
+        if dag_run is None:
+            console.print(f"[red]Error:[/red] No runs found for DAG: {dag_name}")
+            raise SystemExit(1)
+
+        # Build tree
+        tree = build_metrics_tree(dag_run)
+
+        # Aggregate
+        strategy = AggregationStrategy(aggregation)
+        tree = aggregate_tree(tree, strategy=strategy)
+
+        # Map format string to enum
+        format_map = {
+            "ascii": OutputFormat.ASCII,
+            "json": OutputFormat.JSON,
+            "svg": OutputFormat.SVG,
+        }
+        fmt = format_map.get(output_format, OutputFormat.ASCII)
+
+        # Render
+        output = render_tree(
+            tree,
+            format=fmt,
+            color_by=color_by,
+            show_metrics=show_metrics,
+            depth=depth,
+        )
+
+        # Print output
+        if output_format == "ascii":
+            # ASCII output already printed by renderer using Rich
+            console.print(output)
+        else:
+            print(output)
+
+    except ImportError as e:
+        console.print(f"[red]Error:[/red] Visualization module not available: {e}")
+        raise SystemExit(1)
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise SystemExit(1)
+
+
+@viz.command("metrics")
+@click.argument("dag_name")
+@click.option("--run-id", "-r", help="Specific run ID (defaults to latest)")
+@click.option(
+    "--format", "-f", "output_format",
+    type=click.Choice(["json", "table"]),
+    default="json",
+    help="Output format (default: json)"
+)
+@click.option("--task", "-t", help="Show metrics for a specific task subtree")
+@click.pass_context
+def viz_metrics(
+    ctx: click.Context,
+    dag_name: str,
+    run_id: str | None,
+    output_format: str,
+    task: str | None,
+) -> None:
+    """Display metrics summary for a DAG run.
+
+    DAG_NAME is the name of the DAG to get metrics for.
+
+    Examples:
+        arborist viz metrics my-dag           # JSON metrics summary
+        arborist viz metrics my-dag -f table  # Table format
+    """
+    dagu_home = ctx.obj.get("dagu_home")
+
+    if ctx.obj.get("echo_for_testing"):
+        echo_command(
+            "viz metrics",
+            dag_name=dag_name,
+            run_id=run_id or "latest",
+            format=output_format,
+            task=task or "all",
+        )
+        return
+
+    if not dagu_home:
+        console.print("[red]Error:[/red] DAGU_HOME not set")
+        console.print("Run 'arborist init' first to initialize the project")
+        raise SystemExit(1)
+
+    try:
+        from agent_arborist.viz import (
+            build_metrics_tree,
+            aggregate_tree,
+            render_metrics,
+            AggregationStrategy,
+            OutputFormat,
+        )
+        from agent_arborist.dagu_runs import load_dag_run, list_dag_runs
+
+        # Find the run
+        dag_run = None
+
+        if run_id:
+            dag_run = load_dag_run(
+                Path(dagu_home),
+                dag_name,
+                run_id,
+                expand_subdags=True,
+                include_outputs=True,
+            )
+        else:
+            # Get latest run for this DAG
+            runs = list_dag_runs(Path(dagu_home), dag_name=dag_name, limit=1)
+            if runs:
+                dag_run = load_dag_run(
+                    Path(dagu_home),
+                    runs[0].dag_name,
+                    runs[0].run_id,
+                    expand_subdags=True,
+                    include_outputs=True,
+                )
+
+        if dag_run is None:
+            console.print(f"[red]Error:[/red] No runs found for DAG: {dag_name}")
+            raise SystemExit(1)
+
+        # Build tree
+        tree = build_metrics_tree(dag_run)
+
+        # Aggregate
+        tree = aggregate_tree(tree, strategy=AggregationStrategy.TOTALS)
+
+        # Render metrics
+        output = render_metrics(tree, format=OutputFormat.JSON, include_by_task=True)
+
+        print(output)
+
+    except ImportError as e:
+        console.print(f"[red]Error:[/red] Visualization module not available: {e}")
+        raise SystemExit(1)
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise SystemExit(1)
+
+
+@viz.command("export")
+@click.argument("dag_name")
+@click.option("--run-id", "-r", help="Specific run ID (defaults to latest)")
+@click.option("--output-dir", "-o", type=click.Path(), default=".", help="Output directory")
+@click.option("--formats", default="svg,json", help="Formats to export (comma-separated)")
+@click.pass_context
+def viz_export(
+    ctx: click.Context,
+    dag_name: str,
+    run_id: str | None,
+    output_dir: str,
+    formats: str,
+) -> None:
+    """Export visualizations for a DAG run.
+
+    Exports tree visualizations and metrics to the specified directory.
+
+    Examples:
+        arborist viz export my-dag -o ./reports/
+        arborist viz export my-dag --formats svg,png,json
+    """
+    dagu_home = ctx.obj.get("dagu_home")
+
+    if ctx.obj.get("echo_for_testing"):
+        echo_command(
+            "viz export",
+            dag_name=dag_name,
+            run_id=run_id or "latest",
+            output_dir=output_dir,
+            formats=formats,
+        )
+        return
+
+    if not dagu_home:
+        console.print("[red]Error:[/red] DAGU_HOME not set")
+        raise SystemExit(1)
+
+    try:
+        from agent_arborist.viz import (
+            build_metrics_tree,
+            aggregate_tree,
+            render_tree,
+            render_metrics,
+            AggregationStrategy,
+            OutputFormat,
+        )
+        from agent_arborist.dagu_runs import load_dag_run, list_dag_runs
+
+        # Find the run
+        dag_run = None
+
+        if run_id:
+            dag_run = load_dag_run(
+                Path(dagu_home),
+                dag_name,
+                run_id,
+                expand_subdags=True,
+                include_outputs=True,
+            )
+        else:
+            runs = list_dag_runs(Path(dagu_home), dag_name=dag_name, limit=1)
+            if runs:
+                dag_run = load_dag_run(
+                    Path(dagu_home),
+                    runs[0].dag_name,
+                    runs[0].run_id,
+                    expand_subdags=True,
+                    include_outputs=True,
+                )
+
+        if dag_run is None:
+            console.print(f"[red]Error:[/red] No runs found for DAG: {dag_name}")
+            raise SystemExit(1)
+
+        # Build and aggregate tree
+        tree = build_metrics_tree(dag_run)
+        tree = aggregate_tree(tree, strategy=AggregationStrategy.TOTALS)
+
+        # Create output directory
+        out_path = Path(output_dir)
+        out_path.mkdir(parents=True, exist_ok=True)
+
+        # Export requested formats
+        format_list = [f.strip().lower() for f in formats.split(",")]
+        exported = []
+
+        for fmt in format_list:
+            if fmt == "json":
+                output = render_tree(tree, format=OutputFormat.JSON)
+                (out_path / "tree.json").write_text(output)
+                exported.append("tree.json")
+
+                metrics = render_metrics(tree, format=OutputFormat.JSON)
+                (out_path / "metrics.json").write_text(metrics)
+                exported.append("metrics.json")
+
+            elif fmt == "ascii":
+                output = render_tree(tree, format=OutputFormat.ASCII, show_metrics=True)
+                (out_path / "tree.txt").write_text(output)
+                exported.append("tree.txt")
+
+            # SVG and PNG would require additional renderer implementations
+
+        console.print(f"[green]Exported to {output_dir}:[/green]")
+        for f in exported:
+            console.print(f"  - {f}")
+
+    except ImportError as e:
+        console.print(f"[red]Error:[/red] Visualization module not available: {e}")
+        raise SystemExit(1)
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise SystemExit(1)
+
+
 if __name__ == "__main__":
     main()

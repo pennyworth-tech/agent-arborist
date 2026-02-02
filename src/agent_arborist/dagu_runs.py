@@ -42,6 +42,8 @@ class DaguStatus(IntEnum):
     FAILED = 2
     SKIPPED = 3
     SUCCESS = 4
+    CANCELLED = 5
+    PARTIALLY_SUCCEEDED = 6
 
     @classmethod
     def from_name(cls, name: str) -> "DaguStatus | None":
@@ -52,6 +54,8 @@ class DaguStatus(IntEnum):
             "failed": cls.FAILED,
             "skipped": cls.SKIPPED,
             "success": cls.SUCCESS,
+            "cancelled": cls.CANCELLED,
+            "partially_succeeded": cls.PARTIALLY_SUCCEEDED,
         }
         return status_map.get(name.lower())
 

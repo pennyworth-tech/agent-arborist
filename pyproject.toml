@@ -39,4 +39,5 @@ markers = [
     "gemini: marks tests that require gemini CLI",
     "dagu: marks tests that require dagu CLI",
     "slow: marks tests that are slow (real API calls, large operations)",
+    "e2e: end-to-end tests that run actual DAG executions",
 ]
