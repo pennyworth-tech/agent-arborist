@@ -1,449 +1,165 @@
-# Architecture Overview
+# Architecture
 
-Agent Arborist is designed as a host-based system with optional container support, orchestrating AI-powered task execution through Dagu workflow engine.
+How Agent Arborist orchestrates task execution.
 
-## High-Level Architecture
+## System Architecture
 
 ```mermaid
 graph TB
-    A[User Interface<br/>CLI + Dashboard] --> B[Arborist Core]
+    User[User CLI] --> CLI[arborist CLI]
 
-    B --> C[Spec Parser]
-    B --> D[DAG Generator]
-    B --> E[Branch Manager]
-    B --> F[Task Executor]
+    CLI --> SpecParser[Spec Parser]
+    CLI --> DagBuilder[DAG Builder]
+    CLI --> TaskRunner[Task Runner]
 
-    C --> G[Task Specs<br/>Markdown files]
-    D --> H[Dagu YAML<br/>Workflows]
-    E --> I[Git Worktrees]
-    F --> J[AI Runners]
+    SpecParser --> TaskSpec[Markdown specs]
 
-    J --> K[Claude Code]
-    J --> L[OpenCode]
-    J --> M[Gemini]
+    DagBuilder --> DagYaml[Dagu YAML files]
 
-    H --> N[Dagu Engine]
-    N --> O[Dagu Web UI]
+    Dagu[Dagu Engine] --> DagYaml
 
-    P[Config System] --> B
-    Q[Hooks System] --> D
-    R[Container Runner] --> F
+    TaskRunner --> AI[AI Runners]
+    TaskRunner --> Worktree[Git Worktrees]
 
-    style A fill:#e1f5ff
-    style B fill:#fff4e1
-    style N fill:#ffe1e1
-    style J fill:#e1ffe1
+    AI --> Claude[Claude]
+    AI --> Open[OpenCode]
+    AI --> Gem[Gemini]
+
+    Config[JSON Config] --> CLI
+    Config --> TaskRunner
+
+    Dagu --> Status[Task State]
+
+    style User fill:#e1f5ff
+    style Dagu fill:#ffe1e1
+    style AI fill:#e1ffe1
 ```
 
 ## Components
 
-### 1. User Interface
+### 1. CLI (`src/agent_arborist/cli.py`)
 
-#### CLI (Command Line Interface)
-- **Location**: [`src/agent_arborist/cli.py`](../../src/agent_arborist/cli.py)
-- **Purpose**: Primary interface for all operations
-- **Features**:
-  - Spec management commands
-  - Task execution commands
-  - DAG operations
-  - Visualization commands
-  - Configuration commands
+Click-based CLI with command groups:
+- `init` - Initialize project
+- `version` - Version info
+- `doctor` - Diagnostics
+- `config` - Configuration
+- `hooks` - Hooks system
+- `task` - Task operations
+- `spec` - Spec operations
+- `dag` - DAG operations
 
-#### Dashboard
-- **Location**: [`src/agent_arborist/viz/`](../../src/agent_arborist/viz/)
-- **Purpose**: Visual monitoring and exploration
-- **Features**:
-  - Tree visualization of tasks
-  - Execution metrics
-  - Hook outputs
-  - Dependency exploration
+### 2. Spec Parser (`src/agent_arborist/task_spec.py`)
 
-### 2. Arborist Core
+Parses markdown task specs:
+- Extracts tasks with IDs (T001, T002, ...)
+- Parses phases (## Phase N: Name)
+- Parses dependencies (T001 → T002)
+- Supports parallel tasks ([P])
 
-#### Spec Parser
-- **Location**: [`src/agent_arborist/task_spec.py`](../../src/agent_arborist/task_spec.py)
-- **Purpose**: Parse and validate task specifications
-- **Input**: Markdown task files
-- **Output**: Structured `TaskSpec` objects
+### 3. DAG Builder (`src/agent_arborist/dag_builder.py`)
 
-```python
-# Example: TaskSpec structure
-class Task:
-    id: str              # "T001"
-    title: str           # "Create directory structure"
-    description: str     # Detailed description
-    phase: str | None    # "setup"
-    subtree: str | None  # "phase1/setup"
-    dependencies: list   # ["T001", "T002"]
-    parallel: bool       # Can run in parallel
-```
+converts specs to Dagu YAML:
+- Root DAG for orchestration
+- Sub-DAGs for each task
+- Injects hooks if configured
+- Sets environment variables (ARBORIST_MANIFEST)
 
-#### DAG Generator
-- **Location**: [`src/agent_arborist/dag_builder.py`](../../src/agent_arborist/dag_builder.py)
-- **Purpose**: Convert TaskSpecs to Dagu YAML
-- **Process**:
-  1. Parse spec into task tree
-  2. Resolve dependencies
-  3. Generate root DAG
-  4. Generate sub-DAGs for each task
-  5. Inject hooks if enabled
+### 4. Branch Manifest (`src/agent_arborist/branch_manifest.py`)
 
-#### Branch Manager
-- **Location**: [`src/agent_arborist/git_tasks.py`](../../src/agent_arborist/git_tasks.py)
-- **Purpose**: Manage Git branches and worktrees
-- **Operations**:
-  - Create feature branches
-  - Create worktrees
-  - Sync worktrees from parent
-  - Merge to parent
-  - Cleanup old worktrees
+Maps tasks to Git branches:
+- Branch naming: `feature/{spec_id}/{task_id}`
+- Parent branch tracking
+- Subtree support (if specified)
 
-#### Task Executor
-- **Location**: [`src/agent_arborist/runner.py`](../../src/agent_arborist/runner.py)
-- **Purpose**: Execute tasks with AI runners
-- **Process**:
-  1. Create worktree
-  2. Sync from parent
-  3. Run AI in worktree
-  4. Commit changes
-  5. Run tests (if configured)
-  6. Merge to parent
-  7. Cleanup worktree
+### 5. Task State (`src/agent_arborist/task_state.py`)
 
-### 3. AI Runners
+Tracks execution progress:
+- Status: pending, running, complete, failed
+- Branch and worktree paths
+- Error messages
 
-#### Claude Code Runner
-- **Location**: [`src/agent_arborist/runner.py:ClaudeRunner`](../../src/agent_arborist/runner.py)
-- **Command**: `claude`
-- **Features**:
-  - File system access
-  - Command execution
-  - Interactive sessions
-  - Multiple models (Claude 3.5 Sonnet, Opus, Haiku)
+### 6. Task Runner (`src/agent_arborist/runner.py`)
 
-#### OpenCode Runner
-- **Location**: [`src/agent_arborist/runner.py:OpenCodeRunner`](../../src/agent_arborist/runner.py)
-- **Command**: `opencode`
-- **Features**:
-  - Open-source alternative
-  - Model selection
-  - File operations
-
-#### Gemini Runner
-- **Location**: [`src/agent_arborist/runner.py:GeminiRunner`](../../src/agent_arborist/runner.py)
-- **Command**: API-based
-- **Features**:
-  - Google AI models
-  - Multi-modal support
-  - Fast inference
-
-### 4. Dagu Integration
-
-#### Dagu Engine
-- **Purpose**: Execute DAG workflows
-- **Features**:
-  - Dependency resolution
-  - Parallel execution
-  - Status tracking
-  - Retry logic
-  - Error handling
-
-#### Dagu Web UI
-- **Purpose**: Monitor execution in real-time
-- **Features**:
-  - Live status updates
-  - Log viewing
-  - Dependency visualization
-  - Historical runs
-
-### 5. Supporting Systems
-
-#### Configuration System
-- **Location**: [`src/agent_arborist/config.py`](../../src/agent_arborist/config.py)
-- **Purpose**: Multi-level configuration management
-- **Hierarchy**:
-  1. Hardcoded defaults
-  2. Global config (`~/.arborist_config.json`)
-  3. Project config (`.arborist/config.json`)
-  4. Environment variables
-  5. CLI flags
-
-```python
-# Config precedence (highest to lowest)
-VALID_RUNNERS = ("claude", "opencode", "gemini")
-VALID_OUTPUT_FORMATS = ("json", "text")
-VALID_CONTAINER_MODES = ("auto", "enabled", "disabled")
-```
-
-#### Hooks System
-- **Location**: [`src/agent_arborist/hooks/`](../../src/agent_arborist/hooks/)
-- **Purpose**: Inject custom steps into DAGs
-- **Hook Points**:
-  - `pre_root` - Before root DAG execution
-  - `post_roots` - After root DAG setup
-  - `pre_task` - Before each task
-  - `post_task` - After each task
-  - `final` - After all tasks complete
-
-```python
-VALID_HOOK_POINTS = ("pre_root", "post_roots", "pre_task", "post_task", "final")
-```
-
-#### Container Runner
-- **Location**: [`src/agent_arborist/container_runner.py`](../../src/agent_arborist/container_runner.py)
-- **Purpose**: Wraps commands for devcontainer execution
-- **Modes**:
-  - `auto` - Use container if devcontainer present
-  - `enabled` - Require container
-  - `disabled` Never use container
+Executes tasks with AI:
+- Claude, OpenCode, Gemini runners
+- Pre-sync, run, commit, test, post-merge steps
+- Worktree management
+- Conflict handling
 
 ## Data Flow
 
-### Spec Execution Flow
-
 ```mermaid
 sequenceDiagram
-    participant U as User
-    participant C as CLI
-    participant S as Spec Parser
-    participant G as DAG Generator
-    participant D as Dagu
-    participant T as Task Executor
-    participant A as AI Runner
-    participant W as Git Worktree
+    U->>CLI: arborist dag run spec_id
+    CLI->>SpecParser: Parse spec
+    SpecParser-->>CLI: TaskSpec
 
-    U->>C: arborist dag run spec/
-    C->>S: Parse spec
-    S-->>C: TaskSpec
-    C->>G: Generate DAG
-    G-->>C: Dagu YAML
-    C->>D: Start DAG execution
-    D->>T: Execute task
-    T->>W: Create worktree
-    T->>A: Run AI
-    A->>W: Modify files
-    A-->>T: Result
-    T->>W: Commit changes
-    T->>W: Run tests (optional)
-    T-->>D: Task result
-    D->>D: Update status
-    D-->>C: Execution complete
-    C-->>U: Results
+    CLI->>DagBuilder: Build DAGs
+    DagBuilder-->>CLI: Dagu YAMLs
+
+    CLI->>Dagu: Start Dagu execution
+    Dagu->>TaskRunner: Execute task step
+
+    TaskRunner->>Worktree: Create worktree
+    TaskRunner->>AI: Run AI
+    AI-->>TaskRunner: Result
+    TaskRunner->>Worktree: Commit
+    TaskRunner->>Worktree: Run tests (optional)
+    TaskRunner->>Worktree: Merge to parent
+
+    TaskRunner-->>Dagu: Step complete
+    Dagu-->>CLI: DAG complete
+    CLI-->>U: All tasks done
 ```
 
-### Workflow Generation Flow
-
-```mermaid
-graph LR
-    A[Task Spec] --> B[Task Parser]
-    B --> C[Task Tree]
-    C --> D[Dependency Resolver]
-    D --> E[DAG Builder]
-
-    E --> F[Root DAG]
-    E --> G[Parent Sub-DAGs]
-    E --> H[Leaf Sub-DAGs]
-
-    J[Hooks] --> E
-
-    F --> K[Dagu YAML Bundle]
-    G --> K
-    H --> K
-
-    K --> L[Dagu Engine]
-
-    style A fill:#e1f5ff
-    style K fill:#fff4e1
-    style L fill:#ffe1e1
-```
-
-## Directory Structure
+## Directory Layout
 
 ```
-project-root/
-├── .arborist/                   # Arborist home directory
-│   ├── config.json             # Project configuration
-│   ├── manifests/              # Branch manifests
-│   ├── dagu/                   # Generated DAG files
-│   ├── worktrees/              # Git worktrees
-│   ├── task-state/             # Task execution state
-│   ├── prompts/                # Hook prompt files
-│   └── logs/                   # Execution logs
-│
-├── specs/                       # Task specifications
-│   ├── 001-hello-world/
-│   │   └── tasks.md
-│   └── 002-new-feature/
+project/
+├── .arborist/
+│   ├── config.json           # Project config
+│   ├── manifests/
+│   │   └── 001-my-feature.json   # Branch manifest
+│   ├── dagu/
+│   │   └── 001-my-feature/
+│   │       ├── root.yaml         # Root DAG
+│   │       ├── T001-setup.yaml   # Task sub-DAGs
+│   │       └── T002-core.yaml
+│   ├── worktrees/
+│   │   └── 001-my-feature/
+│   │       ├── T001/             # Git worktree for T001
+│   │       └── T002/             # Git worktree for T002
+│   ├── task-state/
+│   │   └── 001-my-feature.json   # Task state
+│   ├── prompts/                  # Hook prompts
+│   └── logs/                     # Execution logs
+├── specs/
+│   └── 001-my-feature/
 │       └── tasks.md
-│
-├── src/                         # Your project code
-└── README.md
+└── src/
 ```
 
-## Host vs Container Execution
+## Environment Variables
 
-### Host-Based Architecture (Default)
+From `src/agent_arborist/cli.py`:
+- `ARBORIST_MANIFEST` - Path to branch manifest
+- `ARBORIST_DEFAULT_RUNNER` - Default runner (claude, opencode, gemini)
+- `ARBORIST_DEFAULT_MODEL` - Default model
+- `DAGU_HOME` - Dagu directory
 
-```
-┌─────────────────────────────────────┐
-│ Host Machine                        │
-├─────────────────────────────────────┤
-│ Arborist Core                       │
-│ ├── Spec Parser                     │
-│ ├── DAG Generator                   │
-│ └── Task Executor                   │
-│     └── AI Runner (runs on host)    │
-├─────────────────────────────────────┤
-│ Dagu Engine (runs on host)          │
-└─────────────────────────────────────┘
-         ↓
-┌─────────────────────────────────────┐
-│ Git Repository (on host)            │
-│ └── Worktrees                       │
-└─────────────────────────────────────┘
-```
+## Configuration System
 
-### Container Execution (Optional)
+Configuration precedence (highest to lowest):
+1. CLI flags
+2. Environment variables
+3. Project config (`.arborist/config.json`)
+4. Global config (`~/.arborist_config.json`)
+5. Code defaults
 
-```
-┌─────────────────────────────────────┐
-│ Host Machine                        │
-├─────────────────────────────────────┤
-│ Arborist Core                           │
-│ ├── Spec Parser                         │
-│ ├── DAG Generator                       │
-│ └── Task Executor                       │
-│     └── Container Runner               │
-├─────────────────────────────────────┤
-│ Dagu Engine (runs on host)            │
-└─────────────────────────────────────┘
-         ↓
-┌─────────────────────────────────────┐
-│ Devcontainer (Docker)                │
-├─────────────────────────────────────┤
-│ AI Runner (runs in container)        │
-│ ├── File system access               │
-│ ├── Command execution                │
-│ └── Project modifications            │
-└─────────────────────────────────────┘
-         ↓
-┌─────────────────────────────────────┐
-│ Git Repository (mounted in container)│
-│ └── Worktrees                        │
-└─────────────────────────────────────┘
-```
-
-**Key Points:**
-- Arborist and Dagu always run on the host
-- AI runners can run on host or in devcontainer
-- Worktrees are always Git-managed on the host
-- Container is detected automatically based on `.devcontainer/` presence
-
-## Execution Models
-
-### Sequential Execution
-
-```mermaid
-graph LR
-    A[T001] --> B[T002] --> C[T003] --> D[T004]
-```
-
-Tasks run one after another. Each task must complete before the next starts.
-
-### Parallel Execution
-
-```mermaid
-graph TB
-    A[T001] --> B[T002]
-    A --> C[T003]
-    B --> D[T004]
-    C --> D
-```
-
-Tasks without dependencies run in parallel. T002 and T003 can run simultaneously.
-
-### Hierarchical Execution
-
-```mermaid
-graph TB
-    RootPhase[Phase 1] --> Sub1[T001]
-    RootPhase --> Sub2[T002]
-    Root --> Phase2[Phase 2]
-
-    Phase2 --> Sub3[T003]
-    Phase2 --> Sub4[T004]
-
-    Sub1 --> Final[Final]
-    Sub2 --> Final
-    Sub3 --> Final
-    Sub4 --> Final
-```
-
-Phases contain subtasks. Subtasks within a phase can run in parallel.
-
-## State Management
-
-### Task State
-
-```python
-# Location: src/agent_arborist/task_state.py
-class TaskNode:
-    task_id: str          # "T001"
-    status: str           # "pending" | "running" | "complete" | "failed"
-    description: str      # Task description
-    parent_id: str | None # Parent task ID
-    children: list        # Child task IDs
-    branch: str | None    # Git branch name
-    worktree: str | None  # Worktree path
-    error: str | None     # Error message if failed
-```
-
-### Branch Manifest
-
-```python
-# Location: src/agent_arborist/branch_manifest.py
-class BranchManifest:
-    spec_id: str                        # "001-calculator"
-    tasks: dict[str, TaskBranchInfo]    # Task ID to branch mapping
-
-class TaskBranchInfo:
-    task_id: str                        # "T001"
-    branch: str                         # "feature/001-calculator/T001"
-    parent_branch: str                  # "main"
-    subtree: str | None                 # "phase1/setup"
-```
-
-### Step Results
-
-```python
-# Location: src/agent_arborist/step_results.py
-class StepResult:
-    success: bool
-    skipped: bool
-    skip_reason: str | None
-    error: str | None
-
-class RunResult(StepResult):
-    files_changed: int
-    commit_message: str
-    runner: str
-    model: str
-    duration_seconds: float
-```
+See also: [`src/agent_arborist/config.py`](../../src/agent_arborist/config.py)
 
 ## Next Steps
 
-- [Specs and Tasks](../02-core-concepts/01-specs-and-tasks.md) - Learn to write effective task specifications
-- [DAGs and Dagu](../02-core-concepts/02-dags-and-dagu.md) - Understand how DAGs are generated
-- [Configuration System](../03-configuration/01-configuration-system.md) - Customize Arborist behavior
-
-## Code References
-
-- Main CLI: [`src/agent_arborist/cli.py`](../../src/agent_arborist/cli.py)
-- Task spec parser: [`src/agent_arborist/task_spec.py`](../../src/agent_arborist/task_spec.py)
-- DAG builder: [`src/agent_arborist/dag_builder.py`](../../src/agent_arborist/dag_builder.py)
-- Configuration: [`src/agent_arborist/config.py`](../../src/agent_arborist/config.py)
-- Git operations: [`src/agent_arborist/git_tasks.py`](../../src/agent_arborist/git_tasks.py)
-- Task state: [`src/agent_arborist/task_state.py`](../../src/agent_arborist/task_state.py)
-- Branch manifest: [`src/agent_arborist/branch_manifest.py`](../../src/agent_arborist/branch_manifest.py)
-- Runner system: [`src/agent_arborist/runner.py`](../../src/agent_arborist/runner.py)
+- [Specs and Tasks](../02-core-concepts/01-specs-and-tasks.md) - Writing task specs
+- [Configuration](../03-configuration/README.md) - Configuring Arborist

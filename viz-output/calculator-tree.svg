@@ -1,0 +1,129 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 943 1828" width="943" height="1828">
+<style>
+    .node-rect {
+        rx: 4;
+        ry: 4;
+        stroke-width: 2;
+    }
+    .node-text {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        font-size: 12px;
+        dominant-baseline: middle;
+    }
+    .node-symbol {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        font-size: 14px;
+        dominant-baseline: middle;
+        text-anchor: middle;
+    }
+    .edge {
+        fill: none;
+        stroke: #94a3b8;
+        stroke-width: 1.5;
+    }
+    .duration-text {
+        font-size: 10px;
+        fill: #64748b;
+    }
+    .metrics-badge {
+        font-size: 10px;
+        fill: white;
+    }
+</style>
+<defs>
+    <marker id="arrow" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+        <polygon points="0 0, 10 3.5, 0 7" fill="#94a3b8"/>
+    </marker>
+</defs>
+<path class="edge" d="M 170 936.0 C 205.0 936.0, 205.0 100.0, 240 100.0"/>
+<path class="edge" d="M 170 936.0 C 205.0 936.0, 205.0 540.0, 240 540.0"/>
+<path class="edge" d="M 360 540.0 C 400.0 540.0, 400.0 540.0, 440 540.0"/>
+<path class="edge" d="M 560 540.0 C 600.0 540.0, 600.0 276.0, 640 276.0"/>
+<path class="edge" d="M 560 540.0 C 600.0 540.0, 600.0 364.0, 640 364.0"/>
+<path class="edge" d="M 560 540.0 C 600.0 540.0, 600.0 452.0, 640 452.0"/>
+<path class="edge" d="M 560 540.0 C 600.0 540.0, 600.0 540.0, 640 540.0"/>
+<path class="edge" d="M 560 540.0 C 600.0 540.0, 600.0 628.0, 640 628.0"/>
+<path class="edge" d="M 560 540.0 C 600.0 540.0, 600.0 716.0, 640 716.0"/>
+<path class="edge" d="M 560 540.0 C 600.0 540.0, 600.0 804.0, 640 804.0"/>
+<path class="edge" d="M 170 936.0 C 205.0 936.0, 205.0 1244.0, 240 1244.0"/>
+<path class="edge" d="M 360 1244.0 C 400.0 1244.0, 400.0 1244.0, 440 1244.0"/>
+<path class="edge" d="M 560 1244.0 C 600.0 1244.0, 600.0 980.0, 640 980.0"/>
+<path class="edge" d="M 560 1244.0 C 600.0 1244.0, 600.0 1068.0, 640 1068.0"/>
+<path class="edge" d="M 560 1244.0 C 600.0 1244.0, 600.0 1156.0, 640 1156.0"/>
+<path class="edge" d="M 560 1244.0 C 600.0 1244.0, 600.0 1244.0, 640 1244.0"/>
+<path class="edge" d="M 560 1244.0 C 600.0 1244.0, 600.0 1332.0, 640 1332.0"/>
+<path class="edge" d="M 560 1244.0 C 600.0 1244.0, 600.0 1420.0, 640 1420.0"/>
+<path class="edge" d="M 560 1244.0 C 600.0 1244.0, 600.0 1508.0, 640 1508.0"/>
+<path class="edge" d="M 170 936.0 C 205.0 936.0, 205.0 1596.0, 240 1596.0"/>
+<path class="edge" d="M 170 936.0 C 205.0 936.0, 205.0 1684.0, 240 1684.0"/>
+<path class="edge" d="M 170 936.0 C 205.0 936.0, 205.0 1772.0, 240 1772.0"/>
+<g class="node" data-id="019c1c76-8197-7249-86b8-33bc0672cd70">
+<rect class="node-rect" x="40" y="920.0" width="130" height="32" fill="#fef2f2" stroke="#ef4444"/><text class="node-symbol" x="52" y="936.0" fill="#ef4444">✗</text><text class="node-text" x="64" y="936.0" fill="#991b1b">001_calculator</text><text class="duration-text" x="160" y="936.0" text-anchor="end">1m46s</text>
+</g>
+<g class="node" data-id="branches-setup">
+<rect class="node-rect" x="240" y="84" width="130" height="32" fill="#f0fdf4" stroke="#22c55e"/><text class="node-symbol" x="252" y="100.0" fill="#22c55e">✓</text><text class="node-text" x="264" y="100.0" fill="#166534">branches-setup</text>
+</g>
+<g class="node" data-id="c-T001">
+<rect class="node-rect" x="240" y="524.0" width="120" height="32" fill="#f0fdf4" stroke="#22c55e"/><text class="node-symbol" x="252" y="540.0" fill="#22c55e">✓</text><text class="node-text" x="264" y="540.0" fill="#166534">c-T001</text><text class="duration-text" x="350" y="540.0" text-anchor="end">1m14s</text>
+</g>
+<g class="node" data-id="Ee1Yw7Xej47tTB3aHf8PM9T2tVTyjcecWPX4XqkYNAn">
+<rect class="node-rect" x="440" y="524.0" width="120" height="32" fill="#f0fdf4" stroke="#22c55e"/><text class="node-symbol" x="452" y="540.0" fill="#22c55e">✓</text><text class="node-text" x="464" y="540.0" fill="#166534">T001</text><text class="duration-text" x="550" y="540.0" text-anchor="end">1m14s</text>
+</g>
+<g class="node" data-id="pre-sync">
+<rect class="node-rect" x="640" y="260" width="120" height="32" fill="#f0fdf4" stroke="#22c55e"/><text class="node-symbol" x="652" y="276.0" fill="#22c55e">✓</text><text class="node-text" x="664" y="276.0" fill="#166534">pre-sync</text><text class="duration-text" x="750" y="276.0" text-anchor="end">1s</text>
+</g>
+<g class="node" data-id="run">
+<rect class="node-rect" x="640" y="348" width="120" height="32" fill="#f0fdf4" stroke="#22c55e"/><text class="node-symbol" x="652" y="364.0" fill="#22c55e">✓</text><text class="node-text" x="664" y="364.0" fill="#166534">run</text><text class="duration-text" x="750" y="364.0" text-anchor="end">27s</text>
+</g>
+<g class="node" data-id="commit">
+<rect class="node-rect" x="640" y="436" width="120" height="32" fill="#f0fdf4" stroke="#22c55e"/><text class="node-symbol" x="652" y="452.0" fill="#22c55e">✓</text><text class="node-text" x="664" y="452.0" fill="#166534">commit</text>
+</g>
+<g class="node" data-id="run-test">
+<rect class="node-rect" x="640" y="524" width="120" height="32" fill="#f0fdf4" stroke="#22c55e"/><text class="node-symbol" x="652" y="540.0" fill="#22c55e">✓</text><text class="node-text" x="664" y="540.0" fill="#166534">run-test</text>
+</g>
+<g class="node" data-id="post-merge">
+<rect class="node-rect" x="640" y="612" width="120" height="32" fill="#f0fdf4" stroke="#22c55e"/><text class="node-symbol" x="652" y="628.0" fill="#22c55e">✓</text><text class="node-text" x="664" y="628.0" fill="#166534">post-merge</text><text class="duration-text" x="750" y="628.0" text-anchor="end">22s</text>
+</g>
+<g class="node" data-id="hook_post_task_run_tests_T001">
+<rect class="node-rect" x="640" y="700" width="235" height="32" fill="#f0fdf4" stroke="#22c55e"/><text class="node-symbol" x="652" y="716.0" fill="#22c55e">✓</text><text class="node-text" x="664" y="716.0" fill="#166534">hook_post_task_run...</text>
+</g>
+<g class="node" data-id="hook_post_task_quality_check_T001">
+<rect class="node-rect" x="640" y="788" width="263" height="32" fill="#f0fdf4" stroke="#22c55e"/><text class="node-symbol" x="652" y="804.0" fill="#22c55e">✓</text><text class="node-text" x="664" y="804.0" fill="#166534">hook_post_task_qua...</text><text class="duration-text" x="893" y="804.0" text-anchor="end">24s</text>
+</g>
+<g class="node" data-id="c-T002">
+<rect class="node-rect" x="240" y="1228.0" width="120" height="32" fill="#fef2f2" stroke="#ef4444"/><text class="node-symbol" x="252" y="1244.0" fill="#ef4444">✗</text><text class="node-text" x="264" y="1244.0" fill="#991b1b">c-T002</text><text class="duration-text" x="350" y="1244.0" text-anchor="end">32s</text>
+</g>
+<g class="node" data-id="Ho3N3B6WtGHxcNBVafvv4g3BxVFnamAPcTmShZyC7cGP">
+<rect class="node-rect" x="440" y="1228.0" width="120" height="32" fill="#fef2f2" stroke="#ef4444"/><text class="node-symbol" x="452" y="1244.0" fill="#ef4444">✗</text><text class="node-text" x="464" y="1244.0" fill="#991b1b">T002</text><text class="duration-text" x="550" y="1244.0" text-anchor="end">32s</text>
+</g>
+<g class="node" data-id="pre-sync">
+<rect class="node-rect" x="640" y="964" width="120" height="32" fill="#f0fdf4" stroke="#22c55e"/><text class="node-symbol" x="652" y="980.0" fill="#22c55e">✓</text><text class="node-text" x="664" y="980.0" fill="#166534">pre-sync</text>
+</g>
+<g class="node" data-id="run">
+<rect class="node-rect" x="640" y="1052" width="120" height="32" fill="#f0fdf4" stroke="#22c55e"/><text class="node-symbol" x="652" y="1068.0" fill="#22c55e">✓</text><text class="node-text" x="664" y="1068.0" fill="#166534">run</text><text class="duration-text" x="750" y="1068.0" text-anchor="end">31s</text>
+</g>
+<g class="node" data-id="commit">
+<rect class="node-rect" x="640" y="1140" width="120" height="32" fill="#f0fdf4" stroke="#22c55e"/><text class="node-symbol" x="652" y="1156.0" fill="#22c55e">✓</text><text class="node-text" x="664" y="1156.0" fill="#166534">commit</text>
+</g>
+<g class="node" data-id="run-test">
+<rect class="node-rect" x="640" y="1228" width="120" height="32" fill="#fef2f2" stroke="#ef4444"/><text class="node-symbol" x="652" y="1244.0" fill="#ef4444">✗</text><text class="node-text" x="664" y="1244.0" fill="#991b1b">run-test</text><text class="duration-text" x="750" y="1244.0" text-anchor="end">1s</text>
+</g>
+<g class="node" data-id="post-merge">
+<rect class="node-rect" x="640" y="1316" width="120" height="32" fill="#fefce8" stroke="#eab308"/><text class="node-symbol" x="652" y="1332.0" fill="#eab308">⊘</text><text class="node-text" x="664" y="1332.0" fill="#854d0e">post-merge</text>
+</g>
+<g class="node" data-id="hook_post_task_run_tests_T002">
+<rect class="node-rect" x="640" y="1404" width="235" height="32" fill="#fefce8" stroke="#eab308"/><text class="node-symbol" x="652" y="1420.0" fill="#eab308">⊘</text><text class="node-text" x="664" y="1420.0" fill="#854d0e">hook_post_task_run...</text>
+</g>
+<g class="node" data-id="hook_post_task_quality_check_T002">
+<rect class="node-rect" x="640" y="1492" width="263" height="32" fill="#fefce8" stroke="#eab308"/><text class="node-symbol" x="652" y="1508.0" fill="#eab308">⊘</text><text class="node-text" x="664" y="1508.0" fill="#854d0e">hook_post_task_qua...</text>
+</g>
+<g class="node" data-id="c-T003">
+<rect class="node-rect" x="240" y="1580" width="120" height="32" fill="#fefce8" stroke="#eab308"/><text class="node-symbol" x="252" y="1596.0" fill="#eab308">⊘</text><text class="node-text" x="264" y="1596.0" fill="#854d0e">c-T003</text>
+</g>
+<g class="node" data-id="c-T004">
+<rect class="node-rect" x="240" y="1668" width="120" height="32" fill="#fefce8" stroke="#eab308"/><text class="node-symbol" x="252" y="1684.0" fill="#eab308">⊘</text><text class="node-text" x="264" y="1684.0" fill="#854d0e">c-T004</text>
+</g>
+<g class="node" data-id="c-T005">
+<rect class="node-rect" x="240" y="1756" width="120" height="32" fill="#fefce8" stroke="#eab308"/><text class="node-symbol" x="252" y="1772.0" fill="#eab308">⊘</text><text class="node-text" x="264" y="1772.0" fill="#854d0e">c-T005</text>
+</g>
+</svg>

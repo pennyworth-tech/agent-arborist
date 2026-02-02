@@ -1,178 +1,108 @@
 # Introduction
 
-Agent Arborist is an automated task tree executor that orchestrates complex software development workflows using AI. It transforms task specifications into executable Directed Acyclic Graphs (DAGs) managed by Dagu, leveraging AI runners like Claude Code, OpenCode, and Gemini.
+Agent Arborist is a CLI tool for orchestrating AI-driven task execution using directed acyclic graphs (DAGs) managed by Dagu.
 
 ## What is Agent Arborist?
 
-Agent Arborist is a command-line tool that:
-
-- **Decomposes complex projects** into manageable tasks specified in Markdown
-- **Generates executable workflows** as DAGs for Dagu
-- **Executes tasks with AI** using multiple AI runners (Claude, OpenCode, Gemini)
-- **Isolates changes** using Git worktrees for each task
-- **Manages dependencies** between tasks automatically
-- **Provides visualization** of task trees and execution progress
+Agent Arborist is a task tree executor that:
+- **Reads markdown task specs** from `.arborist/specs/`
+- **Generates DAGU DAGs** for workflow orchestration
+- **Executes tasks with AI** using runners: claude, opencode, gemini
+- **Isolates changes** in Git worktrees
+- **Tracks progress** with task state management
 
 ## Key Concepts
 
 ### Task Specifications
-A **spec** is a Markdown file that defines a series of tasks to complete. Each task has:
-- An ID (e.g., T001, T002)
-- A title and description
-- Dependencies on other tasks
-- Optional grouping into phases
 
-**Example spec format:**
+A **spec** is a markdown file defining tasks. Each task has:
+- An ID (e.g., T001, T002)
+- A description
+- Optional parallel flag `[P]`
+- Optional phase grouping
+
+**Example spec:**
 ```markdown
 # Tasks: Calculator Project
 
-## Phase 1: Setup
+**Project**: Simple calculator app
+**Total Tasks**: 2
 
-- [ ] T001 Create directory structure
-- [ ] T002 Initialize project files
+## Phase 1: Core
 
-## Phase 2: Core
+- [ ] T001 Create add() function
+- [ ] T002 Create subtract() function
 
-- [ ] T003 Implement add() function
-- [ ] T004 Implement subtract() function
+## Dependencies
+
+T001 → T002
 ```
 
-### DAGs and Dagu
-A **DAG** (Directed Acyclic Graph) represents tasks and their dependencies. Agent Arborist generates Dagu YAML files that Dagu executes. Dagu handles:
-- Dependency resolution
-- Parallel execution where possible
-- Status tracking
-- Web UI for monitoring
+### Directory Structure
 
-### Git Worktrees
-Each task executes in its own **Git worktree**, which provides:
-- Complete isolation of changes
-- Easy rollback if a task fails
-- Clean commit history
-- Parallel development without conflicts
+```
+project/
+├── .arborist/
+│   ├── config.json           # Project configuration
+│   ├── manifests/            # Branch manifests (spec_id.json)
+│   ├── dagu/                 # Generated DAGU YAML files
+│   ├── worktrees/            # Git worktrees (spec_id/task_id/)
+│   ├── task-state/           # Task state (spec_id.json)
+│   └── prompts/              # Hook prompt files
+├── specs/
+│   └── 001-calculator/       # = spec_id
+│       └── tasks.md
+└── src/
+```
 
 ### AI Runners
-Arborist supports multiple AI runners:
-- **Claude Code** - Anthropic's Claude tool (default)
-- **OpenCode** - Open-source AI coding assistant
-- **Gemini** - Google's Gemini AI
 
-Runners can be configured globally, per-step, or per-task.
+Agent Arborist supports three runners:
+- **claude** - Anthropic Claude (default)
+- **opencode** - OpenCode AI
+- **gemini** - Google Gemini
 
-## Use Cases
+Configure runners in JSON config files.
 
-### 1. Building New Features
-Break down a complex feature into smaller, verifiable tasks:
+## CLI Commands
 
-```markdown
-# Tasks: Add User Authentication
+`arborist` provides these command groups:
 
-## Phase 1: Database
-- [ ] T001 Create users table migration
-- [ ] T002 Create User model
+| Command | Purpose |
+|---------|---------|
+| `init` | Initialize `.arborist/` directory |
+| `version` | Show version info |
+| `doctor` | System diagnostics |
+| `config` | Configuration management |
+| `hooks` | Hook configuration and testing |
+| `task` | Task operations (run, commit, test) |
+| `spec` | Spec operations (dag-build, branch-create) |
+| `dag` | DAG operations (run, status, restart) |
 
-## Phase 2: Backend
-- [ ] T003 Implement authentication endpoint
-- [ ] T004 Add JWT token generation
-
-## Phase 3: Frontend
-- [ ] T005 Create login form
-- [ ] T006 Add session management
-```
-
-### 2. Refactoring Large Codebases
-Safely refactor code by verifying each change:
-
-```markdown
-# Tasks: Refactor to Use Dependency Injection
-
-## Phase 1: Setup
-- [ ] T001 Create dependency injection container
-- [ ] T002 Set up service interfaces
-
-## Phase 2: Migrate Services
-- [ ] T003 Migrate UserService
-- [ ] T004 Migrate OrderService
-```
-
-### 3. Educational Projects
-Learn by building complex projects step-by-step:
-
-```markdown
-# Tasks: Build a Blog API
-
-## Phase 1: Basic CRUD
-- [ ] T001 Create Post model
-- [ ] T002 Implement CRUD endpoints
-
-## Phase 2: Features
-- [ ] T003 Add comment system
-- [ ] T004 Implement search
-```
-
-## Benefits
-
-### Systematic Approach
-- **Structured decomposition** - Break complex work into clear steps
-- **Dependency management** - Automatically handle task ordering
-- **Progress tracking** - See exactly what's done and what's left
-
-### Isolation and Safety
-- **Git-based isolation** - Each task in its own worktree
-- **Easy rollback** - Failed tasks don't affect others
-- **Clean history** - One commit per task with meaningful messages
-
-### AI-Powered
-- **Multiple AI options** - Choose the best AI for each task
-- **Configurable runners** - Different models for different steps
-- **Consistent execution** - Same AI behavior across all tasks
-
-### Observability
-- **Dagu Web UI** - Monitor execution in real-time
-- **Tree visualization** - See task relationships visually
-- **Status tracking** - Know exactly which tasks are running, done, or failed
-
-## System Architecture
+## Architecture
 
 ```mermaid
 graph TB
-    A[User] --> B[arborist CLI]
-    B --> C[Spec Parser]
-    C --> D[DAG Generator]
-    D --> E[Dagu Workflow Engine]
+    User[User CLI] --> Spec[Spec Parser]
+    Spec --> DAGGen[DAG Generator]
+    DAGGen --> Dagu[Dagu Engine]
 
-    E --> F[Git Worktrees]
-    E --> G[AI Runners]
+    Dagu --> Worktree[Git Worktrees]
+    Dagu --> Runner[AI Runner]
 
-    G --> H[Claude Code]
-    G --> I[OpenCode]
-    G --> GEM[Gemini]
+    Runner --> Claude[Claude]
+    Runner --> Open[OpenCode]
+    Runner --> Gemini[Gemini]
 
-    H --> F
-    I --> F
-    GEM --> F
+    Config[Config JSON] --> DAGGen
+    Config --> Runner
 
-    E --> J[Dagu Web UI]
-    J --> A
+    style User fill:#e1f5ff
+    style Dagu fill:#ffe1e1
+    style Runner fill:#e1ffe1
 ```
-
-**Components:**
-1. **arborist CLI** - User-facing command interface
-2. **Spec Parser** - Reads and validates task specifications
-3. **DAG Generator** - Creates Dagu YAML files
-4. **Dagu Workflow Engine** - Executes the DAG
-5. **Git Worktrees** - Isolated workspaces for each task
-6. **AI Runners** - Execute tasks with AI assistance
-7. **Dagu Web UI** - Real-time execution monitoring
 
 ## Next Steps
 
-- [Quick Start Guide](./02-quick-start.md) - Install and run your first spec
-- [Architecture Overview](./03-architecture.md) - Deep dive into system design
-- [Specs and Tasks](../02-core-concepts/01-specs-and-tasks.md) - Learn to write specs
-
-## Code References
-
-- Main CLI entry point: [`src/agent_arborist/cli.py`](../../src/agent_arborist/cli.py)
-- Spec detection: [`src/agent_arborist/spec.py`](../../src/agent_arborist/spec.py)
-- DAG building: [`src/agent_arborist/dag_builder.py`](../../src/agent_arborist/dag_builder.py)
+- [Quick Start](./02-quick-start.md) - Install and run your first spec
+- [Core Concepts](../02-core-concepts/README.md) - Understand specs, DAGs, worktrees

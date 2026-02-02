@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 410 596" width="410" height="596">
+<style>
+    .node-rect {
+        rx: 4;
+        ry: 4;
+        stroke-width: 2;
+    }
+    .node-text {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        font-size: 12px;
+        dominant-baseline: middle;
+    }
+    .node-symbol {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        font-size: 14px;
+        dominant-baseline: middle;
+        text-anchor: middle;
+    }
+    .edge {
+        fill: none;
+        stroke: #94a3b8;
+        stroke-width: 1.5;
+    }
+    .duration-text {
+        font-size: 10px;
+        fill: #64748b;
+    }
+    .metrics-badge {
+        font-size: 10px;
+        fill: white;
+    }
+</style>
+<defs>
+    <marker id="arrow" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+        <polygon points="0 0, 10 3.5, 0 7" fill="#94a3b8"/>
+    </marker>
+</defs>
+<path class="edge" d="M 170 320.0 C 205.0 320.0, 205.0 100.0, 240 100.0"/>
+<path class="edge" d="M 170 320.0 C 205.0 320.0, 205.0 188.0, 240 188.0"/>
+<path class="edge" d="M 170 320.0 C 205.0 320.0, 205.0 276.0, 240 276.0"/>
+<path class="edge" d="M 170 320.0 C 205.0 320.0, 205.0 364.0, 240 364.0"/>
+<path class="edge" d="M 170 320.0 C 205.0 320.0, 205.0 452.0, 240 452.0"/>
+<path class="edge" d="M 170 320.0 C 205.0 320.0, 205.0 540.0, 240 540.0"/>
+<g class="node" data-id="019c1c76-8197-7249-86b8-33bc0672cd70">
+<rect class="node-rect" x="40" y="304.0" width="130" height="32" fill="#fef2f2" stroke="#ef4444"/><text class="node-symbol" x="52" y="320.0" fill="#ef4444">✗</text><text class="node-text" x="64" y="320.0" fill="#991b1b">001_calculator</text><text class="duration-text" x="160" y="320.0" text-anchor="end">1m46s</text>
+</g>
+<g class="node" data-id="branches-setup">
+<rect class="node-rect" x="240" y="84" width="130" height="32" fill="#f0fdf4" stroke="#22c55e"/><text class="node-symbol" x="252" y="100.0" fill="#22c55e">✓</text><text class="node-text" x="264" y="100.0" fill="#166534">branches-setup</text>
+</g>
+<g class="node" data-id="c-T001">
+<rect class="node-rect" x="240" y="172" width="120" height="32" fill="#f0fdf4" stroke="#22c55e"/><text class="node-symbol" x="252" y="188.0" fill="#22c55e">✓</text><text class="node-text" x="264" y="188.0" fill="#166534">c-T001</text><text class="duration-text" x="350" y="188.0" text-anchor="end">1m14s</text>
+</g>
+<g class="node" data-id="c-T002">
+<rect class="node-rect" x="240" y="260" width="120" height="32" fill="#fef2f2" stroke="#ef4444"/><text class="node-symbol" x="252" y="276.0" fill="#ef4444">✗</text><text class="node-text" x="264" y="276.0" fill="#991b1b">c-T002</text><text class="duration-text" x="350" y="276.0" text-anchor="end">32s</text>
+</g>
+<g class="node" data-id="c-T003">
+<rect class="node-rect" x="240" y="348" width="120" height="32" fill="#fefce8" stroke="#eab308"/><text class="node-symbol" x="252" y="364.0" fill="#eab308">⊘</text><text class="node-text" x="264" y="364.0" fill="#854d0e">c-T003</text>
+</g>
+<g class="node" data-id="c-T004">
+<rect class="node-rect" x="240" y="436" width="120" height="32" fill="#fefce8" stroke="#eab308"/><text class="node-symbol" x="252" y="452.0" fill="#eab308">⊘</text><text class="node-text" x="264" y="452.0" fill="#854d0e">c-T004</text>
+</g>
+<g class="node" data-id="c-T005">
+<rect class="node-rect" x="240" y="524" width="120" height="32" fill="#fefce8" stroke="#eab308"/><text class="node-symbol" x="252" y="540.0" fill="#eab308">⊘</text><text class="node-text" x="264" y="540.0" fill="#854d0e">c-T005</text>
+</g>
+</svg>

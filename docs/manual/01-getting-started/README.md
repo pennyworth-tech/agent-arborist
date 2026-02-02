@@ -1,24 +1,44 @@
 # Part 1: Getting Started
 
-This section covers the fundamentals of Agent Arborist - what it is, how to install it, and its basic architecture.
+Welcome to Agent Arborist - an automated task tree executor that orchestrates AI-driven workflows using Dagu.
 
 ## Contents
 
-- **[Introduction](./01-introduction.md)** - What is Agent Arborist and why use it
-- **[Quick Start](./02-quick-start.md)** - Get up and running in minutes
-- **[Architecture Overview](./03-architecture.md)** - System architecture and components
+- **[Introduction](./01-introduction.md)** - What is Agent Arborist and key concepts
+- **[Quick Start](./02-quick-start.md)** - Install and run your first spec
+- **[Architecture](./03-architecture.md)** - System architecture and components
+
+## What You'll Learn
+
+This section covers:
+- Installing prerequisites (Python 3.10+, Git, Dagu)
+- Initializing an Arborist project
+- Writing your first task specification
+- Running workflows with Dagu
+- Choosing and configuring AI runners
 
 ## Key Concepts
 
-Agent Arborist is a tool for automating complex software development workflows using AI. Here's what you need to know:
+- **Specs** - Markdown task specs in `.arborist/specs/`
+- **Tasks** - Individual units of work with IDs (T001, T002)
+- **DAGs** - Dagu YAML files generated from specs
+- **Runners** - AI systems (claude, opencode, gemini)
+- **Worktrees** - Git worktrees for isolated execution
+- **Config** - JSON config files (global and project)
 
-- **Specs** - A specification file that describes a set of tasks to complete
-- **Tasks** - Individual units of work to be completed by AI
-- **DAGs** - Directed Acyclic Graphs that define task dependencies
-- **Worktrees** - Git worktrees used to isolate each task's changes
-- **Dagu** - The workflow engine that executes the DAGs
-- **AI Runners** - The AI systems (Claude, OpenCode, Gemini) that execute tasks
+## Typical Workflow
 
-## Getting Help
+```bash
+arborist init                     # Initialize .arborist/
+arborist spec dag-build 001-spec  # Generate DAGs
+arborist spec branch-create-all   # Create branches
+arborist dag run 001-spec         # Run workflow
+```
 
-If you run into issues, check the [Troubleshooting](../appendices/C-troubleshooting.md) appendix.
+## System Requirements
+
+| Requirement | Version |
+|-------------|---------|
+| Python | 3.10+ |
+| Git | Any recent version |
+| Dagu | Latest stable |
