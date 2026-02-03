@@ -563,7 +563,7 @@ def build_simple_dag(
     root = SubDag(
         name=dag_name,
         description=description or f"DAG for {spec_id}",
-        env=[f"ARBORIST_MANIFEST={spec_id}.json"],
+        env=[f"ARBORIST_SPEC_ID={spec_id}"],
         steps=root_steps,
         is_root=True,
     )
