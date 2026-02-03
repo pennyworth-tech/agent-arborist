@@ -429,8 +429,8 @@ class TestDagRunWithMockedDagu:
                 call_args = str(mock_run.call_args_list)
                 assert "my-run-123" in call_args
 
-    def test_dag_run_sets_manifest_env(self, repo_with_dag):
-        """dag run should set ARBORIST_MANIFEST environment variable."""
+    def test_dag_run_sets_spec_id_env(self, repo_with_dag):
+        """dag run should set ARBORIST_SPEC_ID environment variable."""
         original_run = subprocess.run
         with patch("agent_arborist.cli.shutil.which", return_value="/usr/bin/dagu"):
             with patch("agent_arborist.cli.subprocess.run", side_effect=mock_subprocess_run_for_dagu(original_run)) as mock_run:
@@ -438,12 +438,12 @@ class TestDagRunWithMockedDagu:
                 result = runner.invoke(main, ["dag", "run", "simple-test"])
 
                 assert result.exit_code == 0, f"Failed: {result.output}"
-                # Check that env was passed with ARBORIST_MANIFEST
+                # Check that env was passed with ARBORIST_SPEC_ID
                 for call in mock_run.call_args_list:
                     if "start" in str(call):
                         env = call.kwargs.get("env", {})
-                        if "ARBORIST_MANIFEST" in env:
-                            assert "simple-test.json" in env["ARBORIST_MANIFEST"]
+                        if "ARBORIST_SPEC_ID" in env:
+                            assert "simple-test" in env["ARBORIST_SPEC_ID"]
                             break
 
     def test_dag_run_dagu_not_found(self, repo_with_dag):

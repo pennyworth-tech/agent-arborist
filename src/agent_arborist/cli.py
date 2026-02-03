@@ -53,6 +53,7 @@ from agent_arborist.git_tasks import (
     create_all_branches_from_manifest,
     sync_task,
     get_current_branch,
+    find_manifest_path,
 )
 from agent_arborist.branch_manifest import (
     generate_manifest,
@@ -1399,11 +1400,23 @@ def task_pre_sync(ctx: click.Context, task_id: str) -> None:
     """
     import os
 
+    from agent_arborist.git_tasks import find_manifest_path
+
     manifest_path = os.environ.get("ARBORIST_MANIFEST")
+    
+    # If not provided via env, try discovery
     if not manifest_path:
-        console.print("[red]Error:[/red] ARBORIST_MANIFEST environment variable not set")
-        console.print("This command should be run from a DAGU DAG step")
-        raise SystemExit(1)
+        spec_id_from_env = os.environ.get("ARBORIST_SPEC_ID")
+        if spec_id_from_env:
+            discovered = find_manifest_path(spec_id_from_env)
+            if discovered:
+                manifest_path = str(discovered)
+        
+        if not manifest_path:
+            console.print("[red]Error:[/red] ARBORIST_MANIFEST environment variable not set and manifest could not be discovered")
+            console.print("This command should be run from a DAGU DAG step")
+            console.print("[dim]Manifest discovery requires ARBORIST_SPEC_ID env var to be set[/dim]")
+            raise SystemExit(1)
 
     try:
         manifest = load_manifest(Path(manifest_path))
@@ -1494,10 +1507,23 @@ def task_run(ctx: click.Context, task_id: str, timeout: int, runner: str | None,
     """
     import os
 
+    from agent_arborist.git_tasks import find_manifest_path
+
     manifest_path = os.environ.get("ARBORIST_MANIFEST")
+    
+    # If not provided via env, try discovery
     if not manifest_path:
-        console.print("[red]Error:[/red] ARBORIST_MANIFEST environment variable not set")
-        raise SystemExit(1)
+        spec_id_from_env = os.environ.get("ARBORIST_SPEC_ID")
+        if spec_id_from_env:
+            discovered = find_manifest_path(spec_id_from_env)
+            if discovered:
+                manifest_path = str(discovered)
+        
+        if not manifest_path:
+            console.print("[red]Error:[/red] ARBORIST_MANIFEST environment variable not set and manifest could not be discovered")
+            console.print("This command should be run from a DAGU DAG step")
+            console.print("[dim]Manifest discovery requires ARBORIST_SPEC_ID env var to be set[/dim]")
+            raise SystemExit(1)
 
     try:
         manifest = load_manifest(Path(manifest_path))
@@ -1648,10 +1674,22 @@ def task_commit(ctx: click.Context, task_id: str) -> None:
     import os
     import subprocess
 
+    from agent_arborist.git_tasks import find_manifest_path
+
     manifest_path = os.environ.get("ARBORIST_MANIFEST")
+
     if not manifest_path:
-        console.print("[red]Error:[/red] ARBORIST_MANIFEST environment variable not set")
-        raise SystemExit(1)
+        spec_id_from_env = os.environ.get("ARBORIST_SPEC_ID")
+        if spec_id_from_env:
+            discovered = find_manifest_path(spec_id_from_env)
+            if discovered:
+                manifest_path = str(discovered)
+        
+        if not manifest_path:
+            console.print("[red]Error:[/red] ARBORIST_MANIFEST environment variable not set and manifest could not be discovered")
+            console.print("This command should be run from a DAGU DAG step")
+            console.print("[dim]Manifest discovery requires ARBORIST_SPEC_ID env var to be set[/dim]")
+            raise SystemExit(1)
 
     try:
         manifest = load_manifest(Path(manifest_path))
@@ -1775,17 +1813,28 @@ def task_commit(ctx: click.Context, task_id: str) -> None:
 @click.option("--cmd", help="Override test command (auto-detected if not specified)")
 @click.pass_context
 def task_run_test(ctx: click.Context, task_id: str, cmd: str | None) -> None:
-    """Run tests for a task.
+    """Run tests for task in its worktree.
 
-    Auto-detects test command based on project files (pytest, npm test, etc.).
-    For parent tasks, verifies all children are complete first.
+    Requires ARBORIST_MANIFEST environment variable or ARBORIST_SPEC_ID for discovery.
     """
     import os
 
+    from agent_arborist.git_tasks import find_manifest_path
+
     manifest_path = os.environ.get("ARBORIST_MANIFEST")
+
     if not manifest_path:
-        console.print("[red]Error:[/red] ARBORIST_MANIFEST environment variable not set")
-        raise SystemExit(1)
+        spec_id_from_env = os.environ.get("ARBORIST_SPEC_ID")
+        if spec_id_from_env:
+            discovered = find_manifest_path(spec_id_from_env)
+            if discovered:
+                manifest_path = str(discovered)
+        
+        if not manifest_path:
+            console.print("[red]Error:[/red] ARBORIST_MANIFEST environment variable not set and manifest could not be discovered")
+            console.print("This command should be run from a DAGU DAG step")
+            console.print("[dim]Manifest discovery requires ARBORIST_SPEC_ID env var to be set[/dim]")
+            raise SystemExit(1)
 
     try:
         manifest = load_manifest(Path(manifest_path))
@@ -1904,10 +1953,22 @@ def task_post_merge(ctx: click.Context, task_id: str, timeout: int, runner: str 
     """
     import os
 
+    from agent_arborist.git_tasks import find_manifest_path
+
     manifest_path = os.environ.get("ARBORIST_MANIFEST")
+
     if not manifest_path:
-        console.print("[red]Error:[/red] ARBORIST_MANIFEST environment variable not set")
-        raise SystemExit(1)
+        spec_id_from_env = os.environ.get("ARBORIST_SPEC_ID")
+        if spec_id_from_env:
+            discovered = find_manifest_path(spec_id_from_env)
+            if discovered:
+                manifest_path = str(discovered)
+        
+        if not manifest_path:
+            console.print("[red]Error:[/red] ARBORIST_MANIFEST environment variable not set and manifest could not be discovered")
+            console.print("This command should be run from a DAGU DAG step")
+            console.print("[dim]Manifest discovery requires ARBORIST_SPEC_ID env var to be set[/dim]")
+            raise SystemExit(1)
 
     try:
         manifest = load_manifest(Path(manifest_path))
@@ -2061,9 +2122,17 @@ def task_post_cleanup(ctx: click.Context, task_id: str, keep_branch: bool) -> No
     import os
 
     manifest_path = os.environ.get("ARBORIST_MANIFEST")
+
     if not manifest_path:
-        console.print("[red]Error:[/red] ARBORIST_MANIFEST environment variable not set")
-        raise SystemExit(1)
+        spec_id_from_env = os.environ.get("ARBORIST_SPEC_ID")
+        if spec_id_from_env:
+            discovered = find_manifest_path(spec_id_from_env)
+            if discovered:
+                manifest_path = str(discovered)
+        
+        if not manifest_path:
+            console.print("[red]Error:[/red] ARBORIST_MANIFEST environment variable not set and manifest could not be discovered")
+            raise SystemExit(1)
 
     try:
         manifest = load_manifest(Path(manifest_path))
@@ -2076,8 +2145,13 @@ def task_post_cleanup(ctx: click.Context, task_id: str, keep_branch: bool) -> No
         console.print(f"[red]Error:[/red] Task {task_id} not found in manifest")
         raise SystemExit(1)
 
-    task_branch = task_info.branch
-    worktree_path = get_worktree_path(manifest.spec_id, task_id)
+    # Get worktree path (from env or compute)
+    worktree_path_str = os.environ.get("ARBORIST_WORKTREE")
+    if worktree_path_str:
+        worktree_path = Path(worktree_path_str)
+    else:
+        # Compute from git root
+        worktree_path = get_worktree_path(manifest.spec_id, task_id)
 
     if ctx.obj.get("echo_for_testing"):
         echo_command(
@@ -2135,18 +2209,32 @@ def task_container_up(ctx: click.Context, task_id: str) -> None:
 
     worktree_path = os.environ.get("ARBORIST_WORKTREE", "")
 
+    # Discover manifest path first
+    manifest_path = os.environ.get("ARBORIST_MANIFEST")
+
+    if not manifest_path:
+        spec_id_from_env = os.environ.get("ARBORIST_SPEC_ID")
+        if spec_id_from_env:
+            discovered = find_manifest_path(spec_id_from_env)
+            if discovered:
+                manifest_path = str(discovered)
+        
+        if not manifest_path:
+            console.print("[red]Error:[/red] ARBORIST_MANIFEST environment variable not set and manifest could not be discovered")
+            console.print("This command should be run from a DAGU DAG step")
+            raise SystemExit(1)
+
+    # If worktree_path not set, compute it from spec_id and task_id
+    if not worktree_path:
+        spec_id = os.environ.get("ARBORIST_SPEC_ID")
+        if spec_id and task_id:
+            worktree_path = str(get_worktree_path(spec_id, task_id))
+    
     # Check if this step should be skipped (restart support)
     if _check_skip_and_output(
         task_id, "container-up", ContainerUpResult, ctx, worktree_path=worktree_path
     ):
         return
-
-    manifest_path = os.environ.get("ARBORIST_MANIFEST")
-
-    if not manifest_path:
-        console.print("[red]Error:[/red] ARBORIST_MANIFEST environment variable not set")
-        console.print("This command should be run from a DAGU DAG step")
-        raise SystemExit(1)
 
     if not worktree_path:
         console.print("[red]Error:[/red] ARBORIST_WORKTREE environment variable not set")
@@ -2237,7 +2325,13 @@ def task_container_stop(ctx: click.Context, task_id: str) -> None:
 
     from agent_arborist.step_results import ContainerStopResult
 
+    # Compute worktree path from env variables or derive from spec_id and task_id
     worktree_path = os.environ.get("ARBORIST_WORKTREE", "")
+    
+    if not worktree_path:
+        spec_id = os.environ.get("ARBORIST_SPEC_ID")
+        if spec_id and task_id:
+            worktree_path = str(get_worktree_path(spec_id, task_id))
 
     # Check if this step should be skipped (restart support)
     if _check_skip_and_output(
@@ -2347,24 +2441,25 @@ def spec_branch_create_all(ctx: click.Context) -> None:
     if manifest_path_str:
         manifest_path = Path(manifest_path_str)
     else:
-        # Auto-detect from spec_id and dagu_home
-        spec_id = ctx.obj.get("spec_id")
-        dagu_home = ctx.obj.get("dagu_home")
+        # Try to discover from spec_id
+        spec_id_from_env = os.environ.get("ARBORIST_SPEC_ID")
+        spec_id = spec_id_from_env or ctx.obj.get("spec_id")
 
         if not spec_id:
             console.print("[red]Error:[/red] No spec available")
             console.print("Either:")
             console.print("  - Run from a spec branch (e.g., 002-my-feature)")
             console.print("  - Use --spec option (e.g., --spec 002-my-feature)")
-            console.print("  - Set ARBORIST_MANIFEST environment variable")
+            console.print("  - Set ARBORIST_MANIFEST or ARBORIST_SPEC_ID environment variable")
             raise SystemExit(1)
 
-        if not dagu_home:
-            console.print("[red]Error:[/red] DAGU_HOME not set")
-            console.print("Run 'arborist init' first to initialize the project")
+        discovered = find_manifest_path(spec_id)
+        if discovered:
+            manifest_path = discovered
+        else:
+            console.print(f"[red]Error:[/red] Manifest file not found for spec: {spec_id}")
+            console.print("Run 'arborist spec dag-build' first to generate the manifest")
             raise SystemExit(1)
-
-        manifest_path = Path(dagu_home) / "dags" / f"{spec_id}.json"
 
     try:
         manifest = load_manifest(manifest_path)
@@ -2688,67 +2783,20 @@ def spec_dag_build(
         console.print(f"[dim]  Base branch: {manifest.base_branch}[/dim]")
         console.print(f"[dim]  Tasks: {len(manifest.tasks)}[/dim]")
 
-    # Inject ARBORIST_MANIFEST env into generated DAG YAML (multi-document)
-    import yaml
-    documents = list(yaml.safe_load_all(dag_yaml))
-
-    # Root DAG is first document
-    root_dag = documents[0]
-
-    # Add env section if not present
-    if "env" not in root_dag:
-        root_dag["env"] = []
-
-    # TODO: We must use absolute paths AND add env to ALL documents because:
-    # 1. Dagu filters inherited env vars - only PATH, HOME, DAGU_*, etc. pass through
-    # 2. ARBORIST_MANIFEST set in process env when calling `dagu start` is NOT inherited
-    # 3. Sub-DAGs (via `call:`) don't inherit env from parent DAG document
-    # 4. Sub-DAGs also don't inherit workingDir, so relative paths break
-    # See: https://docs.dagu.cloud/writing-workflows/environment-variables
-    # NOTE: DAGU requires KEY=value format, not KEY: value
-    manifest_env = f"ARBORIST_MANIFEST={manifest_path.resolve()}"
-
-    # Add manifest env to ALL documents (root and sub-DAGs)
-    for doc in documents:
-        if "env" not in doc:
-            doc["env"] = []
-
-        has_manifest = any(
-            isinstance(e, str) and e.startswith("ARBORIST_MANIFEST=")
-            for e in doc["env"]
-        )
-        if has_manifest:
-            # Replace existing manifest with correct path
-            doc["env"] = [
-                manifest_env if (isinstance(e, str) and e.startswith("ARBORIST_MANIFEST=")) else e
-                for e in doc["env"]
-            ]
-            # Remove duplicates (keep first)
-            seen = set()
-            unique_env = []
-            for e in doc["env"]:
-                key = e.split("=")[0] if isinstance(e, str) and "=" in e else e
-                if key not in seen:
-                    seen.add(key)
-                    unique_env.append(e)
-            doc["env"] = unique_env
-        else:
-            doc["env"].append(manifest_env)
-
     # If echo_only, inject --echo-for-testing into all arborist commands (in all documents)
     if echo_only:
+        import yaml
+        documents = list(yaml.safe_load_all(dag_yaml))
         for doc in documents:
             for step in doc.get("steps", []):
                 cmd = step.get("command", "")
-                # Handle both 'arborist' and potential path variations
                 if "arborist " in cmd:
                     step["command"] = cmd.replace("arborist ", "arborist --echo-for-testing ", 1)
-
-    # Re-serialize as multi-document YAML
-    yaml_parts = []
-    for doc in documents:
-        yaml_parts.append(yaml.dump(doc, default_flow_style=False, sort_keys=False))
-    dag_yaml = "---\n".join(yaml_parts)
+        
+        yaml_parts = []
+        for doc in documents:
+            yaml_parts.append(yaml.dump(doc, default_flow_style=False, sort_keys=False))
+        dag_yaml = "---\n".join(yaml_parts)
 
     # Write the DAG
     output_path.write_text(dag_yaml)

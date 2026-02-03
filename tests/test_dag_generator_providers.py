@@ -118,12 +118,12 @@ def assert_dag_structure(dag: dict, is_root: bool = False):
     assert len(dag["steps"]) >= 1, "DAG should have at least one step"
 
     if is_root:
-        # Root should typically have env with ARBORIST_MANIFEST
+        # Root should typically have env with ARBORIST_SPEC_ID
         if "env" in dag:
             env_str = str(dag["env"])
             # Soft check - AI may format env differently
-            if "ARBORIST_MANIFEST" not in env_str:
-                print(f"Note: Root env missing ARBORIST_MANIFEST: {dag['env']}")
+            if "ARBORIST_SPEC_ID" not in env_str:
+                print(f"Note: Root env missing ARBORIST_SPEC_ID: {dag['env']}")
 
 
 class TestRunnerWithModel:
