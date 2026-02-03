@@ -226,8 +226,25 @@ def find_manifest_path(spec_id: str, git_root: Path | None = None) -> Path | Non
 
 
 def worktree_exists(worktree_path: Path) -> bool:
-    """Check if a worktree exists at the given path."""
-    return worktree_path.exists() and (worktree_path / ".git").exists()
+    """Check if a worktree exists at the given path.
+    
+    Returns True only if there's a proper git worktree at the path.
+    Returns False for standalone git repositories (which have .git as a directory).
+    """
+    if not worktree_path.exists():
+        return False
+    
+    git_path = worktree_path / ".git"
+    if not git_path.exists():
+        return False
+    
+    # Proper git worktrees have .git as a file (symlink or text file pointing to worktree metadata)
+    # Standalone repos have .git as a directory
+    if git_path.is_file():
+        return True  # This is a worktree link file
+    
+    # If .git is a directory, it's a standalone repo, not a worktree
+    return False
 
 
 def create_worktree(task_branch: str, worktree_path: Path, cwd: Path | None = None) -> GitResult:
