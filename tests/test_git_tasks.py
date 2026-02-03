@@ -45,6 +45,57 @@ class TestWorktreePath:
         assert path == expected
 
 
+class TestWorktreeExists:
+    """Tests for worktree_exists function."""
+
+    def test_worktree_does_not_exist(self, tmp_path, monkeypatch):
+        """Returns False for non-existent paths."""
+        from agent_arborist import git_tasks
+        nonexistent_path = tmp_path / "does-not-exist"
+        assert not git_tasks.worktree_exists(nonexistent_path)
+
+    def test_worktree_exists_true_for_worktree(self, git_repo):
+        """Returns True for proper git worktrees (.git is a file)."""
+        from agent_arborist import git_tasks
+        # Create a worktree (which has .git as a link file)
+        worktree_path = git_repo / "worktree"
+        subprocess.run(
+            ["git", "worktree", "add", str(worktree_path), "-b", "test-branch"],
+            cwd=git_repo,
+            capture_output=True,
+            check=True,
+        )
+        assert git_tasks.worktree_exists(worktree_path)
+        # Cleanup
+        subprocess.run(["git", "worktree", "remove", str(worktree_path), "--force"], cwd=git_repo, capture_output=True)
+
+    def test_worktree_exists_false_for_standalone_repo(self, tmp_path):
+        """Returns False for standalone git repositories (.git is a directory)."""
+        from agent_arborist import git_tasks
+        # Create a standalone git repo
+        subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True, check=True)
+        subprocess.run(
+            ["git", "config", "user.email", "test@test.com"],
+            cwd=tmp_path,
+            capture_output=True,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "Test User"],
+            cwd=tmp_path,
+            capture_output=True,
+            check=True,
+        )
+        subprocess.run(["git", "commit", "--allow-empty", "-m", "init"], cwd=tmp_path, capture_output=True, check=True)
+        # This should return False since it's a standalone repo, not a worktree
+        assert not git_tasks.worktree_exists(tmp_path)
+
+    def test_worktree_exists_false_for_non_git_dir(self, tmp_path):
+        """Returns False for directories without .git."""
+        from agent_arborist import git_tasks
+        assert not git_tasks.worktree_exists(tmp_path)
+
+
 class TestDetectTestCommand:
     """Tests for test command auto-detection."""
 
