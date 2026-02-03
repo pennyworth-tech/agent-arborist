@@ -142,7 +142,7 @@ class TestDagGeneratorBasic:
         assert_root_dag_structure(documents[0])
 
     def test_generates_root_with_env(self, hello_world_spec):
-        """Test that root DAG has env section with ARBORIST_MANIFEST."""
+        """Test that root DAG has env section with ARBORIST_SPEC_ID."""
         generator = DagGenerator()
         result = generator.generate(hello_world_spec, "hello-world", timeout=180)
 
@@ -154,8 +154,8 @@ class TestDagGeneratorBasic:
         # Root should have env - may be in various formats
         if "env" in root:
             env_str = str(root["env"])
-            assert "ARBORIST_MANIFEST" in env_str, (
-                "Root DAG env should contain ARBORIST_MANIFEST"
+            assert "ARBORIST_SPEC_ID" in env_str, (
+                "Root DAG env should contain ARBORIST_SPEC_ID"
             )
 
     def test_generates_subdags(self, hello_world_spec):

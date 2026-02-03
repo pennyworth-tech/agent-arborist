@@ -121,6 +121,110 @@ def get_worktree_path(spec_id: str, task_id: str) -> Path:
     return arborist_home / "worktrees" / spec_id / task_id
 
 
+def get_git_root_from_worktree(worktree_path: Path) -> Path | None:
+    """Get git repository root from within a worktree context.
+
+    Args:
+        worktree_path: Path to worktree directory
+
+    Returns:
+        Path to git repository root, or None if cannot determine
+    """
+    git_file = worktree_path / ".git"
+    if not git_file.exists():
+        return None
+
+    try:
+        content = git_file.read_text().strip()
+        if content.startswith("gitdir: "):
+            git_dir_path = content[8:]
+            git_dir = Path(git_dir_path).resolve()
+            
+            # Worktree gitdir is at: repo/.git/worktrees/<name>
+            # Repo root is two levels up from worktrees/
+            if "worktrees" in str(git_dir):
+                parts = git_dir.parts
+                worktrees_idx = parts.index("worktrees")
+                if worktrees_idx > 0:
+                    root = Path(*parts[:worktrees_idx])
+                    return root
+            
+            return None
+    except Exception:
+        return None
+    
+    return None
+
+
+def get_git_root_or_current() -> Path:
+    """Get git root, searching from either current dir or worktree.
+
+    Tries:
+    1. Get root from current directory (git rev-parse --show-toplevel)
+    2. If in worktree, parse .git file to find repo root
+
+    Returns:
+        Path to git repository root
+
+    Raises:
+        ArboristHomeError: If cannot determine git root
+    """
+    from agent_arborist.home import get_git_root
+    
+    git_root = get_git_root()
+    if git_root:
+        return git_root
+    
+    # Try worktree context
+    import os
+    worktree_env = os.environ.get("ARBORIST_WORKTREE")
+    if worktree_env:
+        worktree_path = Path(worktree_env)
+        worktree_root = get_git_root_from_worktree(worktree_path)
+        if worktree_root:
+            return worktree_root
+    
+    raise ArboristHomeError(
+        "Cannot determine git repository root. "
+        "Are you in a git repository or worktree?"
+    )
+
+
+def find_manifest_path(spec_id: str, git_root: Path | None = None) -> Path | None:
+    """Find manifest file using discovery strategy.
+
+    Args:
+        spec_id: Specification ID for the DAG
+        git_root: Git repository root (optional, will auto-detect if not provided)
+
+    Returns:
+        Path to manifest file, or None if not found
+
+    Search order:
+    1. {git_root}/.arborist/dagu/dags/{spec_id}.json (tracked location)
+    2. {git_root}/.arborist/{spec_id}.json
+    3. {git_root}/specs/{spec_id}/manifest.json
+    """
+    if git_root is None:
+        try:
+            git_root = get_git_root_or_current()
+        except Exception:
+            return None
+    
+    # Search in order
+    search_paths = [
+        git_root / ".arborist" / "dagu" / "dags" / f"{spec_id}.json",
+        git_root / ".arborist" / f"{spec_id}.json",
+        git_root / "specs" / spec_id / "manifest.json",
+    ]
+    
+    for path in search_paths:
+        if path.exists():
+            return path
+    
+    return None
+
+
 def worktree_exists(worktree_path: Path) -> bool:
     """Check if a worktree exists at the given path."""
     return worktree_path.exists() and (worktree_path / ".git").exists()

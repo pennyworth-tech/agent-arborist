@@ -17,51 +17,51 @@ class TestFixEnvFormat:
 
     def test_already_correct_format(self):
         """Test that correct KEY=value format is preserved."""
-        dag = {"env": ["ARBORIST_MANIFEST=test.json"]}
+        dag = {"env": ["ARBORIST_SPEC_ID=test"]}
         fixes = _fix_env_format(dag)
 
-        assert dag["env"] == ["ARBORIST_MANIFEST=test.json"]
+        assert dag["env"] == ["ARBORIST_SPEC_ID=test"]
         assert len(fixes) == 0
 
     def test_fixes_colon_format(self):
         """Test that KEY: value format is converted to KEY=value."""
-        dag = {"env": ["ARBORIST_MANIFEST: test.json"]}
+        dag = {"env": ["ARBORIST_SPEC_ID: test"]}
         fixes = _fix_env_format(dag)
 
-        assert dag["env"] == ["ARBORIST_MANIFEST=test.json"]
+        assert dag["env"] == ["ARBORIST_SPEC_ID=test"]
         assert len(fixes) == 1
         assert "Converted" in fixes[0]
 
     def test_fixes_dict_format(self):
         """Test that dict format {KEY: value} is converted to KEY=value."""
-        dag = {"env": [{"ARBORIST_MANIFEST": "test.json"}]}
+        dag = {"env": [{"ARBORIST_SPEC_ID": "test"}]}
         fixes = _fix_env_format(dag)
 
-        assert dag["env"] == ["ARBORIST_MANIFEST=test.json"]
+        assert dag["env"] == ["ARBORIST_SPEC_ID=test"]
         assert len(fixes) == 1
 
     def test_removes_duplicates(self):
         """Test that duplicate env keys are removed."""
         dag = {"env": [
-            "ARBORIST_MANIFEST=test1.json",
-            "ARBORIST_MANIFEST=test2.json",
+            "ARBORIST_SPEC_ID=test1",
+            "ARBORIST_SPEC_ID=test2",
         ]}
         fixes = _fix_env_format(dag)
 
         assert len(dag["env"]) == 1
-        assert dag["env"][0] == "ARBORIST_MANIFEST=test1.json"
+        assert dag["env"][0] == "ARBORIST_SPEC_ID=test1"
         assert any("duplicate" in f.lower() for f in fixes)
 
     def test_removes_duplicate_with_different_formats(self):
         """Test that duplicates are removed even with different formats."""
         dag = {"env": [
-            "ARBORIST_MANIFEST=test1.json",
-            {"ARBORIST_MANIFEST": "test2.json"},
+            "ARBORIST_SPEC_ID=test1",
+            {"ARBORIST_SPEC_ID": "test2"},
         ]}
         fixes = _fix_env_format(dag)
 
         assert len(dag["env"]) == 1
-        assert dag["env"][0] == "ARBORIST_MANIFEST=test1.json"
+        assert dag["env"][0] == "ARBORIST_SPEC_ID=test1"
 
     def test_handles_missing_env(self):
         """Test that missing env section is handled gracefully."""
@@ -187,8 +187,8 @@ class TestValidateAndFixDag:
         dag = {
             "name": "test",
             "env": [
-                "ARBORIST_MANIFEST: test1.json",
-                {"ARBORIST_MANIFEST": "test2.json"},
+                "ARBORIST_SPEC_ID: test1",
+                {"ARBORIST_SPEC_ID": "test2"},
             ],
             "steps": [
                 {"name": "step2", "command": "echo 2", "depends": ["step1"]},
@@ -230,8 +230,8 @@ class TestValidateAndFixDag:
             "name": "hello_world",
             "description": "Test service",
             "env": [
-                "ARBORIST_MANIFEST=hello_world.json",
-                "ARBORIST_MANIFEST=hello-world.json",
+                "ARBORIST_SPEC_ID=hello_world",
+                "ARBORIST_SPEC_ID=hello-world",
             ],
             "steps": [
                 {"name": "branches-setup", "command": "arborist spec branch-create-all", "depends": []},

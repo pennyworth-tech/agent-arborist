@@ -197,7 +197,7 @@ class SubDagBuilder:
         arborist_home = get_arborist_home()
 
         env = [
-            f"ARBORIST_MANIFEST={spec_id}.json",
+            f"ARBORIST_SPEC_ID={spec_id}",
             f"ARBORIST_CONTAINER_MODE={self.config.container_mode.value}",
         ]
 
@@ -322,23 +322,14 @@ class SubDagBuilder:
                 depends=["post-merge"],
             ))
 
-        # Add environment variables for worktree path and container mode
-        # Compute absolute path to worktree
+        # Add environment variables for spec ID and container mode
+        # Manifest and worktree paths are discovered at runtime from git root
         spec_id = self.config.spec_id or self.config.name
-        try:
-            arborist_home = get_arborist_home()
-            worktree_path = arborist_home / "worktrees" / spec_id / task_id
-            env_vars = [
-                f"ARBORIST_MANIFEST={spec_id}.json",
-                f"ARBORIST_WORKTREE={worktree_path}",
-                f"ARBORIST_CONTAINER_MODE={self.config.container_mode.value}",
-            ]
-        except Exception:
-            # Fallback if we can't determine arborist home
-            env_vars = [
-                f"ARBORIST_MANIFEST={spec_id}.json",
-                f"ARBORIST_CONTAINER_MODE={self.config.container_mode.value}",
-            ]
+        env_vars = [
+            f"ARBORIST_SPEC_ID={spec_id}",
+            f"ARBORIST_TASK_ID={task_id}",
+            f"ARBORIST_CONTAINER_MODE={self.config.container_mode.value}",
+        ]
 
         return SubDag(name=task_id, steps=steps, env=env_vars)
 
@@ -400,18 +391,13 @@ arborist task post-cleanup {task_id}"""
             output=output_var("complete"),
         ))
 
-        # Add environment variable for worktree path
+# Add environment variable for spec and task IDs
+        # Manifest and worktree paths are discovered at runtime from git root
         spec_id = self.config.spec_id or self.config.name
-        try:
-            arborist_home = get_arborist_home()
-            worktree_path = arborist_home / "worktrees" / spec_id / task_id
-            env_vars = [
-                f"ARBORIST_MANIFEST={spec_id}.json",
-                f"ARBORIST_WORKTREE={worktree_path}",
-            ]
-        except Exception:
-            # Fallback if we can't determine arborist home
-            env_vars = [f"ARBORIST_MANIFEST={spec_id}.json"]
+        env_vars = [
+            f"ARBORIST_SPEC_ID={spec_id}",
+            f"ARBORIST_TASK_ID={task_id}",
+        ]
 
         return SubDag(name=task_id, steps=steps, env=env_vars)
 
