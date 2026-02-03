@@ -134,25 +134,48 @@ class TestIsInitialized:
 
 class TestInitArboristHome:
     def test_creates_arborist_directory(self, git_repo):
-        result = init_arborist_home()
+        home, result = init_arborist_home()
         expected = git_repo / ARBORIST_DIR_NAME
-        assert result == expected
+        assert home == expected
         assert expected.is_dir()
 
     def test_creates_dagu_subdirectory(self, git_repo):
-        result = init_arborist_home()
-        dagu_dir = result / DAGU_DIR_NAME
+        home, result = init_arborist_home()
+        dagu_dir = home / DAGU_DIR_NAME
         assert dagu_dir.is_dir()
 
     def test_creates_dagu_dags_subdirectory(self, git_repo):
-        result = init_arborist_home()
-        dags_dir = result / DAGU_DIR_NAME / "dags"
+        home, result = init_arborist_home()
+        dags_dir = home / DAGU_DIR_NAME / "dags"
         assert dags_dir.is_dir()
 
     def test_creates_dagu_data_subdirectory(self, git_repo):
-        result = init_arborist_home()
-        data_dir = result / DAGU_DIR_NAME / "data"
+        home, result = init_arborist_home()
+        data_dir = home / DAGU_DIR_NAME / "data"
         assert data_dir.is_dir()
+
+    def test_creates_prompts_subdirectory(self, git_repo):
+        home, result = init_arborist_home()
+        prompts_dir = home / "prompts"
+        assert prompts_dir.is_dir()
+
+    def test_creates_default_config(self, git_repo):
+        home, result = init_arborist_home()
+        config_path = home / "config.json"
+        assert config_path.exists()
+        # Verify it's valid JSON
+        import json
+        config = json.loads(config_path.read_text())
+        assert "version" in config
+        assert config["defaults"]["runner"] == "claude"
+
+    def test_creates_config_with_custom_runner(self, git_repo):
+        home, result = init_arborist_home(runner="opencode", model="test-model")
+        config_path = home / "config.json"
+        import json
+        config = json.loads(config_path.read_text())
+        assert config["defaults"]["runner"] == "opencode"
+        assert config["defaults"]["model"] == "test-model"
 
     def test_fails_if_not_in_git_repo(self, non_git_dir):
         with pytest.raises(ArboristHomeError) as exc_info:
@@ -169,21 +192,28 @@ class TestInitArboristHome:
 
     def test_accepts_explicit_path(self, git_repo):
         custom_path = git_repo / "custom" / "arborist"
-        result = init_arborist_home(home=custom_path)
-        assert result == custom_path
+        home, result = init_arborist_home(home=custom_path)
+        assert home == custom_path
         assert custom_path.is_dir()
 
     def test_explicit_path_works_outside_git(self, non_git_dir):
         custom_path = non_git_dir / "arborist"
-        result = init_arborist_home(home=custom_path)
-        assert result == custom_path
+        home, result = init_arborist_home(home=custom_path)
+        assert home == custom_path
         assert custom_path.is_dir()
 
     def test_creates_parent_directories(self, git_repo):
         custom_path = git_repo / "deep" / "nested" / "arborist"
-        result = init_arborist_home(home=custom_path)
-        assert result == custom_path
+        home, result = init_arborist_home(home=custom_path)
+        assert home == custom_path
         assert custom_path.is_dir()
+
+    def test_returns_result_dict(self, git_repo):
+        home, result = init_arborist_home()
+        assert "created_dirs" in result
+        assert "created_files" in result
+        assert "gitignore" in result
+        assert home in result["created_dirs"]
 
 
 class TestArboristHomeFromSubdirectory:
@@ -202,9 +232,9 @@ class TestArboristHomeFromSubdirectory:
         subdir.mkdir(parents=True)
         os.chdir(subdir)
 
-        result = init_arborist_home()
+        home, result = init_arborist_home()
         expected = git_repo / ARBORIST_DIR_NAME
-        assert result == expected
+        assert home == expected
         assert expected.is_dir()
 
     def test_is_initialized_from_subdirectory(self, git_repo):
@@ -228,68 +258,83 @@ class TestGitignoreHandling:
         if gitignore.exists():
             gitignore.unlink()
 
-        init_arborist_home()
+        home, result = init_arborist_home()
 
         assert gitignore.exists()
         content = gitignore.read_text()
-        assert f"{ARBORIST_DIR_NAME}/" in content
+        # Should have ignore rules for data/, prompts/, worktrees/
+        assert f"{ARBORIST_DIR_NAME}/dagu/data/" in content
+        assert f"{ARBORIST_DIR_NAME}/prompts/" in content
+        assert f"{ARBORIST_DIR_NAME}/worktrees/" in content
 
     def test_appends_to_existing_gitignore(self, git_repo):
         gitignore = git_repo / ".gitignore"
         gitignore.write_text("node_modules/\n*.log\n")
 
-        init_arborist_home()
+        home, result = init_arborist_home()
 
         content = gitignore.read_text()
         assert "node_modules/" in content
         assert "*.log" in content
-        assert f"{ARBORIST_DIR_NAME}/" in content
+        assert f"{ARBORIST_DIR_NAME}/dagu/data/" in content
+        assert f"{ARBORIST_DIR_NAME}/prompts/" in content
 
     def test_appends_newline_if_missing(self, git_repo):
         gitignore = git_repo / ".gitignore"
         gitignore.write_text("node_modules/")  # No trailing newline
 
-        init_arborist_home()
+        home, result = init_arborist_home()
 
         content = gitignore.read_text()
         lines = content.splitlines()
         assert "node_modules/" in lines
-        assert f"{ARBORIST_DIR_NAME}/" in lines
+        assert f"{ARBORIST_DIR_NAME}/dagu/data/" in lines
 
-    def test_does_not_duplicate_entry(self, git_repo):
+    def test_updates_old_format_gitignore(self, git_repo):
+        """Old format with just .arborist/ should be updated to new format."""
         gitignore = git_repo / ".gitignore"
         gitignore.write_text(f"{ARBORIST_DIR_NAME}/\n")
 
         # Remove existing arborist dir if exists (from previous tests)
         arborist_dir = git_repo / ARBORIST_DIR_NAME
         if arborist_dir.exists():
-            arborist_dir.rmdir()
+            import shutil
+            shutil.rmtree(arborist_dir)
 
-        init_arborist_home()
+        home, result = init_arborist_home()
 
         content = gitignore.read_text()
-        count = content.count(f"{ARBORIST_DIR_NAME}/")
-        assert count == 1
+        # Old format should be removed
+        assert f"{ARBORIST_DIR_NAME}/\n" not in content
+        # New format should have ignore rules for subdirs
+        assert f"{ARBORIST_DIR_NAME}/dagu/data/" in content
+        assert f"{ARBORIST_DIR_NAME}/prompts/" in content
 
-    def test_handles_entry_without_trailing_slash(self, git_repo):
+    def test_no_duplicate_rules_with_new_format(self, git_repo):
+        """If gitignore already has new format, don't duplicate."""
         gitignore = git_repo / ".gitignore"
-        gitignore.write_text(f"{ARBORIST_DIR_NAME}\n")  # No trailing slash
+        from agent_arborist.constants import generate_gitignore_content
+        gitignore.write_text(generate_gitignore_content())
 
+        # Remove existing arborist dir if exists (from previous tests)
         arborist_dir = git_repo / ARBORIST_DIR_NAME
         if arborist_dir.exists():
-            arborist_dir.rmdir()
+            import shutil
+            shutil.rmtree(arborist_dir)
 
-        init_arborist_home()
+        home, result = init_arborist_home()
 
         content = gitignore.read_text()
-        # Should not add duplicate (recognizes with/without slash as same)
-        lines = [l for l in content.splitlines() if ARBORIST_DIR_NAME in l]
-        assert len(lines) == 1
+        # Should only have one of each ignore rule
+        data_lines = [l for l in content.splitlines() if l.strip() == f"{ARBORIST_DIR_NAME}/dagu/data/"]
+        assert len(data_lines) == 1
 
     def test_no_gitignore_update_for_custom_path(self, non_git_dir):
         """When using explicit path outside git, no .gitignore update."""
         custom_path = non_git_dir / "custom_arborist"
-        init_arborist_home(home=custom_path)
+        home, result = init_arborist_home(home=custom_path)
 
         gitignore = non_git_dir / ".gitignore"
         assert not gitignore.exists()
+        # Should have empty gitignore in result
+        assert result["gitignore"] == {}
