@@ -1034,6 +1034,59 @@ class TestHooksConfigValidation:
         )
         config.validate()  # Should not raise
 
+    def test_string_step_definition_raises_error(self):
+        """String step definition should raise descriptive error."""
+        with pytest.raises(ValueError) as exc:
+            HooksConfig.from_dict({
+                "enabled": True,
+                "step_definitions": {
+                    "my_lint": "npm run lint"  # Wrong: string instead of object
+                }
+            })
+        assert "dictionary/object" in str(exc.value)
+        assert "my_lint" in str(exc.value)
+        assert "string" in str(exc.value).lower()
+
+    def test_json_comment_keys_ignored_in_step_definitions(self):
+        """JSON _comment keys in step_definitions should be ignored."""
+        config = HooksConfig.from_dict({
+            "enabled": True,
+            "step_definitions": {
+                "_comment": "Reusable step definitions",
+                "lint": {
+                    "type": "shell",
+                    "command": "npm run lint",
+                },
+            },
+        })
+        assert len(config.step_definitions) == 1
+        assert "lint" in config.step_definitions
+        assert "_comment" not in config.step_definitions
+
+    def test_json_comment_keys_ignored_in_injections(self):
+        """JSON _comment keys in injections should be ignored."""
+        config = HooksConfig.from_dict({
+            "enabled": True,
+            "step_definitions": {
+                "lint": {
+                    "type": "shell",
+                    "command": "npm run lint",
+                },
+            },
+            "injections": {
+                "_comment": "Hook points: pre_root, post_roots, pre_task, post_task, final",
+                "post_task": [
+                    {"step": "lint"},
+                    "Run lint after each task",
+                ],
+            },
+        })
+        assert len(config.injections) == 1
+        assert "post_task" in config.injections
+        assert "_comment" not in config.injections
+        # String comments in injection list are filtered
+        assert len(config.injections["post_task"]) == 1
+
 
 class TestHooksConfigSerialization:
     """Unit tests for hooks config serialization."""
@@ -1067,6 +1120,13 @@ class TestHooksConfigSerialization:
         assert step.command == "npm run lint"
         assert step.timeout == 30
         assert step.env == {"NODE_ENV": "test"}
+
+    def test_step_definition_from_dict_string_raises_error(self):
+        """StepDefinition.from_dict() with string raises descriptive error."""
+        with pytest.raises(ValueError) as exc:
+            StepDefinition.from_dict("npm run lint")  # Wrong: string instead of dict
+        assert "dictionary" in str(exc.value).lower()
+        assert "string" in str(exc.value).lower()
 
     def test_hook_injection_to_dict(self):
         """HookInjection.to_dict() returns correct structure."""
