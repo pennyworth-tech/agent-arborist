@@ -1611,22 +1611,25 @@ IMPORTANT:
     # Get runner with specified or default model
     runner_instance = get_runner(runner_type, model=resolved_model)
 
-    if not runner_instance.is_available():
-        console.print(f"[red]Error:[/red] {runner_type} not found in PATH")
-        raise SystemExit(1)
-
     # Check if we need to wrap runner command with devcontainer exec
     container_mode = get_container_mode_from_env()
     container_cmd_prefix = None
+    use_container = False
     if container_mode != ContainerMode.DISABLED:
         from agent_arborist.container_context import should_use_container
-        if should_use_container(worktree_path, container_mode):
+        use_container = should_use_container(worktree_path, container_mode)
+        if use_container:
             container_cmd_prefix = [
                 "devcontainer",
                 "exec",
                 "--workspace-folder",
                 str(worktree_path.resolve()),
             ]
+
+    # Only check runner availability on host (when not using container)
+    if not use_container and not runner_instance.is_available():
+        console.print(f"[red]Error:[/red] {runner_type} not found in PATH")
+        raise SystemExit(1)
 
     # Run the AI in the worktree directory (or container if needed)
     start_time = time.time()
