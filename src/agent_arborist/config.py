@@ -419,8 +419,13 @@ class StepDefinition:
         return result
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "StepDefinition":
+    def from_dict(cls, data: dict[str, Any] | str) -> "StepDefinition":
         """Create from dictionary."""
+        if not isinstance(data, dict):
+            raise ValueError(
+                f"Step definition must be a dictionary, got {type(data).__name__}. "
+                f"Did you accidentally write the step as a string instead of an object?"
+            )
         return cls(
             type=data.get("type", "shell"),
             prompt=data.get("prompt"),
@@ -489,8 +494,12 @@ class HookInjection:
         return result
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "HookInjection":
+    def from_dict(cls, data: dict[str, Any] | str) -> "HookInjection":
         """Create from dictionary."""
+        # Skip JSON comment strings
+        if isinstance(data, str):
+            return cls()
+
         return cls(
             step=data.get("step"),
             type=data.get("type"),
@@ -613,13 +622,36 @@ class HooksConfig:
         """Create from dictionary."""
         step_defs = {}
         for name, step_data in data.get("step_definitions", {}).items():
+            # Skip JSON comment keys
+            if name.startswith("_comment"):
+                continue
+            if not isinstance(step_data, dict):
+                raise ValueError(
+                    f"Invalid step definition '{name}': must be a dictionary/object, "
+                    f"not {type(step_data).__name__}. Did you write the step as a "
+                    f"string instead of an object? Example: {{'command': 'npm run lint'}}"
+                )
             step_defs[name] = StepDefinition.from_dict(step_data)
 
         injections = {}
         for hook_point, injection_list in data.get("injections", {}).items():
-            injections[hook_point] = [
-                HookInjection.from_dict(inj) for inj in injection_list
-            ]
+            # Skip JSON comment keys
+            if hook_point.startswith("_comment"):
+                continue
+            # Filter out string comments and convert valid injections
+            valid_injections = []
+            for inj in injection_list:
+                # Skip string comments entirely
+                if isinstance(inj, str):
+                    continue
+                # Filter out _comment keys from dicts, keep actual content
+                if isinstance(inj, dict):
+                    filtered_inj = {k: v for k, v in inj.items() if not k.startswith("_comment")}
+                    if filtered_inj:  # Only add if there's actual content
+                        valid_injections.append(filtered_inj)
+                else:
+                    valid_injections.append(inj)
+            injections[hook_point] = [HookInjection.from_dict(inj) for inj in valid_injections]
 
         return cls(
             enabled=data.get("enabled", False),
