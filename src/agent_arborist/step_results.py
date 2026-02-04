@@ -135,6 +135,18 @@ class ContainerStopResult(StepResultBase):
     container_stopped: bool = False
 
 
+@dataclass
+class MergeContainerUpResult(StepResultBase):
+    """Result from spec merge-container-up step.
+
+    Captures devcontainer startup for the git-root merge container.
+    This container is used for all post-merge operations.
+    """
+
+    git_root: str = ""
+    container_id: str | None = None
+
+
 # Hook step results
 
 

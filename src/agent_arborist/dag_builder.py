@@ -179,11 +179,20 @@ class SubDagBuilder:
             command="arborist spec branch-create-all",
         ))
 
+        # If using containers, start the merge container (git-root container for all merges)
+        # This container has access to the entire repo and all worktrees
+        if self._use_containers:
+            steps.append(SubDagStep(
+                name="merge-container-up",
+                command="arborist spec merge-container-up",
+                depends=["branches-setup"],
+            ))
+            prev_step = "merge-container-up"
+        else:
+            prev_step = "branches-setup"
+
         # Get root tasks (no parent) sorted by ID
         root_task_ids = sorted(task_tree.root_tasks)
-
-        # Add calls to root tasks in linear sequence
-        prev_step = "branches-setup"
         for task_id in root_task_ids:
             steps.append(SubDagStep(
                 name=f"c-{task_id}",

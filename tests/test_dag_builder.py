@@ -477,3 +477,59 @@ class TestBuildDagFromFixtures:
         first_step = root["steps"][0]
         assert first_step["name"] == "branches-setup"
         assert first_step["command"] == "arborist spec branch-create-all"
+
+    def test_root_dag_has_merge_container_up_when_containers_enabled(self, fixtures_dir, tmp_path):
+        """Verify root DAG has merge-container-up step when containers are enabled."""
+        from agent_arborist.container_runner import ContainerMode
+
+        spec = parse_task_spec(fixtures_dir / "tasks-hello-world.md")
+
+        # Create a .devcontainer directory so container mode check passes
+        (tmp_path / ".devcontainer").mkdir()
+        (tmp_path / ".devcontainer" / "devcontainer.json").write_text("{}")
+
+        # Build with containers enabled
+        config = DagConfig(
+            name="hello-world",
+            container_mode=ContainerMode.ENABLED,
+            repo_path=tmp_path,
+        )
+        builder = DagBuilder(config)
+        yaml_content = builder.build_yaml(spec)
+
+        documents = list(yaml.safe_load_all(yaml_content))
+        root = documents[0]
+        step_names = [step["name"] for step in root["steps"]]
+
+        # merge-container-up should be right after branches-setup
+        assert "branches-setup" in step_names
+        assert "merge-container-up" in step_names
+
+        branches_idx = step_names.index("branches-setup")
+        merge_idx = step_names.index("merge-container-up")
+        assert merge_idx == branches_idx + 1, "merge-container-up should be right after branches-setup"
+
+        # Verify the merge-container-up step depends on branches-setup
+        merge_step = root["steps"][merge_idx]
+        assert "branches-setup" in merge_step["depends"]
+
+    def test_root_dag_no_merge_container_when_containers_disabled(self, fixtures_dir):
+        """Verify root DAG has no merge-container-up step when containers are disabled."""
+        from agent_arborist.container_runner import ContainerMode
+
+        spec = parse_task_spec(fixtures_dir / "tasks-hello-world.md")
+
+        # Build without containers
+        config = DagConfig(
+            name="hello-world",
+            container_mode=ContainerMode.DISABLED,
+        )
+        builder = DagBuilder(config)
+        yaml_content = builder.build_yaml(spec)
+
+        documents = list(yaml.safe_load_all(yaml_content))
+        root = documents[0]
+        step_names = [step["name"] for step in root["steps"]]
+
+        # merge-container-up should NOT be present
+        assert "merge-container-up" not in step_names
