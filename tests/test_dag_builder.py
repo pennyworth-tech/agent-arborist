@@ -197,14 +197,16 @@ class TestSubDagBuilder:
 
         assert subdag.name == "T001"
 
-        # Should have: pre-sync, c-T002, c-T003, complete
-        assert len(subdag.steps) == 4
+        # Should have: pre-sync, c-T002, c-T003, run-test, post-merge, post-cleanup
+        assert len(subdag.steps) == 6
 
         step_names = [s.name for s in subdag.steps]
         assert "pre-sync" in step_names
         assert "c-T002" in step_names
         assert "c-T003" in step_names
-        assert "complete" in step_names
+        assert "run-test" in step_names
+        assert "post-merge" in step_names
+        assert "post-cleanup" in step_names
 
         # Verify pre-sync has no deps
         pre_sync = next(s for s in subdag.steps if s.name == "pre-sync")
@@ -218,9 +220,18 @@ class TestSubDagBuilder:
         call_t003 = next(s for s in subdag.steps if s.name == "c-T003")
         assert call_t003.depends == ["pre-sync"]
 
-        # Verify complete depends on all calls
-        complete = next(s for s in subdag.steps if s.name == "complete")
-        assert set(complete.depends) == {"c-T002", "c-T003"}
+        # Verify run-test depends on all calls
+        run_test = next(s for s in subdag.steps if s.name == "run-test")
+        assert set(run_test.depends) == {"c-T002", "c-T003"}
+
+        # Verify post-merge depends on run-test and has retry
+        post_merge = next(s for s in subdag.steps if s.name == "post-merge")
+        assert post_merge.depends == ["run-test"]
+        assert post_merge.retry == {"limit": 60, "intervalSec": 60}
+
+        # Verify post-cleanup depends on post-merge
+        post_cleanup = next(s for s in subdag.steps if s.name == "post-cleanup")
+        assert post_cleanup.depends == ["post-merge"]
 
     def test_build_root_dag(self, linear_tree):
         config = DagConfig(name="test_dag", spec_id="test-spec")

@@ -2036,55 +2036,78 @@ def task_post_merge(ctx: click.Context, task_id: str, timeout: int, runner: str 
     if not ctx.obj.get("quiet"):
         console.print(f"[cyan]Merging {task_branch} → {parent_branch} (squash)[/cyan]")
 
-    # Determine where to run the merge:
-    # - If parent branch has an existing worktree, use it (this is the normal case during DAG execution)
-    # - Otherwise, create a temporary worktree for the parent branch
-    # NOTE: We cannot checkout the parent branch in the task worktree because git worktrees
-    # prevent checking out a branch that's already checked out elsewhere.
-    import tempfile
+    # Import lock helpers for merge serialization
     import shutil
-    from agent_arborist.home import get_git_root
+    from agent_arborist.home import get_git_root, get_arborist_home
+    from agent_arborist.git_tasks import branch_merge_lock, hash_branch, LockBusyError
 
     git_root = get_git_root()
-    parent_worktree = find_worktree_for_branch(parent_branch)
-    temp_worktree_dir = None
-    cleanup_worktree = False
+    arborist_home = get_arborist_home()
 
-    if parent_worktree:
-        # Parent has an active worktree (e.g., T001's worktree during T004's merge)
-        # Run the merge there - the worktree is already on the parent branch
-        merge_worktree = parent_worktree
-        if not ctx.obj.get("quiet"):
-            console.print(f"[dim]Using existing parent worktree at {parent_worktree}[/dim]")
-    else:
-        # No worktree for parent branch - create a temporary one
-        temp_worktree_dir = tempfile.mkdtemp(prefix="arborist_merge_")
-        merge_worktree = Path(temp_worktree_dir) / "parent"
-        cleanup_worktree = True
+    # Acquire lock for this (spec_id, parent_branch) - serializes parallel merges
+    # If lock is busy, fail fast with LOCK_BUSY so DAGU can retry
+    try:
+        lock_ctx = branch_merge_lock(arborist_home, manifest.spec_id, parent_branch)
+        lock_ctx.__enter__()
+    except LockBusyError as e:
+        console.print(f"[yellow]Lock busy:[/yellow] Another merge to {parent_branch} in progress")
+        console.print(f"[dim]{e}[/dim]")
+        raise SystemExit(1)
 
-        try:
-            from agent_arborist.git_tasks import _run_git
-            _run_git("worktree", "add", str(merge_worktree), parent_branch, cwd=git_root)
+    try:
+        # Determine where to run the merge:
+        # - If parent branch has an existing worktree, use it (this is the normal case during DAG execution)
+        # - Otherwise, create a temporary worktree for the parent branch inside .arborist/
+        # NOTE: We cannot checkout the parent branch in the task worktree because git worktrees
+        # prevent checking out a branch that's already checked out elsewhere.
+        parent_worktree = find_worktree_for_branch(parent_branch)
+        cleanup_worktree = False
+
+        if parent_worktree:
+            # Parent has an active worktree (e.g., T001's worktree during T004's merge)
+            # Run the merge there - the worktree is already on the parent branch
+            merge_worktree = parent_worktree
             if not ctx.obj.get("quiet"):
-                console.print(f"[dim]Created temporary worktree at {merge_worktree}[/dim]")
-        except Exception as e:
-            if temp_worktree_dir:
-                shutil.rmtree(temp_worktree_dir, ignore_errors=True)
-            console.print(f"[red]Error:[/red] Failed to create worktree for {parent_branch}: {e}")
-            raise SystemExit(1)
+                console.print(f"[dim]Using existing parent worktree at {parent_worktree}[/dim]")
+        else:
+            # No worktree for parent branch - create a temporary one INSIDE .arborist/
+            # This ensures the path is accessible from devcontainers (which mount the repo)
+            branch_hash = hash_branch(parent_branch)
+            merge_worktree = arborist_home / "worktrees" / manifest.spec_id / "_merge" / branch_hash
+            cleanup_worktree = True
 
-    # Build prompt for AI to do the merge
-    # When using container mode, AI runs in git-root container and must cd to merge worktree
-    # When not using containers, AI runs directly in the merge worktree
-    container_mode = get_container_mode_from_env()
-    use_container = container_mode != ContainerMode.DISABLED
+            # Ensure parent directory exists
+            merge_worktree.parent.mkdir(parents=True, exist_ok=True)
 
-    if use_container:
-        # AI runs in git-root container, needs to cd to merge worktree first
-        merge_prompt = f"""Perform a squash merge of branch '{task_branch}' into '{parent_branch}'.
+            try:
+                from agent_arborist.git_tasks import _run_git
+                _run_git("worktree", "add", str(merge_worktree), parent_branch, cwd=git_root)
+                if not ctx.obj.get("quiet"):
+                    console.print(f"[dim]Created merge worktree at {merge_worktree}[/dim]")
+            except Exception as e:
+                if cleanup_worktree and merge_worktree.exists():
+                    shutil.rmtree(merge_worktree, ignore_errors=True)
+                console.print(f"[red]Error:[/red] Failed to create worktree for {parent_branch}: {e}")
+                raise SystemExit(1)
+
+        # Build prompt for AI to do the merge
+        # When using container mode, AI runs in git-root container and must cd to merge worktree
+        # When not using containers, AI runs directly in the merge worktree
+        container_mode = get_container_mode_from_env()
+        use_container = container_mode != ContainerMode.DISABLED
+
+        if use_container:
+            # AI runs in git-root container, needs to cd to merge worktree first
+            # Use repo-relative path so it works inside the container (which mounts the repo)
+            try:
+                rel_worktree_path = merge_worktree.relative_to(git_root)
+            except ValueError:
+                # Fallback if worktree is not under git_root (shouldn't happen with new logic)
+                rel_worktree_path = merge_worktree.resolve()
+            merge_prompt = f"""Perform a squash merge of branch '{task_branch}' into '{parent_branch}'.
 
 FIRST: Change to the merge worktree directory:
-cd {merge_worktree.resolve()}
+cd {rel_worktree_path}
 
 Then perform the merge:
 
@@ -2112,9 +2135,9 @@ IMPORTANT:
 
 Do NOT push. Just complete the merge and commit locally.
 """
-    else:
-        # AI runs directly in merge worktree (no container)
-        merge_prompt = f"""Perform a squash merge of branch '{task_branch}' into '{parent_branch}'.
+        else:
+            # AI runs directly in merge worktree (no container)
+            merge_prompt = f"""Perform a squash merge of branch '{task_branch}' into '{parent_branch}'.
 
 You are currently in a worktree that is on the '{parent_branch}' branch.
 
@@ -2143,109 +2166,114 @@ IMPORTANT:
 Do NOT push. Just complete the merge and commit locally.
 """
 
-    # Get runner with specified or default model
-    runner_instance = get_runner(runner_type, model=resolved_model)
+        # Get runner with specified or default model
+        runner_instance = get_runner(runner_type, model=resolved_model)
 
-    # Set up container execution
-    # When using containers, ALL merges use the git-root container (started by merge-container-up)
-    # This container has access to the entire repo and all worktrees
-    container_cmd_prefix = None
+        # Set up container execution
+        # When using containers, ALL merges use the git-root container (started by merge-container-up)
+        # This container has access to the entire repo and all worktrees
+        container_cmd_prefix = None
 
-    if use_container:
-        # Ensure git-root container is running (start if not already up)
-        # This makes post-merge self-sufficient even if merge-container-up step wasn't in the DAG
-        import subprocess as sp
+        if use_container:
+            # Ensure git-root container is running (start if not already up)
+            # This makes post-merge self-sufficient even if merge-container-up step wasn't in the DAG
+            import subprocess as sp
+            if not ctx.obj.get("quiet"):
+                console.print(f"[dim]Ensuring git-root merge container is running...[/dim]")
+
+            try:
+                # devcontainer up is idempotent - if already running, it's a no-op
+                up_result = sp.run(
+                    ["devcontainer", "up", "--workspace-folder", str(git_root.resolve())],
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                )
+                if up_result.returncode != 0:
+                    console.print(f"[red]Error starting merge container:[/red] {up_result.stderr}")
+                    raise SystemExit(1)
+            except sp.TimeoutExpired:
+                console.print(f"[red]Error:[/red] Timeout starting merge container")
+                raise SystemExit(1)
+            except FileNotFoundError:
+                console.print(f"[red]Error:[/red] devcontainer CLI not found")
+                raise SystemExit(1)
+
+            container_cmd_prefix = [
+                "devcontainer",
+                "exec",
+                "--workspace-folder",
+                str(git_root.resolve()),
+            ]
+            if not ctx.obj.get("quiet"):
+                console.print(f"[dim]Using git-root merge container[/dim]")
+        else:
+            # No container - check runner availability on host
+            if not runner_instance.is_available():
+                console.print(f"[red]Error:[/red] {runner_type} not available")
+                raise SystemExit(1)
+
         if not ctx.obj.get("quiet"):
-            console.print(f"[dim]Ensuring git-root merge container is running...[/dim]")
+            console.print(f"[dim]Running {runner_type} for merge in {merge_worktree}[/dim]")
 
         try:
-            # devcontainer up is idempotent - if already running, it's a no-op
-            up_result = sp.run(
-                ["devcontainer", "up", "--workspace-folder", str(git_root.resolve())],
-                capture_output=True,
-                text=True,
-                timeout=120,
+            # Run AI - either in git-root container (with cd to worktree) or directly in worktree
+            result = runner_instance.run(
+                merge_prompt,
+                timeout=timeout,
+                cwd=git_root if use_container else merge_worktree,
+                container_cmd_prefix=container_cmd_prefix,
             )
-            if up_result.returncode != 0:
-                console.print(f"[red]Error starting merge container:[/red] {up_result.stderr}")
-                raise SystemExit(1)
-        except sp.TimeoutExpired:
-            console.print(f"[red]Error:[/red] Timeout starting merge container")
-            raise SystemExit(1)
-        except FileNotFoundError:
-            console.print(f"[red]Error:[/red] devcontainer CLI not found")
-            raise SystemExit(1)
 
-        container_cmd_prefix = [
-            "devcontainer",
-            "exec",
-            "--workspace-folder",
-            str(git_root.resolve()),
-        ]
-        if not ctx.obj.get("quiet"):
-            console.print(f"[dim]Using git-root merge container[/dim]")
-    else:
-        # No container - check runner availability on host
-        if not runner_instance.is_available():
-            console.print(f"[red]Error:[/red] {runner_type} not available")
-            raise SystemExit(1)
-
-    if not ctx.obj.get("quiet"):
-        console.print(f"[dim]Running {runner_type} for merge in {merge_worktree}[/dim]")
-
-    try:
-        # Run AI - either in git-root container (with cd to worktree) or directly in worktree
-        result = runner_instance.run(
-            merge_prompt,
-            timeout=timeout,
-            cwd=git_root if use_container else merge_worktree,
-            container_cmd_prefix=container_cmd_prefix,
-        )
-
-        # Get the commit SHA from the parent branch after merge
-        # (the merge commit is on the parent branch, not the task branch)
-        merge_commit_sha = None
-        if result.success:
-            try:
-                merge_commit_sha = _get_head_sha(merge_worktree)
-            except Exception:
-                # Fall back to getting it from the branch directly
+            # Get the commit SHA from the parent branch after merge
+            # (the merge commit is on the parent branch, not the task branch)
+            merge_commit_sha = None
+            if result.success:
+                try:
+                    merge_commit_sha = _get_head_sha(merge_worktree)
+                except Exception:
+                    # Fall back to getting it from the branch directly
+                    try:
+                        from agent_arborist.git_tasks import _run_git
+                        sha_result = _run_git("rev-parse", parent_branch, cwd=git_root, check=False)
+                        if sha_result.returncode == 0:
+                            merge_commit_sha = sha_result.stdout.strip()[:12]
+                    except Exception:
+                        pass
+        finally:
+            # Clean up temporary worktree if we created one
+            if cleanup_worktree:
                 try:
                     from agent_arborist.git_tasks import _run_git
-                    sha_result = _run_git("rev-parse", parent_branch, cwd=git_root, check=False)
-                    if sha_result.returncode == 0:
-                        merge_commit_sha = sha_result.stdout.strip()[:12]
+                    _run_git("worktree", "remove", str(merge_worktree), "--force", cwd=git_root, check=False)
                 except Exception:
                     pass
+                # Also remove directory if git worktree remove didn't clean it up
+                if merge_worktree.exists():
+                    shutil.rmtree(merge_worktree, ignore_errors=True)
+
+        # Build step result
+        step_result = PostMergeResult(
+            success=result.success,
+            merged_into=parent_branch,
+            source_branch=task_branch,
+            commit_sha=merge_commit_sha,
+            conflicts=[],  # AI should have resolved any conflicts
+            conflict_resolved=False,
+            error=result.error if not result.success else None,
+        )
+
+        # Output result
+        output_result(step_result, ctx)
+
+        if result.success:
+            update_task_status(manifest.spec_id, task_id, "complete")
+        else:
+            update_task_status(manifest.spec_id, task_id, "failed", error="Merge failed")
+            raise SystemExit(1)
     finally:
-        # Clean up temporary worktree if we created one
-        if cleanup_worktree and temp_worktree_dir:
-            try:
-                from agent_arborist.git_tasks import _run_git
-                _run_git("worktree", "remove", str(merge_worktree), "--force", cwd=git_root, check=False)
-            except Exception:
-                pass
-            shutil.rmtree(temp_worktree_dir, ignore_errors=True)
-
-    # Build step result
-    step_result = PostMergeResult(
-        success=result.success,
-        merged_into=parent_branch,
-        source_branch=task_branch,
-        commit_sha=merge_commit_sha,
-        conflicts=[],  # AI should have resolved any conflicts
-        conflict_resolved=False,
-        error=result.error if not result.success else None,
-    )
-
-    # Output result
-    output_result(step_result, ctx)
-
-    if result.success:
-        update_task_status(manifest.spec_id, task_id, "complete")
-    else:
-        update_task_status(manifest.spec_id, task_id, "failed", error="Merge failed")
-        raise SystemExit(1)
+        # Release the merge lock
+        lock_ctx.__exit__(None, None, None)
 
 
 @task.command("post-cleanup")
