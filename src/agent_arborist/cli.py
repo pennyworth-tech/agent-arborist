@@ -2152,6 +2152,30 @@ Do NOT push. Just complete the merge and commit locally.
     container_cmd_prefix = None
 
     if use_container:
+        # Ensure git-root container is running (start if not already up)
+        # This makes post-merge self-sufficient even if merge-container-up step wasn't in the DAG
+        import subprocess as sp
+        if not ctx.obj.get("quiet"):
+            console.print(f"[dim]Ensuring git-root merge container is running...[/dim]")
+
+        try:
+            # devcontainer up is idempotent - if already running, it's a no-op
+            up_result = sp.run(
+                ["devcontainer", "up", "--workspace-folder", str(git_root.resolve())],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            if up_result.returncode != 0:
+                console.print(f"[red]Error starting merge container:[/red] {up_result.stderr}")
+                raise SystemExit(1)
+        except sp.TimeoutExpired:
+            console.print(f"[red]Error:[/red] Timeout starting merge container")
+            raise SystemExit(1)
+        except FileNotFoundError:
+            console.print(f"[red]Error:[/red] devcontainer CLI not found")
+            raise SystemExit(1)
+
         container_cmd_prefix = [
             "devcontainer",
             "exec",
