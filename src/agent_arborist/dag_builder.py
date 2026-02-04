@@ -30,6 +30,7 @@ class SubDagStep:
     call: str | None = None  # Subdag name to call (None if command step)
     depends: list[str] = field(default_factory=list)
     output: str | dict | None = None  # Dagu output: string or {name, key} dict
+    retry: dict | None = None  # DAGU retryPolicy: {limit: int, intervalSec: int}
 
 
 @dataclass
@@ -316,11 +317,13 @@ class SubDagBuilder:
 
         # Post-merge (self-aware - wraps AI runner subprocess if needed)
         # Runner/model resolved at runtime via config
+        # Retry on lock contention: 60 retries x 60s = up to 1 hour wait
         steps.append(SubDagStep(
             name="post-merge",
             command=build_arborist_command(task_id, "post-merge"),
             depends=["run-test"],
             output=output_var("post-merge"),
+            retry={"limit": 60, "intervalSec": 60},
         ))
 
         # Container lifecycle: Stop container for this worktree (but don't remove it)
@@ -387,20 +390,35 @@ class SubDagBuilder:
                 depends=["pre-sync"],
             ))
 
-        # Complete step (depends on all children)
-        # Runner/model resolved at runtime via config
-        complete_command = f"""arborist task run-test {task_id} &&
-arborist task post-merge {task_id} &&
-arborist task post-cleanup {task_id}"""
+        # Completion steps - split into separate steps so retry only applies to post-merge
+        # This prevents re-running tests on lock contention
 
+        # Run tests after all children complete
         steps.append(SubDagStep(
-            name="complete",
-            command=complete_command,
+            name="run-test",
+            command=f"arborist task run-test {task_id}",
             depends=child_call_names,
-            output=output_var("complete"),
+            output=output_var("run-test"),
         ))
 
-# Add environment variable for spec and task IDs
+        # Post-merge with retry on lock contention: 60 retries x 60s = up to 1 hour wait
+        steps.append(SubDagStep(
+            name="post-merge",
+            command=build_arborist_command(task_id, "post-merge"),
+            depends=["run-test"],
+            output=output_var("post-merge"),
+            retry={"limit": 60, "intervalSec": 60},
+        ))
+
+        # Cleanup after merge
+        steps.append(SubDagStep(
+            name="post-cleanup",
+            command=f"arborist task post-cleanup {task_id}",
+            depends=["post-merge"],
+            output=output_var("post-cleanup"),
+        ))
+
+        # Add environment variable for spec and task IDs
         # Manifest and worktree paths are discovered at runtime from git root
         spec_id = self.config.spec_id or self.config.name
         env_vars = [
@@ -460,6 +478,9 @@ arborist task post-cleanup {task_id}"""
             d["depends"] = step.depends
         if step.output is not None:
             d["output"] = step.output
+        if step.retry is not None:
+            # DAGU uses retryPolicy with limit/intervalSec
+            d["retryPolicy"] = step.retry
 
         return d
 

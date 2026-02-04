@@ -1,11 +1,74 @@
 """Git operations for task-based worktree workflow."""
 
+import hashlib
+import json
+import os
 import subprocess
+import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, TYPE_CHECKING
+from typing import Literal, TYPE_CHECKING, Generator
 
 from agent_arborist.home import get_arborist_home, get_git_root
+
+
+class LockBusyError(Exception):
+    """Raised when a merge lock cannot be acquired (another merge in progress)."""
+
+    pass
+
+
+def hash_branch(branch: str) -> str:
+    """Generate a short hash for a branch name (for safe path names)."""
+    return hashlib.sha1(branch.encode("utf-8")).hexdigest()[:12]
+
+
+@contextmanager
+def branch_merge_lock(
+    arborist_home: Path, spec_id: str, parent_branch: str
+) -> Generator[None, None, None]:
+    """Serialize merges into a parent branch (cross-platform).
+
+    Uses an atomic lock directory under .arborist/locks/<spec-id>/.
+    If the lock is busy, raises LockBusyError so DAGU can retry.
+
+    Args:
+        arborist_home: Path to .arborist directory
+        spec_id: Specification ID for the DAG
+        parent_branch: Branch being merged into
+
+    Raises:
+        LockBusyError: If another merge is already in progress for this branch
+    """
+    locks_dir = arborist_home / "locks" / spec_id
+    locks_dir.mkdir(parents=True, exist_ok=True)
+
+    branch_hash = hash_branch(parent_branch)
+    lock_dir = locks_dir / f"merge_{branch_hash}"
+
+    try:
+        os.mkdir(lock_dir)  # atomic
+    except FileExistsError:
+        raise LockBusyError(f"LOCK_BUSY: {parent_branch}")
+
+    meta = lock_dir / "meta.json"
+    meta.write_text(
+        json.dumps(
+            {"parent_branch": parent_branch, "pid": os.getpid(), "acquired_at": time.time()}
+        )
+    )
+
+    try:
+        yield
+    finally:
+        try:
+            meta.unlink(missing_ok=True)
+        finally:
+            try:
+                os.rmdir(lock_dir)
+            except Exception:
+                pass
 
 if TYPE_CHECKING:
     from agent_arborist.branch_manifest import BranchManifest
