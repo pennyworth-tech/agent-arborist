@@ -2045,6 +2045,7 @@ def task_post_merge(ctx: click.Context, task_id: str, timeout: int, runner: str 
     import shutil
     from agent_arborist.home import get_git_root
 
+    git_root = get_git_root()
     parent_worktree = find_worktree_for_branch(parent_branch)
     temp_worktree_dir = None
     cleanup_worktree = False
@@ -2057,7 +2058,6 @@ def task_post_merge(ctx: click.Context, task_id: str, timeout: int, runner: str 
             console.print(f"[dim]Using existing parent worktree at {parent_worktree}[/dim]")
     else:
         # No worktree for parent branch - create a temporary one
-        git_root = get_git_root()
         temp_worktree_dir = tempfile.mkdtemp(prefix="arborist_merge_")
         merge_worktree = Path(temp_worktree_dir) / "parent"
         cleanup_worktree = True
@@ -2073,9 +2073,48 @@ def task_post_merge(ctx: click.Context, task_id: str, timeout: int, runner: str 
             console.print(f"[red]Error:[/red] Failed to create worktree for {parent_branch}: {e}")
             raise SystemExit(1)
 
-    # Build prompt for AI to do the merge in the parent's worktree
-    # No checkout needed - we're already in a worktree on the parent branch
-    merge_prompt = f"""Perform a squash merge of branch '{task_branch}' into '{parent_branch}'.
+    # Build prompt for AI to do the merge
+    # When using container mode, AI runs in git-root container and must cd to merge worktree
+    # When not using containers, AI runs directly in the merge worktree
+    container_mode = get_container_mode_from_env()
+    use_container = container_mode != ContainerMode.DISABLED
+
+    if use_container:
+        # AI runs in git-root container, needs to cd to merge worktree first
+        merge_prompt = f"""Perform a squash merge of branch '{task_branch}' into '{parent_branch}'.
+
+FIRST: Change to the merge worktree directory:
+cd {merge_worktree.resolve()}
+
+Then perform the merge:
+
+STEPS:
+1. Verify you're on the correct branch: git branch --show-current
+   (should show: {parent_branch})
+2. Run: git merge --squash {task_branch}
+3. If there are conflicts, resolve them carefully by examining both versions
+4. After resolving any conflicts, stage all changes with: git add -A
+5. Create a SINGLE commit with this EXACT format:
+
+git commit -m "task({task_id}): <one-line summary of what was merged>
+
+- <detail about changes merged>
+- <another detail if needed>
+
+(merged by {runner_type} / {resolved_model} from {task_branch})"
+
+IMPORTANT:
+- The first line MUST be: task({task_id}): followed by a brief summary
+- Use bullet points for details in the body
+- Include the footer line showing this was a merge
+- If the merge has no changes (branches identical), just report that - no commit needed
+- Do NOT checkout any other branch - stay on {parent_branch}
+
+Do NOT push. Just complete the merge and commit locally.
+"""
+    else:
+        # AI runs directly in merge worktree (no container)
+        merge_prompt = f"""Perform a squash merge of branch '{task_branch}' into '{parent_branch}'.
 
 You are currently in a worktree that is on the '{parent_branch}' branch.
 
@@ -2107,57 +2146,39 @@ Do NOT push. Just complete the merge and commit locally.
     # Get runner with specified or default model
     runner_instance = get_runner(runner_type, model=resolved_model)
 
-    # Check if we need to wrap runner command with devcontainer exec
-    # NOTE: For temporary worktrees (cleanup_worktree=True), we DON'T use container mode
-    # because temp worktrees don't have associated containers. The merge operation
-    # only needs git, which is available on the host.
-    container_mode = get_container_mode_from_env()
+    # Set up container execution
+    # When using containers, ALL merges use the git-root container (started by merge-container-up)
+    # This container has access to the entire repo and all worktrees
     container_cmd_prefix = None
-    use_container = False
 
-    if cleanup_worktree:
-        # Temporary worktree - no container available, run on host
-        # Git operations don't need project-specific container tools
-        if not ctx.obj.get("quiet") and container_mode != ContainerMode.DISABLED:
-            console.print(f"[dim]Using host git for temp worktree merge (no container)[/dim]")
-    elif container_mode != ContainerMode.DISABLED:
-        # Existing parent worktree - use its container if available
-        from agent_arborist.container_context import should_use_container
-        use_container = should_use_container(merge_worktree, container_mode)
-        if use_container:
-            container_cmd_prefix = [
-                "devcontainer",
-                "exec",
-                "--workspace-folder",
-                str(merge_worktree.resolve()),
-            ]
-
-    # Only check runner availability on host (when not using container)
-    if not use_container and not runner_instance.is_available():
-        # Clean up temp worktree before exiting
-        if cleanup_worktree and temp_worktree_dir:
-            try:
-                from agent_arborist.git_tasks import _run_git
-                _run_git("worktree", "remove", str(merge_worktree), "--force", cwd=get_git_root(), check=False)
-            except Exception:
-                pass
-            shutil.rmtree(temp_worktree_dir, ignore_errors=True)
-        console.print(f"[red]Error:[/red] {runner_type} not available")
-        raise SystemExit(1)
+    if use_container:
+        container_cmd_prefix = [
+            "devcontainer",
+            "exec",
+            "--workspace-folder",
+            str(git_root.resolve()),
+        ]
+        if not ctx.obj.get("quiet"):
+            console.print(f"[dim]Using git-root merge container[/dim]")
+    else:
+        # No container - check runner availability on host
+        if not runner_instance.is_available():
+            console.print(f"[red]Error:[/red] {runner_type} not available")
+            raise SystemExit(1)
 
     if not ctx.obj.get("quiet"):
-        console.print(f"[dim]Running {runner_type} in {merge_worktree}[/dim]")
+        console.print(f"[dim]Running {runner_type} for merge in {merge_worktree}[/dim]")
 
     try:
-        # Run AI in the parent's worktree (existing or temporary)
+        # Run AI - either in git-root container (with cd to worktree) or directly in worktree
         result = runner_instance.run(
             merge_prompt,
             timeout=timeout,
-            cwd=merge_worktree,
+            cwd=git_root if use_container else merge_worktree,
             container_cmd_prefix=container_cmd_prefix,
         )
 
-        # Get the commit SHA from the parent branch before cleanup
+        # Get the commit SHA from the parent branch after merge
         # (the merge commit is on the parent branch, not the task branch)
         merge_commit_sha = None
         if result.success:
@@ -2167,7 +2188,7 @@ Do NOT push. Just complete the merge and commit locally.
                 # Fall back to getting it from the branch directly
                 try:
                     from agent_arborist.git_tasks import _run_git
-                    sha_result = _run_git("rev-parse", parent_branch, cwd=get_git_root(), check=False)
+                    sha_result = _run_git("rev-parse", parent_branch, cwd=git_root, check=False)
                     if sha_result.returncode == 0:
                         merge_commit_sha = sha_result.stdout.strip()[:12]
                 except Exception:
@@ -2177,7 +2198,7 @@ Do NOT push. Just complete the merge and commit locally.
         if cleanup_worktree and temp_worktree_dir:
             try:
                 from agent_arborist.git_tasks import _run_git
-                _run_git("worktree", "remove", str(merge_worktree), "--force", cwd=get_git_root(), check=False)
+                _run_git("worktree", "remove", str(merge_worktree), "--force", cwd=git_root, check=False)
             except Exception:
                 pass
             shutil.rmtree(temp_worktree_dir, ignore_errors=True)
@@ -2585,6 +2606,103 @@ def spec_branch_create_all(ctx: click.Context) -> None:
         console.print(f"[red]Error:[/red] {result.message}")
         if result.error:
             console.print(f"[dim]{result.error}[/dim]")
+        raise SystemExit(1)
+
+
+@spec.command("merge-container-up")
+@click.pass_context
+def spec_merge_container_up(ctx: click.Context) -> None:
+    """Start devcontainer for the git root (used for all merges).
+
+    This container has access to the entire repository and all worktrees,
+    making it suitable for merge operations that need to access multiple branches.
+
+    Auto-detects spec from git branch, or use --spec to specify.
+    Can also use ARBORIST_SPEC_ID env var when running from a DAG step.
+    """
+    import os
+    import subprocess
+
+    from agent_arborist.step_results import MergeContainerUpResult
+    from agent_arborist.home import get_git_root
+
+    # Get git root - this is where the merge container will be started
+    try:
+        git_root = get_git_root()
+    except Exception as e:
+        console.print(f"[red]Error:[/red] Could not find git root: {e}")
+        raise SystemExit(1)
+
+    if ctx.obj.get("echo_for_testing"):
+        echo_command(
+            "spec merge-container-up",
+            git_root=str(git_root),
+        )
+        return
+
+    if not ctx.obj.get("quiet"):
+        console.print(f"[cyan]Starting merge container for git root:[/cyan] {git_root}")
+
+    # Build the command
+    cmd_parts = ['devcontainer', 'up', '--workspace-folder', str(git_root)]
+
+    try:
+        result = subprocess.run(
+            cmd_parts,
+            capture_output=True,
+            text=True,
+        )
+
+        if result.returncode != 0:
+            step_result = MergeContainerUpResult(
+                success=False,
+                error=result.stderr,
+                git_root=str(git_root),
+            )
+            output_result(step_result, ctx)
+            console.print(f"[red]Error starting merge container:[/red] {result.stderr}")
+            raise SystemExit(1)
+
+        # Parse container ID from output if available
+        container_id = None
+        if result.stdout:
+            import json
+            try:
+                output_data = json.loads(result.stdout)
+                container_id = output_data.get("containerId")
+            except json.JSONDecodeError:
+                pass
+
+        step_result = MergeContainerUpResult(
+            success=True,
+            git_root=str(git_root),
+            container_id=container_id,
+        )
+        output_result(step_result, ctx)
+
+        if not ctx.obj.get("quiet"):
+            console.print(f"[green]OK:[/green] Merge container started")
+            if container_id:
+                console.print(f"[dim]Container ID: {container_id}[/dim]")
+
+    except FileNotFoundError:
+        step_result = MergeContainerUpResult(
+            success=False,
+            error="devcontainer CLI not found. Install with: npm install -g @devcontainers/cli",
+            git_root=str(git_root),
+        )
+        output_result(step_result, ctx)
+        console.print("[red]Error:[/red] devcontainer CLI not found")
+        console.print("Install with: npm install -g @devcontainers/cli")
+        raise SystemExit(1)
+    except Exception as e:
+        step_result = MergeContainerUpResult(
+            success=False,
+            error=str(e),
+            git_root=str(git_root),
+        )
+        output_result(step_result, ctx)
+        console.print(f"[red]Error:[/red] {e}")
         raise SystemExit(1)
 
 
