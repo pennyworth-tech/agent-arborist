@@ -2065,27 +2065,31 @@ IMPORTANT:
 Do NOT push. Just complete the merge and commit locally.
 """
 
+    # Get runner with specified or default model
     runner_instance = get_runner(runner_type, model=resolved_model)
-
-    if not runner_instance.is_available():
-        console.print(f"[red]Error:[/red] {runner_type} not available")
-        raise SystemExit(1)
-
-    if not ctx.obj.get("quiet"):
-        console.print(f"[dim]Running {runner_type} in {task_worktree}[/dim]")
 
     # Check if we need to wrap runner command with devcontainer exec
     container_mode = get_container_mode_from_env()
     container_cmd_prefix = None
+    use_container = False
     if container_mode != ContainerMode.DISABLED:
         from agent_arborist.container_context import should_use_container
-        if should_use_container(task_worktree, container_mode):
+        use_container = should_use_container(task_worktree, container_mode)
+        if use_container:
             container_cmd_prefix = [
                 "devcontainer",
                 "exec",
                 "--workspace-folder",
                 str(task_worktree.resolve()),
             ]
+
+    # Only check runner availability on host (when not using container)
+    if not use_container and not runner_instance.is_available():
+        console.print(f"[red]Error:[/red] {runner_type} not available")
+        raise SystemExit(1)
+
+    if not ctx.obj.get("quiet"):
+        console.print(f"[dim]Running {runner_type} in {task_worktree}[/dim]")
 
     # Run AI in task worktree
     result = runner_instance.run(
