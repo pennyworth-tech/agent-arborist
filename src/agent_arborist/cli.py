@@ -78,6 +78,7 @@ from agent_arborist.step_results import (
     PostMergeResult,
     PostCleanupResult,
 )
+from agent_arborist.jj_cli import register_jj_commands
 
 console = Console()
 
@@ -5015,6 +5016,9 @@ def dashboard(ctx: click.Context, port: int, host: str, open: bool) -> None:
         console.print(f"[red]Error:[/red] {e}")
         raise SystemExit(1)
 
+
+# Register jj commands
+register_jj_commands(main)
 
 if __name__ == "__main__":
     main()
