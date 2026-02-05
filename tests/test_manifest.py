@@ -1,4 +1,4 @@
-"""Tests for jj_manifest module."""
+"""Tests for manifest module."""
 
 import json
 from pathlib import Path
@@ -6,7 +6,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from agent_arborist.jj_manifest import (
+from agent_arborist.manifest import (
     TaskChangeInfo,
     ChangeManifest,
     generate_manifest,
@@ -234,8 +234,8 @@ class TestManifestPathFunctions:
 
     def test_get_manifest_path(self, tmp_path, monkeypatch):
         """Returns correct manifest path."""
-        from agent_arborist import jj_manifest
-        monkeypatch.setattr(jj_manifest, "get_arborist_home", lambda: tmp_path)
+        from agent_arborist import manifest
+        monkeypatch.setattr(manifest, "get_arborist_home", lambda: tmp_path)
 
         path = get_manifest_path("002-feature")
         expected = tmp_path / "dagu" / "dags" / "002-feature.json"
@@ -386,7 +386,7 @@ class TestCreateAllChanges:
             parent_task=None,
         )
 
-        with patch("agent_arborist.jj_tasks.run_jj") as mock_run:
+        with patch("agent_arborist.tasks.run_jj") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0,
                 stdout="existing\n",
@@ -410,12 +410,12 @@ class TestCreateAllChanges:
             parent_task=None,
         )
 
-        with patch("agent_arborist.jj_tasks.run_jj") as mock_run:
+        with patch("agent_arborist.tasks.run_jj") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=1,  # Change not found
                 stdout="",
             )
-            with patch("agent_arborist.jj_tasks.create_task_change", return_value="newchange"):
+            with patch("agent_arborist.tasks.create_task_change", return_value="newchange"):
                 result = create_all_changes_from_manifest(manifest)
                 assert "newchange" in result["created"]
 
@@ -425,13 +425,13 @@ class TestRefreshManifest:
 
     def test_refresh_manifest_no_tasks(self):
         """Returns None when no tasks found."""
-        with patch("agent_arborist.jj_tasks.find_tasks_by_spec", return_value=[]):
+        with patch("agent_arborist.tasks.find_tasks_by_spec", return_value=[]):
             result = refresh_manifest_from_repo("002-feature")
             assert result is None
 
     def test_refresh_manifest_with_tasks(self):
         """Rebuilds manifest from repo."""
-        from agent_arborist.jj_tasks import TaskChange
+        from agent_arborist.tasks import TaskChange
 
         mock_tasks = [
             TaskChange(
@@ -450,9 +450,9 @@ class TestRefreshManifest:
             ),
         ]
 
-        with patch("agent_arborist.jj_tasks.find_tasks_by_spec", return_value=mock_tasks):
-            with patch("agent_arborist.jj_tasks.get_change_id", return_value="mainchange"):
-                with patch("agent_arborist.jj_tasks.run_jj") as mock_run:
+        with patch("agent_arborist.tasks.find_tasks_by_spec", return_value=mock_tasks):
+            with patch("agent_arborist.tasks.get_change_id", return_value="mainchange"):
+                with patch("agent_arborist.tasks.run_jj") as mock_run:
                     mock_run.return_value = MagicMock(returncode=0, stdout="")
                     manifest = refresh_manifest_from_repo("002-feature")
 

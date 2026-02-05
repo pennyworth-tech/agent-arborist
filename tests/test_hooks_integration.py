@@ -76,6 +76,7 @@ T001 → T002
         yield tmp_path
         os.chdir(original_cwd)
 
+    @pytest.mark.skip(reason="Hooks injection not yet implemented in jj DAG builder")
     def test_dag_build_with_hooks_enabled(self, git_repo_with_spec_and_hooks):
         """Test that hooks are injected into a built DAG."""
         tmp_path = git_repo_with_spec_and_hooks

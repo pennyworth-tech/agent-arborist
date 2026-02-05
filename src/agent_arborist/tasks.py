@@ -1238,3 +1238,87 @@ def init_colocated(cwd: Path | None = None) -> JJResult:
         stderr=result.stderr,
         error=result.stderr if result.returncode != 0 else None,
     )
+
+
+# =============================================================================
+# Utility Functions (project-agnostic)
+# =============================================================================
+
+def detect_test_command(workspace: Path) -> str | None:
+    """Auto-detect test command based on project files.
+
+    Args:
+        workspace: Path to workspace/worktree directory
+
+    Returns:
+        Test command string, or None if no test command detected
+    """
+    if (workspace / "pyproject.toml").exists() or (workspace / "pytest.ini").exists():
+        return "pytest"
+    if (workspace / "package.json").exists():
+        return "npm test"
+    if (workspace / "Makefile").exists():
+        # Check if Makefile has a test target
+        makefile_content = (workspace / "Makefile").read_text()
+        if "test:" in makefile_content:
+            return "make test"
+    if (workspace / "Cargo.toml").exists():
+        return "cargo test"
+    if (workspace / "go.mod").exists():
+        return "go test ./..."
+    return None
+
+
+def run_tests(
+    workspace: Path,
+    test_cmd: str | None = None,
+    container_cmd_prefix: list[str] | None = None,
+) -> JJResult:
+    """Run tests in the workspace.
+
+    Args:
+        workspace: Path to workspace
+        test_cmd: Test command to run (auto-detected if None)
+        container_cmd_prefix: Optional devcontainer exec prefix for running in container
+
+    Returns:
+        JJResult with success status and output
+    """
+    cmd = test_cmd or detect_test_command(workspace)
+
+    if not cmd:
+        return JJResult(success=True, message="No test command detected, skipping tests")
+
+    try:
+        # Handle container wrapping
+        if container_cmd_prefix:
+            # Build full command for container execution
+            # Need to join cmd with bash -c if it's a shell command
+            full_cmd = container_cmd_prefix + ["bash", "-c", cmd]
+            result = subprocess.run(
+                full_cmd,
+                capture_output=True,
+                text=True,
+            )
+        else:
+            # Run directly on host
+            result = subprocess.run(
+                cmd,
+                shell=True,
+                cwd=workspace,
+                capture_output=True,
+                text=True,
+            )
+
+        if result.returncode == 0:
+            return JJResult(success=True, message="Tests passed", stdout=result.stdout, stderr=result.stderr)
+
+        return JJResult(
+            success=False,
+            message="Tests failed",
+            stdout=result.stdout,
+            stderr=result.stderr,
+            error=result.stdout + result.stderr,
+        )
+    except Exception as e:
+        return JJResult(success=False, message="Failed to run tests", error=str(e))

@@ -31,36 +31,35 @@ from agent_arborist.home import (
     DAGU_HOME_ENV_VAR,
 )
 from agent_arborist.task_spec import parse_task_spec
-from agent_arborist.dag_builder import DagConfig, DagBuilder
+from agent_arborist.dag_builder import (
+    DagConfig,
+    SubDagBuilder,
+    build_dag_yaml,
+    DagBundle,
+    SubDag,
+    SubDagStep,
+)
 from agent_arborist.dag_generator import DagGenerator
+from agent_arborist.manifest import (
+    generate_manifest,
+    save_manifest,
+    load_manifest,
+    load_manifest_from_env,
+    find_manifest_path,
+    ChangeManifest,
+)
 from agent_arborist.container_runner import ContainerMode
 from agent_arborist.container_context import (
     wrap_subprocess_command,
     get_container_mode_from_env,
 )
 from agent_arborist import dagu_runs
-from agent_arborist.git_tasks import (
-    get_worktree_path,
-    find_parent_branch,
-    find_worktree_for_branch,
-    merge_to_parent,
-    cleanup_task,
-    run_tests,
+from agent_arborist.tasks import (
+    get_workspace_path,
     detect_test_command,
-    get_conflict_files,
-    abort_merge,
-    branch_exists,
-    create_all_branches_from_manifest,
-    sync_task,
-    get_current_branch,
-    find_manifest_path,
-)
-from agent_arborist.branch_manifest import (
-    generate_manifest,
-    save_manifest,
-    load_manifest,
-    load_manifest_from_env,
-    BranchManifest,
+    run_tests,
+    is_jj_repo,
+    run_jj,
 )
 from agent_arborist.task_state import (
     init_task_tree,
@@ -78,7 +77,7 @@ from agent_arborist.step_results import (
     PostMergeResult,
     PostCleanupResult,
 )
-from agent_arborist.jj_cli import register_jj_commands
+from agent_arborist.task_cli import register_task_commands
 
 console = Console()
 
@@ -1294,1268 +1293,8 @@ def hooks_run(
         raise SystemExit(1)
 
 
-# -----------------------------------------------------------------------------
-# Task commands
-# -----------------------------------------------------------------------------
-
-
-@main.group()
-def task() -> None:
-    """Task execution and management."""
-    pass
-
-
-@task.command("status")
-@click.argument("task_id", required=False)
-@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
-@click.pass_context
-def task_status(ctx: click.Context, task_id: str | None, as_json: bool) -> None:
-    """Get task status.
-
-    If TASK_ID is provided, shows that task's status.
-    Otherwise, shows summary of all tasks.
-    """
-    import json
-
-    spec_id = ctx.obj.get("spec_id")
-
-    if ctx.obj.get("echo_for_testing"):
-        echo_command(
-            "task status",
-            task_id=task_id or "all",
-            spec_id=spec_id or "none",
-            json=str(as_json),
-        )
-        return
-
-    if not spec_id:
-        console.print("[red]Error:[/red] No spec available")
-        raise SystemExit(1)
-
-    tree = load_task_tree(spec_id)
-    if not tree:
-        console.print(f"[red]Error:[/red] No task tree found for spec {spec_id}")
-        raise SystemExit(1)
-
-    if task_id:
-        task_node = tree.get_task(task_id)
-        if not task_node:
-            console.print(f"[red]Error:[/red] Task {task_id} not found")
-            raise SystemExit(1)
-
-        if as_json:
-            console.print(json.dumps({
-                "task_id": task_node.task_id,
-                "status": task_node.status,
-                "description": task_node.description,
-                "parent_id": task_node.parent_id,
-                "children": task_node.children,
-                "branch": task_node.branch,
-                "worktree": task_node.worktree,
-                "error": task_node.error,
-            }, indent=2))
-        else:
-            status_color = {
-                "pending": "yellow",
-                "running": "cyan",
-                "complete": "green",
-                "failed": "red",
-            }.get(task_node.status, "white")
-
-            console.print(f"[bold]Task:[/bold] {task_node.task_id}")
-            console.print(f"[bold]Status:[/bold] [{status_color}]{task_node.status}[/{status_color}]")
-            console.print(f"[dim]Description:[/dim] {task_node.description}")
-            if task_node.parent_id:
-                console.print(f"[dim]Parent:[/dim] {task_node.parent_id}")
-            if task_node.children:
-                console.print(f"[dim]Children:[/dim] {', '.join(task_node.children)}")
-            if task_node.branch:
-                console.print(f"[dim]Branch:[/dim] {task_node.branch}")
-            if task_node.worktree:
-                console.print(f"[dim]Worktree:[/dim] {task_node.worktree}")
-            if task_node.error:
-                console.print(f"[red]Error:[/red] {task_node.error}")
-    else:
-        # Show summary
-        summary = get_task_status_summary(tree)
-
-        if as_json:
-            console.print(json.dumps(summary, indent=2))
-        else:
-            console.print(f"[bold]Spec:[/bold] {spec_id}")
-            console.print(f"[bold]Total tasks:[/bold] {summary['total']}")
-            console.print(f"  [yellow]Pending:[/yellow] {summary['pending']}")
-            console.print(f"  [cyan]Running:[/cyan] {summary['running']}")
-            console.print(f"  [green]Complete:[/green] {summary['complete']}")
-            console.print(f"  [red]Failed:[/red] {summary['failed']}")
-
-
-@task.command("pre-sync")
-@click.argument("task_id")
-@click.pass_context
-def task_pre_sync(ctx: click.Context, task_id: str) -> None:
-    """Create worktree and sync from parent for a task.
-
-    This command reads branch info from the ARBORIST_MANIFEST environment variable.
-    Branches must already exist (run 'arborist spec branch-create-all' first).
-    """
-    import os
-
-    from agent_arborist.git_tasks import find_manifest_path
-
-    manifest_path = os.environ.get("ARBORIST_MANIFEST")
-    
-    # If not provided via env, try discovery
-    if not manifest_path:
-        spec_id_from_env = os.environ.get("ARBORIST_SPEC_ID")
-        if spec_id_from_env:
-            discovered = find_manifest_path(spec_id_from_env)
-            if discovered:
-                manifest_path = str(discovered)
-        
-        if not manifest_path:
-            console.print("[red]Error:[/red] ARBORIST_MANIFEST environment variable not set and manifest could not be discovered")
-            console.print("This command should be run from a DAGU DAG step")
-            console.print("[dim]Manifest discovery requires ARBORIST_SPEC_ID env var to be set[/dim]")
-            raise SystemExit(1)
-
-    try:
-        manifest = load_manifest(Path(manifest_path))
-    except FileNotFoundError:
-        console.print(f"[red]Error:[/red] Manifest not found: {manifest_path}")
-        raise SystemExit(1)
-    except Exception as e:
-        console.print(f"[red]Error loading manifest:[/red] {e}")
-        raise SystemExit(1)
-
-    task_info = manifest.get_task(task_id)
-    if not task_info:
-        console.print(f"[red]Error:[/red] Task {task_id} not found in manifest")
-        raise SystemExit(1)
-
-    # Get worktree path
-    worktree_path = get_worktree_path(manifest.spec_id, task_id)
-
-    if ctx.obj.get("echo_for_testing"):
-        echo_command(
-            "task pre-sync",
-            task_id=task_id,
-            spec_id=manifest.spec_id,
-            branch=task_info.branch,
-            parent=task_info.parent_branch,
-            worktree=str(worktree_path),
-        )
-        return
-
-    # Check if step should be skipped (restart support)
-    if _check_skip_and_output(
-        task_id,
-        "pre-sync",
-        PreSyncResult,
-        ctx,
-        worktree_path=str(worktree_path),
-        branch=task_info.branch,
-        parent_branch=task_info.parent_branch,
-    ):
-        return
-
-    # Sync the task (create worktree and sync from parent)
-    result = sync_task(task_info.branch, task_info.parent_branch, worktree_path)
-
-    # Build step result
-    step_result = PreSyncResult(
-        success=result.success,
-        worktree_path=str(worktree_path),
-        branch=task_info.branch,
-        parent_branch=task_info.parent_branch,
-        created_worktree=worktree_path.exists(),
-        synced_from_parent=result.success,
-        error=result.error if not result.success else None,
-    )
-
-    # Output result
-    output_result(step_result, ctx)
-
-    if result.success:
-        # Update state
-        update_task_status(manifest.spec_id, task_id, "running", branch=task_info.branch, worktree=str(worktree_path))
-    else:
-        raise SystemExit(1)
-
-
-@task.command("run")
-@click.argument("task_id")
-@click.option("--timeout", "-t", default=1800, help="Timeout in seconds")
-@click.option(
-    "--runner",
-    "-r",
-    type=click.Choice(["claude", "opencode", "gemini"]),
-    default=None,
-    help=f"Runner to use (default: ${ARBORIST_DEFAULT_RUNNER_ENV_VAR} or opencode)",
-)
-@click.option(
-    "--model",
-    "-m",
-    default=None,
-    help="Model to use (default: runner's default model)",
-)
-@click.pass_context
-def task_run(ctx: click.Context, task_id: str, timeout: int, runner: str | None, model: str | None) -> None:
-    """Execute a task using AI in its worktree.
-
-    The AI runner will be invoked in the task's worktree directory,
-    allowing it to explore files and implement the task.
-    """
-    import os
-
-    from agent_arborist.git_tasks import find_manifest_path
-
-    manifest_path = os.environ.get("ARBORIST_MANIFEST")
-    
-    # If not provided via env, try discovery
-    if not manifest_path:
-        spec_id_from_env = os.environ.get("ARBORIST_SPEC_ID")
-        if spec_id_from_env:
-            discovered = find_manifest_path(spec_id_from_env)
-            if discovered:
-                manifest_path = str(discovered)
-        
-        if not manifest_path:
-            console.print("[red]Error:[/red] ARBORIST_MANIFEST environment variable not set and manifest could not be discovered")
-            console.print("This command should be run from a DAGU DAG step")
-            console.print("[dim]Manifest discovery requires ARBORIST_SPEC_ID env var to be set[/dim]")
-            raise SystemExit(1)
-
-    try:
-        manifest = load_manifest(Path(manifest_path))
-    except Exception as e:
-        console.print(f"[red]Error loading manifest:[/red] {e}")
-        raise SystemExit(1)
-
-    task_info = manifest.get_task(task_id)
-    if not task_info:
-        console.print(f"[red]Error:[/red] Task {task_id} not found in manifest")
-        raise SystemExit(1)
-
-    # Load task tree for description
-    tree = load_task_tree(manifest.spec_id)
-    task_node = tree.get_task(task_id) if tree else None
-    task_description = task_node.description if task_node else task_id
-
-    # Get worktree path
-    worktree_path = get_worktree_path(manifest.spec_id, task_id)
-
-    # Resolve runner/model from config (CLI args override config)
-    from agent_arborist.config import get_config, get_step_runner_model
-    arborist_home = ctx.obj.get("arborist_home")
-    arborist_config = get_config(arborist_home=arborist_home)
-    runner_type, resolved_model = get_step_runner_model(
-        arborist_config, step="run", cli_runner=runner, cli_model=model
-    )
-
-    if ctx.obj.get("echo_for_testing"):
-        echo_command(
-            "task run",
-            task_id=task_id,
-            spec_id=manifest.spec_id,
-            runner=runner_type,
-            model=resolved_model,
-            timeout=str(timeout),
-            worktree=str(worktree_path),
-        )
-        return
-
-    # Check if step should be skipped (restart support)
-    if _check_skip_and_output(
-        task_id,
-        "run",
-        RunResult,
-        ctx,
-        runner=runner_type,
-        model=resolved_model,
-    ):
-        return
-
-    if not worktree_path.exists():
-        console.print(f"[red]Error:[/red] Worktree not found at {worktree_path}")
-        console.print("Run 'arborist task pre-sync' first")
-        raise SystemExit(1)
-
-    # Build prompt for AI
-    prompt = f"""Implement task {task_id}: "{task_description}"
-
-You are in the project worktree. Read the task spec at specs/{manifest.spec_id}/tasks.md for full context including dependencies and requirements.
-
-Complete the implementation for this specific task. After implementing:
-1. Ensure all code compiles/lints
-2. Add any necessary tests
-3. Stage ALL your changes with: git add -A
-4. Create a SINGLE commit with this EXACT format:
-
-git commit -m "task({task_id}): <one-line summary>
-
-- <detail about what was done>
-- <another detail if needed>
-- <etc>
-
-(generated by {runner_type} / {resolved_model} on branch {task_info.branch})"
-
-IMPORTANT:
-- The first line MUST be: task({task_id}): followed by a brief summary
-- Use bullet points for details in the body
-- Include the footer line with runner/model/branch info
-- Make exactly ONE commit with all your changes
-"""
-
-    import time
-
-    # Get runner with specified or default model
-    runner_instance = get_runner(runner_type, model=resolved_model)
-
-    # Check if we need to wrap runner command with devcontainer exec
-    container_mode = get_container_mode_from_env()
-    container_cmd_prefix = None
-    use_container = False
-    if container_mode != ContainerMode.DISABLED:
-        from agent_arborist.container_context import should_use_container
-        use_container = should_use_container(worktree_path, container_mode)
-        if use_container:
-            container_cmd_prefix = [
-                "devcontainer",
-                "exec",
-                "--workspace-folder",
-                str(worktree_path.resolve()),
-            ]
-
-    # Only check runner availability on host (when not using container)
-    if not use_container and not runner_instance.is_available():
-        console.print(f"[red]Error:[/red] {runner_type} not found in PATH")
-        raise SystemExit(1)
-
-    # Run the AI in the worktree directory (or container if needed)
-    start_time = time.time()
-    result = runner_instance.run(
-        prompt,
-        timeout=timeout,
-        cwd=worktree_path,
-        container_cmd_prefix=container_cmd_prefix,
-    )
-    duration = time.time() - start_time
-
-    # Gather metrics for output
-    files_changed = _count_changed_files(worktree_path)
-    commit_message = _get_last_commit_message(worktree_path, task_id)
-
-    # Build step result
-    step_result = RunResult(
-        success=result.success,
-        files_changed=files_changed,
-        commit_message=commit_message,
-        summary=result.output[:500] if result.output else "",
-        runner=runner_type,
-        model=resolved_model,
-        duration_seconds=round(duration, 2),
-        error=result.error if not result.success else None,
-    )
-
-    # Output result
-    output_result(step_result, ctx)
-
-    if not result.success:
-        update_task_status(manifest.spec_id, task_id, "failed", error=result.error)
-        raise SystemExit(1)
-
-
-@task.command("commit")
-@click.argument("task_id")
-@click.pass_context
-def task_commit(ctx: click.Context, task_id: str) -> None:
-    """Ensure task has a commit - either from AI or create fallback.
-
-    The AI should have already committed with format: task(<id>): summary
-    This step is a safety net if the AI didn't commit properly.
-    """
-    import os
-    import subprocess
-
-    from agent_arborist.git_tasks import find_manifest_path
-
-    manifest_path = os.environ.get("ARBORIST_MANIFEST")
-
-    if not manifest_path:
-        spec_id_from_env = os.environ.get("ARBORIST_SPEC_ID")
-        if spec_id_from_env:
-            discovered = find_manifest_path(spec_id_from_env)
-            if discovered:
-                manifest_path = str(discovered)
-        
-        if not manifest_path:
-            console.print("[red]Error:[/red] ARBORIST_MANIFEST environment variable not set and manifest could not be discovered")
-            console.print("This command should be run from a DAGU DAG step")
-            console.print("[dim]Manifest discovery requires ARBORIST_SPEC_ID env var to be set[/dim]")
-            raise SystemExit(1)
-
-    try:
-        manifest = load_manifest(Path(manifest_path))
-    except Exception as e:
-        console.print(f"[red]Error loading manifest:[/red] {e}")
-        raise SystemExit(1)
-
-    task_info = manifest.get_task(task_id)
-    if not task_info:
-        console.print(f"[red]Error:[/red] Task {task_id} not found in manifest")
-        raise SystemExit(1)
-
-    # Load task tree for description
-    tree = load_task_tree(manifest.spec_id)
-    task_node = tree.get_task(task_id) if tree else None
-    task_description = task_node.description if task_node else task_id
-
-    # Get worktree path
-    worktree_path = get_worktree_path(manifest.spec_id, task_id)
-
-    if ctx.obj.get("echo_for_testing"):
-        echo_command(
-            "task commit",
-            task_id=task_id,
-            spec_id=manifest.spec_id,
-            worktree=str(worktree_path),
-        )
-        return
-
-    # Check if step should be skipped (restart support)
-    if _check_skip_and_output(task_id, "commit", CommitResult, ctx):
-        return
-
-    if not worktree_path.exists():
-        console.print(f"[red]Error:[/red] Worktree not found at {worktree_path}")
-        raise SystemExit(1)
-
-    # Check if there are staged changes that need committing
-    staged_result = subprocess.run(
-        ["git", "diff", "--cached", "--quiet"],
-        cwd=worktree_path,
-        capture_output=True,
-    )
-    has_staged = staged_result.returncode != 0
-
-    # Check if there are unstaged changes
-    unstaged_result = subprocess.run(
-        ["git", "diff", "--quiet"],
-        cwd=worktree_path,
-        capture_output=True,
-    )
-    has_unstaged = unstaged_result.returncode != 0
-
-    # Check last commit message
-    last_commit = subprocess.run(
-        ["git", "log", "-1", "--format=%s"],
-        cwd=worktree_path,
-        capture_output=True,
-        text=True,
-    )
-    last_msg = last_commit.stdout.strip() if last_commit.returncode == 0 else ""
-
-    # Check if AI already committed with proper format
-    ai_committed = last_msg.startswith(f"task({task_id}):")
-
-    was_fallback = False
-    commit_msg = last_msg
-    error_msg = None
-
-    if ai_committed and not has_staged and not has_unstaged:
-        # AI committed successfully, nothing more to do
-        pass
-    elif has_staged or has_unstaged:
-        # Stage any unstaged changes
-        if has_unstaged:
-            subprocess.run(["git", "add", "-A"], cwd=worktree_path, check=True)
-
-        # Create fallback commit message
-        commit_msg = f"task({task_id}): {task_description}\n\n(fallback commit - AI did not commit)"
-        was_fallback = True
-
-        try:
-            subprocess.run(
-                ["git", "commit", "-m", commit_msg],
-                cwd=worktree_path,
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-        except subprocess.CalledProcessError as e:
-            error_msg = e.stderr if e.stderr else "Commit failed"
-            step_result = CommitResult(
-                success=False,
-                commit_sha=None,
-                message=commit_msg,
-                files_staged=_count_staged_files(worktree_path),
-                was_fallback=was_fallback,
-                error=error_msg,
-            )
-            output_result(step_result, ctx)
-            raise SystemExit(1)
-    else:
-        # No changes and no AI commit - success with no changes
-        pass
-
-    # Build step result
-    step_result = CommitResult(
-        success=True,
-        commit_sha=_get_head_sha(worktree_path),
-        message=commit_msg,
-        files_staged=_count_staged_files(worktree_path) if was_fallback else 0,
-        was_fallback=was_fallback,
-    )
-
-    # Output result
-    output_result(step_result, ctx)
-
-
-@task.command("run-test")
-@click.argument("task_id")
-@click.option("--cmd", help="Override test command (auto-detected if not specified)")
-@click.pass_context
-def task_run_test(ctx: click.Context, task_id: str, cmd: str | None) -> None:
-    """Run tests for task in its worktree.
-
-    Requires ARBORIST_MANIFEST environment variable or ARBORIST_SPEC_ID for discovery.
-    """
-    import os
-
-    from agent_arborist.git_tasks import find_manifest_path
-
-    manifest_path = os.environ.get("ARBORIST_MANIFEST")
-
-    if not manifest_path:
-        spec_id_from_env = os.environ.get("ARBORIST_SPEC_ID")
-        if spec_id_from_env:
-            discovered = find_manifest_path(spec_id_from_env)
-            if discovered:
-                manifest_path = str(discovered)
-        
-        if not manifest_path:
-            console.print("[red]Error:[/red] ARBORIST_MANIFEST environment variable not set and manifest could not be discovered")
-            console.print("This command should be run from a DAGU DAG step")
-            console.print("[dim]Manifest discovery requires ARBORIST_SPEC_ID env var to be set[/dim]")
-            raise SystemExit(1)
-
-    try:
-        manifest = load_manifest(Path(manifest_path))
-    except Exception as e:
-        console.print(f"[red]Error loading manifest:[/red] {e}")
-        raise SystemExit(1)
-
-    task_info = manifest.get_task(task_id)
-    if not task_info:
-        console.print(f"[red]Error:[/red] Task {task_id} not found in manifest")
-        raise SystemExit(1)
-
-    # Get worktree path
-    worktree_path = get_worktree_path(manifest.spec_id, task_id)
-
-    if ctx.obj.get("echo_for_testing"):
-        echo_command(
-            "task run-test",
-            task_id=task_id,
-            spec_id=manifest.spec_id,
-            cmd=cmd or "auto",
-            worktree=str(worktree_path),
-        )
-        return
-
-    # Check if step should be skipped (restart support)
-    if _check_skip_and_output(task_id, "run-test", RunTestResult, ctx):
-        return
-
-    # For parent tasks, check children are complete
-    if task_info.children:
-        tree = load_task_tree(manifest.spec_id)
-        if tree:
-            if not tree.are_children_complete(task_id):
-                incomplete = [
-                    c for c in tree.get_children(task_id)
-                    if c.status != "complete"
-                ]
-                console.print(f"[red]Error:[/red] Children not complete:")
-                for child in incomplete:
-                    console.print(f"  - {child.task_id}: {child.status}")
-                raise SystemExit(1)
-            console.print(f"[green]OK:[/green] All {len(task_info.children)} children complete")
-
-    if not worktree_path.exists():
-        console.print(f"[yellow]WARN:[/yellow] No worktree at {worktree_path}, using git root")
-        worktree_path = get_git_root()
-
-    # Detect or use provided test command
-    test_cmd = cmd or detect_test_command(worktree_path)
-    if not test_cmd:
-        # No tests - success with no tests
-        step_result = RunTestResult(
-            success=True,
-            test_command=None,
-            output_summary="No test command detected, skipping tests",
-        )
-        output_result(step_result, ctx)
-        return
-
-    # Check if we need to wrap test command with devcontainer exec
-    container_mode = get_container_mode_from_env()
-    container_cmd_prefix = None
-    if container_mode != ContainerMode.DISABLED:
-        from agent_arborist.container_context import should_use_container
-        if should_use_container(worktree_path, container_mode):
-            container_cmd_prefix = [
-                "devcontainer",
-                "exec",
-                "--workspace-folder",
-                str(worktree_path.resolve()),
-            ]
-
-    result = run_tests(worktree_path, test_cmd, container_cmd_prefix)
-
-    # Build step result
-    step_result = RunTestResult(
-        success=result.success,
-        test_command=test_cmd,
-        output_summary=result.message[:500] if result.message else "",
-        error=result.error if not result.success else None,
-    )
-
-    # Output result
-    output_result(step_result, ctx)
-
-    if not result.success:
-        raise SystemExit(1)
-
-
-@task.command("post-merge")
-@click.argument("task_id")
-@click.option("--timeout", "-t", default=300, help="Timeout in seconds for AI merge")
-@click.option(
-    "--runner",
-    "-r",
-    type=click.Choice(["claude", "opencode", "gemini"]),
-    default=None,
-    help=f"Runner to use (default: ${ARBORIST_DEFAULT_RUNNER_ENV_VAR} or opencode)",
-)
-@click.option(
-    "--model",
-    "-m",
-    default=None,
-    help="Model to use (default: runner's default model)",
-)
-@click.pass_context
-def task_post_merge(ctx: click.Context, task_id: str, timeout: int, runner: str | None, model: str | None) -> None:
-    """Merge task branch to parent branch using AI.
-
-    AI performs a squash merge with proper commit message format:
-    - Leaf tasks: task-leaf(T004): description
-    - Parent tasks: task-merge(T002): description
-
-    AI handles conflict resolution if needed.
-    """
-    import os
-
-    from agent_arborist.git_tasks import find_manifest_path
-
-    manifest_path = os.environ.get("ARBORIST_MANIFEST")
-
-    if not manifest_path:
-        spec_id_from_env = os.environ.get("ARBORIST_SPEC_ID")
-        if spec_id_from_env:
-            discovered = find_manifest_path(spec_id_from_env)
-            if discovered:
-                manifest_path = str(discovered)
-        
-        if not manifest_path:
-            console.print("[red]Error:[/red] ARBORIST_MANIFEST environment variable not set and manifest could not be discovered")
-            console.print("This command should be run from a DAGU DAG step")
-            console.print("[dim]Manifest discovery requires ARBORIST_SPEC_ID env var to be set[/dim]")
-            raise SystemExit(1)
-
-    try:
-        manifest = load_manifest(Path(manifest_path))
-    except Exception as e:
-        console.print(f"[red]Error loading manifest:[/red] {e}")
-        raise SystemExit(1)
-
-    task_info = manifest.get_task(task_id)
-    if not task_info:
-        console.print(f"[red]Error:[/red] Task {task_id} not found in manifest")
-        raise SystemExit(1)
-
-    # Load task tree for description
-    tree = load_task_tree(manifest.spec_id)
-    task_node = tree.get_task(task_id) if tree else None
-    task_description = task_node.description if task_node else task_id
-
-    # Get branch names from manifest
-    task_branch = task_info.branch
-    parent_branch = task_info.parent_branch
-
-    # Resolve runner/model from config (CLI args override config)
-    from agent_arborist.config import get_config, get_step_runner_model
-    arborist_home = ctx.obj.get("arborist_home")
-    arborist_config = get_config(arborist_home=arborist_home)
-    runner_type, resolved_model = get_step_runner_model(
-        arborist_config, step="post-merge", cli_runner=runner, cli_model=model
-    )
-
-    # Get the task worktree (where we'll do the merge work)
-    task_worktree = find_worktree_for_branch(task_branch)
-
-    if not task_worktree:
-        console.print(f"[red]Error:[/red] Task worktree not found for {task_branch}")
-        console.print(f"[dim]Make sure the task worktree exists before merging[/dim]")
-        raise SystemExit(1)
-
-    if ctx.obj.get("echo_for_testing"):
-        echo_command(
-            "task post-merge",
-            task_id=task_id,
-            spec_id=manifest.spec_id,
-            runner=runner_type,
-            model=resolved_model,
-            branch=task_branch,
-            parent=parent_branch,
-            worktree=str(task_worktree),
-        )
-        return
-
-    # Check if step should be skipped (restart support)
-    if _check_skip_and_output(
-        task_id,
-        "post-merge",
-        PostMergeResult,
-        ctx,
-        source_branch=task_branch,
-        merged_into=parent_branch,
-    ):
-        return
-
-    if not ctx.obj.get("quiet"):
-        console.print(f"[cyan]Merging {task_branch} → {parent_branch} (squash)[/cyan]")
-
-    # Import lock helpers for merge serialization
-    import shutil
-    from agent_arborist.home import get_git_root, get_arborist_home
-    from agent_arborist.git_tasks import branch_merge_lock, hash_branch, LockBusyError
-
-    git_root = get_git_root()
-    arborist_home = get_arborist_home()
-
-    # Acquire lock for this (spec_id, parent_branch) - serializes parallel merges
-    # If lock is busy, fail fast with LOCK_BUSY so DAGU can retry
-    try:
-        lock_ctx = branch_merge_lock(arborist_home, manifest.spec_id, parent_branch)
-        lock_ctx.__enter__()
-    except LockBusyError as e:
-        console.print(f"[yellow]Lock busy:[/yellow] Another merge to {parent_branch} in progress")
-        console.print(f"[dim]{e}[/dim]")
-        raise SystemExit(1)
-
-    try:
-        # Determine where to run the merge:
-        # - If parent branch has an existing worktree, use it (this is the normal case during DAG execution)
-        # - Otherwise, create a temporary worktree for the parent branch inside .arborist/
-        # NOTE: We cannot checkout the parent branch in the task worktree because git worktrees
-        # prevent checking out a branch that's already checked out elsewhere.
-        parent_worktree = find_worktree_for_branch(parent_branch)
-        cleanup_worktree = False
-
-        if parent_worktree:
-            # Parent has an active worktree (e.g., T001's worktree during T004's merge)
-            # Run the merge there - the worktree is already on the parent branch
-            merge_worktree = parent_worktree
-            if not ctx.obj.get("quiet"):
-                console.print(f"[dim]Using existing parent worktree at {parent_worktree}[/dim]")
-        else:
-            # No worktree for parent branch - create a temporary one INSIDE .arborist/
-            # This ensures the path is accessible from devcontainers (which mount the repo)
-            branch_hash = hash_branch(parent_branch)
-            merge_worktree = arborist_home / "worktrees" / manifest.spec_id / "_merge" / branch_hash
-            cleanup_worktree = True
-
-            # Ensure parent directory exists
-            merge_worktree.parent.mkdir(parents=True, exist_ok=True)
-
-            try:
-                from agent_arborist.git_tasks import _run_git
-                _run_git("worktree", "add", str(merge_worktree), parent_branch, cwd=git_root)
-                if not ctx.obj.get("quiet"):
-                    console.print(f"[dim]Created merge worktree at {merge_worktree}[/dim]")
-            except Exception as e:
-                if cleanup_worktree and merge_worktree.exists():
-                    shutil.rmtree(merge_worktree, ignore_errors=True)
-                console.print(f"[red]Error:[/red] Failed to create worktree for {parent_branch}: {e}")
-                raise SystemExit(1)
-
-        # Build prompt for AI to do the merge
-        # When using container mode, AI runs in git-root container and must cd to merge worktree
-        # When not using containers, AI runs directly in the merge worktree
-        container_mode = get_container_mode_from_env()
-        use_container = container_mode != ContainerMode.DISABLED
-
-        if use_container:
-            # AI runs in git-root container, needs to cd to merge worktree first
-            # Use repo-relative path so it works inside the container (which mounts the repo)
-            try:
-                rel_worktree_path = merge_worktree.relative_to(git_root)
-            except ValueError:
-                # Fallback if worktree is not under git_root (shouldn't happen with new logic)
-                rel_worktree_path = merge_worktree.resolve()
-            merge_prompt = f"""Perform a squash merge of branch '{task_branch}' into '{parent_branch}'.
-
-FIRST: Change to the merge worktree directory:
-cd {rel_worktree_path}
-
-Then perform the merge:
-
-STEPS:
-1. Verify you're on the correct branch: git branch --show-current
-   (should show: {parent_branch})
-2. Run: git merge --squash {task_branch}
-3. If there are conflicts, resolve them carefully by examining both versions
-4. After resolving any conflicts, stage all changes with: git add -A
-5. Create a SINGLE commit with this EXACT format:
-
-git commit -m "task({task_id}): <one-line summary of what was merged>
-
-- <detail about changes merged>
-- <another detail if needed>
-
-(merged by {runner_type} / {resolved_model} from {task_branch})"
-
-IMPORTANT:
-- The first line MUST be: task({task_id}): followed by a brief summary
-- Use bullet points for details in the body
-- Include the footer line showing this was a merge
-- If the merge has no changes (branches identical), just report that - no commit needed
-- Do NOT checkout any other branch - stay on {parent_branch}
-
-Do NOT push. Just complete the merge and commit locally.
-"""
-        else:
-            # AI runs directly in merge worktree (no container)
-            merge_prompt = f"""Perform a squash merge of branch '{task_branch}' into '{parent_branch}'.
-
-You are currently in a worktree that is on the '{parent_branch}' branch.
-
-STEPS:
-1. First, verify you're on the correct branch: git branch --show-current
-   (should show: {parent_branch})
-2. Run: git merge --squash {task_branch}
-3. If there are conflicts, resolve them carefully by examining both versions
-4. After resolving any conflicts, stage all changes with: git add -A
-5. Create a SINGLE commit with this EXACT format:
-
-git commit -m "task({task_id}): <one-line summary of what was merged>
-
-- <detail about changes merged>
-- <another detail if needed>
-
-(merged by {runner_type} / {resolved_model} from {task_branch})"
-
-IMPORTANT:
-- The first line MUST be: task({task_id}): followed by a brief summary
-- Use bullet points for details in the body
-- Include the footer line showing this was a merge
-- If the merge has no changes (branches identical), just report that - no commit needed
-- Do NOT checkout any other branch - stay on {parent_branch}
-
-Do NOT push. Just complete the merge and commit locally.
-"""
-
-        # Get runner with specified or default model
-        runner_instance = get_runner(runner_type, model=resolved_model)
-
-        # Set up container execution
-        # When using containers, ALL merges use the git-root container (started by merge-container-up)
-        # This container has access to the entire repo and all worktrees
-        container_cmd_prefix = None
-
-        if use_container:
-            # Ensure git-root container is running (start if not already up)
-            # This makes post-merge self-sufficient even if merge-container-up step wasn't in the DAG
-            import subprocess as sp
-            if not ctx.obj.get("quiet"):
-                console.print(f"[dim]Ensuring git-root merge container is running...[/dim]")
-
-            try:
-                # devcontainer up is idempotent - if already running, it's a no-op
-                up_result = sp.run(
-                    ["devcontainer", "up", "--workspace-folder", str(git_root.resolve())],
-                    capture_output=True,
-                    text=True,
-                    timeout=120,
-                )
-                if up_result.returncode != 0:
-                    console.print(f"[red]Error starting merge container:[/red] {up_result.stderr}")
-                    raise SystemExit(1)
-            except sp.TimeoutExpired:
-                console.print(f"[red]Error:[/red] Timeout starting merge container")
-                raise SystemExit(1)
-            except FileNotFoundError:
-                console.print(f"[red]Error:[/red] devcontainer CLI not found")
-                raise SystemExit(1)
-
-            container_cmd_prefix = [
-                "devcontainer",
-                "exec",
-                "--workspace-folder",
-                str(git_root.resolve()),
-            ]
-            if not ctx.obj.get("quiet"):
-                console.print(f"[dim]Using git-root merge container[/dim]")
-        else:
-            # No container - check runner availability on host
-            if not runner_instance.is_available():
-                console.print(f"[red]Error:[/red] {runner_type} not available")
-                raise SystemExit(1)
-
-        if not ctx.obj.get("quiet"):
-            console.print(f"[dim]Running {runner_type} for merge in {merge_worktree}[/dim]")
-
-        try:
-            # Run AI - either in git-root container (with cd to worktree) or directly in worktree
-            result = runner_instance.run(
-                merge_prompt,
-                timeout=timeout,
-                cwd=git_root if use_container else merge_worktree,
-                container_cmd_prefix=container_cmd_prefix,
-            )
-
-            # Get the commit SHA from the parent branch after merge
-            # (the merge commit is on the parent branch, not the task branch)
-            merge_commit_sha = None
-            if result.success:
-                try:
-                    merge_commit_sha = _get_head_sha(merge_worktree)
-                except Exception:
-                    # Fall back to getting it from the branch directly
-                    try:
-                        from agent_arborist.git_tasks import _run_git
-                        sha_result = _run_git("rev-parse", parent_branch, cwd=git_root, check=False)
-                        if sha_result.returncode == 0:
-                            merge_commit_sha = sha_result.stdout.strip()[:12]
-                    except Exception:
-                        pass
-        finally:
-            # Clean up temporary worktree if we created one
-            if cleanup_worktree:
-                try:
-                    from agent_arborist.git_tasks import _run_git
-                    _run_git("worktree", "remove", str(merge_worktree), "--force", cwd=git_root, check=False)
-                except Exception:
-                    pass
-                # Also remove directory if git worktree remove didn't clean it up
-                if merge_worktree.exists():
-                    shutil.rmtree(merge_worktree, ignore_errors=True)
-
-        # Build step result
-        step_result = PostMergeResult(
-            success=result.success,
-            merged_into=parent_branch,
-            source_branch=task_branch,
-            commit_sha=merge_commit_sha,
-            conflicts=[],  # AI should have resolved any conflicts
-            conflict_resolved=False,
-            error=result.error if not result.success else None,
-        )
-
-        # Output result
-        output_result(step_result, ctx)
-
-        if result.success:
-            update_task_status(manifest.spec_id, task_id, "complete")
-        else:
-            update_task_status(manifest.spec_id, task_id, "failed", error="Merge failed")
-            raise SystemExit(1)
-    finally:
-        # Release the merge lock
-        lock_ctx.__exit__(None, None, None)
-
-
-@task.command("post-cleanup")
-@click.argument("task_id")
-@click.option("--keep-branch", is_flag=True, help="Don't delete the branch")
-@click.pass_context
-def task_post_cleanup(ctx: click.Context, task_id: str, keep_branch: bool) -> None:
-    """Remove worktree and branch for a completed task."""
-    import os
-
-    manifest_path = os.environ.get("ARBORIST_MANIFEST")
-
-    if not manifest_path:
-        spec_id_from_env = os.environ.get("ARBORIST_SPEC_ID")
-        if spec_id_from_env:
-            discovered = find_manifest_path(spec_id_from_env)
-            if discovered:
-                manifest_path = str(discovered)
-        
-        if not manifest_path:
-            console.print("[red]Error:[/red] ARBORIST_MANIFEST environment variable not set and manifest could not be discovered")
-            raise SystemExit(1)
-
-    try:
-        manifest = load_manifest(Path(manifest_path))
-    except Exception as e:
-        console.print(f"[red]Error loading manifest:[/red] {e}")
-        raise SystemExit(1)
-
-    task_info = manifest.get_task(task_id)
-    if not task_info:
-        console.print(f"[red]Error:[/red] Task {task_id} not found in manifest")
-        raise SystemExit(1)
-
-    # Get worktree path (from env or compute)
-    worktree_path_str = os.environ.get("ARBORIST_WORKTREE")
-    if worktree_path_str:
-        worktree_path = Path(worktree_path_str)
-    else:
-        # Compute from git root
-        worktree_path = get_worktree_path(manifest.spec_id, task_id)
-
-    if ctx.obj.get("echo_for_testing"):
-        echo_command(
-            "task post-cleanup",
-            task_id=task_id,
-            spec_id=manifest.spec_id,
-            branch=task_branch,
-            keep_branch=str(keep_branch),
-            worktree=str(worktree_path),
-        )
-        return
-
-    # Check if step should be skipped (restart support)
-    if _check_skip_and_output(task_id, "post-cleanup", PostCleanupResult, ctx):
-        return
-
-    result = cleanup_task(task_branch, worktree_path, delete_branch=not keep_branch)
-
-    # Build step result
-    step_result = PostCleanupResult(
-        success=result.success,
-        worktree_removed=not worktree_path.exists(),
-        branch_deleted=not keep_branch and not branch_exists(task_branch),
-        cleaned_up=result.success,
-        error=result.error if not result.success else None,
-    )
-
-    # Output result
-    output_result(step_result, ctx)
-
-    if result.success:
-        # Clear worktree from state
-        tree = load_task_tree(manifest.spec_id)
-        if tree:
-            task_node = tree.get_task(task_id)
-            if task_node:
-                update_task_status(manifest.spec_id, task_id, task_node.status, worktree=None)
-
-
-@task.command("container-up")
-@click.argument("task_id")
-@click.pass_context
-def task_container_up(ctx: click.Context, task_id: str) -> None:
-    """Start devcontainer for a task's worktree.
-
-    The .devcontainer/.env file is copied to the worktree during pre-sync.
-    Environment variables are managed via devcontainer.json configuration.
-
-    Requires ARBORIST_MANIFEST and ARBORIST_WORKTREE environment variables.
-    """
-    import os
-    import subprocess
-
-    from agent_arborist.step_results import ContainerUpResult
-
-    worktree_path = os.environ.get("ARBORIST_WORKTREE", "")
-
-    # Discover manifest path first
-    manifest_path = os.environ.get("ARBORIST_MANIFEST")
-
-    if not manifest_path:
-        spec_id_from_env = os.environ.get("ARBORIST_SPEC_ID")
-        if spec_id_from_env:
-            discovered = find_manifest_path(spec_id_from_env)
-            if discovered:
-                manifest_path = str(discovered)
-        
-        if not manifest_path:
-            console.print("[red]Error:[/red] ARBORIST_MANIFEST environment variable not set and manifest could not be discovered")
-            console.print("This command should be run from a DAGU DAG step")
-            raise SystemExit(1)
-
-    # If worktree_path not set, compute it from spec_id and task_id
-    if not worktree_path:
-        spec_id = os.environ.get("ARBORIST_SPEC_ID")
-        if spec_id and task_id:
-            worktree_path = str(get_worktree_path(spec_id, task_id))
-    
-    # Check if this step should be skipped (restart support)
-    if _check_skip_and_output(
-        task_id, "container-up", ContainerUpResult, ctx, worktree_path=worktree_path
-    ):
-        return
-
-    if not worktree_path:
-        console.print("[red]Error:[/red] ARBORIST_WORKTREE environment variable not set")
-        console.print("This command should be run from a DAGU DAG step")
-        raise SystemExit(1)
-
-    worktree = Path(worktree_path)
-    if not worktree.exists():
-        console.print(f"[red]Error:[/red] Worktree does not exist: {worktree}")
-        raise SystemExit(1)
-
-    if ctx.obj.get("echo_for_testing"):
-        echo_command(
-            "task container-up",
-            task_id=task_id,
-            worktree=str(worktree),
-        )
-        return
-
-    # Build the command
-    cmd_parts = ['devcontainer', 'up', '--workspace-folder', str(worktree)]
-
-    console.print(f"[cyan]Starting container for:[/cyan] {worktree}")
-
-    try:
-        result = subprocess.run(
-            cmd_parts,
-            capture_output=True,
-            text=True,
-        )
-
-        if result.returncode != 0:
-            step_result = ContainerUpResult(
-                success=False,
-                error=result.stderr,
-                worktree_path=str(worktree),
-            )
-            output_result(step_result, ctx)
-            console.print(f"[red]Error starting container:[/red]")
-            console.print(result.stderr)
-            raise SystemExit(1)
-
-        # Try to extract container ID from output
-        container_id = None
-        if result.stdout:
-            import json as json_module
-            try:
-                output_data = json_module.loads(result.stdout)
-                container_id = output_data.get("containerId")
-            except json_module.JSONDecodeError:
-                pass
-
-        step_result = ContainerUpResult(
-            success=True,
-            worktree_path=str(worktree),
-            container_id=container_id,
-        )
-        output_result(step_result, ctx)
-        console.print(f"[green]Container started successfully[/green]")
-
-    except SystemExit:
-        raise
-    except Exception as e:
-        step_result = ContainerUpResult(
-            success=False,
-            error=str(e),
-            worktree_path=str(worktree) if worktree_path else "",
-        )
-        output_result(step_result, ctx)
-        console.print(f"[red]Error:[/red] {e}")
-        raise SystemExit(1)
-
-
-@task.command("container-stop")
-@click.argument("task_id")
-@click.pass_context
-def task_container_stop(ctx: click.Context, task_id: str) -> None:
-    """Stop devcontainer for a task's worktree (but don't remove it).
-
-    Uses docker ps filter to find and stop the container by devcontainer.local_folder label.
-    The container is stopped but not removed, allowing for debugging.
-    Use 'arborist cleanup containers' to fully remove stopped containers.
-
-    Requires ARBORIST_WORKTREE environment variable.
-    """
-    import os
-    import subprocess
-
-    from agent_arborist.step_results import ContainerStopResult
-
-    # Compute worktree path from env variables or derive from spec_id and task_id
-    worktree_path = os.environ.get("ARBORIST_WORKTREE", "")
-    
-    if not worktree_path:
-        spec_id = os.environ.get("ARBORIST_SPEC_ID")
-        if spec_id and task_id:
-            worktree_path = str(get_worktree_path(spec_id, task_id))
-
-    # Check if this step should be skipped (restart support)
-    if _check_skip_and_output(
-        task_id, "container-stop", ContainerStopResult, ctx, worktree_path=worktree_path
-    ):
-        return
-
-    if not worktree_path:
-        console.print("[red]Error:[/red] ARBORIST_WORKTREE environment variable not set")
-        console.print("This command should be run from a DAGU DAG step")
-        raise SystemExit(1)
-
-    worktree = Path(worktree_path)
-
-    if ctx.obj.get("echo_for_testing"):
-        echo_command(
-            "task container-stop",
-            task_id=task_id,
-            worktree=str(worktree),
-        )
-        return
-
-    # Build the command to stop the container
-    # Find container by devcontainer.local_folder label and stop it
-    cmd = f'docker stop $(docker ps -q --filter label=devcontainer.local_folder="{worktree}") 2>/dev/null || true'
-
-    console.print(f"[cyan]Stopping container for:[/cyan] {worktree}")
-
-    try:
-        result = subprocess.run(
-            cmd,
-            shell=True,
-            capture_output=True,
-            text=True,
-        )
-
-        # Command always succeeds due to || true
-        # Check if any container was stopped
-        container_stopped = bool(result.stdout.strip())
-        step_result = ContainerStopResult(
-            success=True,
-            worktree_path=str(worktree),
-            container_stopped=container_stopped,
-        )
-        output_result(step_result, ctx)
-
-        if container_stopped:
-            console.print(f"[green]Container stopped successfully[/green]")
-        else:
-            console.print(f"[dim]No running container found for this worktree[/dim]")
-
-    except Exception as e:
-        step_result = ContainerStopResult(
-            success=False,
-            error=str(e),
-            worktree_path=str(worktree) if worktree_path else "",
-        )
-        output_result(step_result, ctx)
-        console.print(f"[red]Error:[/red] {e}")
-        raise SystemExit(1)
+# NOTE: Task commands are provided by task_cli.py (register_task_commands)
+# See agent_arborist/task_cli.py for the task subcommand implementation
 
 
 # -----------------------------------------------------------------------------
@@ -2810,6 +1549,12 @@ def spec_merge_container_up(ctx: click.Context) -> None:
     help="Container execution mode: auto (detect .devcontainer), enabled (require), disabled (never)",
 )
 @click.option(
+    "--vcs",
+    type=click.Choice(["git", "jj"]),
+    default="jj",
+    help="Version control system: jj (Jujutsu changes, default) or git (worktrees)",
+)
+@click.option(
     "--echo-only",
     is_flag=True,
     hidden=True,
@@ -2827,6 +1572,7 @@ def spec_dag_build(
     no_ai: bool,
     timeout: int,
     container_mode: str,
+    vcs: str,
     echo_only: bool,
 ) -> None:
     """Build a DAGU DAG from a task spec directory using AI inference.
@@ -2926,19 +1672,46 @@ def spec_dag_build(
             arborist_config = None
 
         dag_name_safe = dag_name.replace("-", "_")
-        config = DagConfig(
-            name=dag_name_safe,
-            description=task_spec.project,
-            spec_id=dag_name,
-            container_mode=container_mode_enum,
-            repo_path=repo_path,
-            runner=runner,
-            model=model,
-            arborist_config=arborist_config,
-            arborist_home=Path(arborist_home) if arborist_home else None,
-        )
-        builder = DagBuilder(config)
-        dag_yaml = builder.build_yaml(task_spec)
+
+        if vcs == "jj":
+            # Build task tree from spec for jj dag builder
+            from agent_arborist.task_state import TaskTree, TaskNode
+            tree = TaskTree(spec_id=dag_name)
+            for task in task_spec.tasks:
+                tree.tasks[task.id] = TaskNode(
+                    task_id=task.id,
+                    description=task.description,
+                )
+            for task_id, deps in task_spec.dependencies.items():
+                if deps and task_id in tree.tasks:
+                    parent_id = deps[0]
+                    if parent_id in tree.tasks:
+                        tree.tasks[task_id].parent_id = parent_id
+                        if task_id not in tree.tasks[parent_id].children:
+                            tree.tasks[parent_id].children.append(task_id)
+            tree.root_tasks = [tid for tid, task in tree.tasks.items() if task.parent_id is None]
+
+            dag_yaml = build_dag_yaml(
+                task_tree=tree,
+                dag_name=dag_name,
+                description=task_spec.project or "",
+                container_mode=container_mode_enum,
+                repo_path=repo_path,
+            )
+        else:
+            config = DagConfig(
+                name=dag_name_safe,
+                description=task_spec.project,
+                spec_id=dag_name,
+                container_mode=container_mode_enum,
+                repo_path=repo_path,
+                runner=runner,
+                model=model,
+                arborist_config=arborist_config,
+                arborist_home=Path(arborist_home) if arborist_home else None,
+            )
+            builder = SubDagBuilder(config)
+            dag_yaml = builder.build_yaml(task_spec, task_tree)
     else:
         # AI inference mode
         runner_type = runner or get_default_runner()
@@ -3002,6 +1775,19 @@ def spec_dag_build(
         if not ctx.obj.get("quiet"):
             console.print("[green]OK:[/green] DAG generated successfully")
 
+        # If jj mode, rebuild the DAG with jj commands using the AI-generated task tree
+        if vcs == "jj":
+            if not ctx.obj.get("quiet"):
+                console.print("[cyan]Converting to jj workflow...[/cyan]")
+            task_tree = build_task_tree_from_yaml(dag_name, dag_yaml)
+            dag_yaml = build_dag_yaml(
+                task_tree=task_tree,
+                dag_name=dag_name,
+                description=result.yaml_content.split("\n")[1].replace("description: ", "") if "description:" in result.yaml_content else "",
+                container_mode=container_mode_enum,
+                repo_path=repo_path,
+            )
+
     if dry_run:
         console.print(dag_yaml)
         return
@@ -3020,29 +1806,51 @@ def spec_dag_build(
     # Ensure parent directory exists
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Generate and save branch manifest
-    if not ctx.obj.get("quiet"):
-        console.print("[cyan]Generating branch manifest...[/cyan]")
+    # Generate and save manifest
+    if vcs == "jj":
+        # For jj, generate a placeholder manifest (changes created at runtime by setup-spec)
+        if not ctx.obj.get("quiet"):
+            console.print("[cyan]Generating jj manifest (changes created at runtime)...[/cyan]")
 
-    # Get current branch for base naming
-    source_branch = get_current_branch()
+        task_tree = build_task_tree_from_yaml(dag_name, dag_yaml)
+        manifest = generate_manifest(
+            spec_id=dag_name,
+            task_tree=task_tree,
+            create_changes=False,  # Placeholder - changes created at runtime
+        )
 
-    # Build task tree from generated YAML (not from spec file)
-    # This ensures manifest matches what AI generated
-    task_tree = build_task_tree_from_yaml(dag_name, dag_yaml)
+        manifest_path = output_path.with_suffix(".json")
+        save_manifest(manifest, manifest_path)
 
-    # Generate manifest
-    manifest = generate_manifest(dag_name, task_tree, source_branch)
+        if not ctx.obj.get("quiet"):
+            console.print(f"[green]Manifest written to:[/green] {manifest_path}")
+            console.print(f"[dim]  Spec ID: {manifest.spec_id}[/dim]")
+            console.print(f"[dim]  Tasks: {len(manifest.tasks)}[/dim]")
+            console.print("[dim]  Note: jj changes will be created when DAG runs[/dim]")
+    else:
+        # Git worktree manifest
+        if not ctx.obj.get("quiet"):
+            console.print("[cyan]Generating branch manifest...[/cyan]")
 
-    # Save manifest alongside DAG
-    manifest_path = output_path.with_suffix(".json")
-    save_manifest(manifest, manifest_path)
+        # Get current branch for base naming
+        source_branch = get_current_branch()
 
-    if not ctx.obj.get("quiet"):
-        console.print(f"[green]Manifest written to:[/green] {manifest_path}")
-        console.print(f"[dim]  Source branch: {manifest.source_branch}[/dim]")
-        console.print(f"[dim]  Base branch: {manifest.base_branch}[/dim]")
-        console.print(f"[dim]  Tasks: {len(manifest.tasks)}[/dim]")
+        # Build task tree from generated YAML (not from spec file)
+        # This ensures manifest matches what AI generated
+        task_tree = build_task_tree_from_yaml(dag_name, dag_yaml)
+
+        # Generate manifest
+        manifest = generate_manifest(dag_name, task_tree, source_branch)
+
+        # Save manifest alongside DAG
+        manifest_path = output_path.with_suffix(".json")
+        save_manifest(manifest, manifest_path)
+
+        if not ctx.obj.get("quiet"):
+            console.print(f"[green]Manifest written to:[/green] {manifest_path}")
+            console.print(f"[dim]  Source branch: {manifest.source_branch}[/dim]")
+            console.print(f"[dim]  Base branch: {manifest.base_branch}[/dim]")
+            console.print(f"[dim]  Tasks: {len(manifest.tasks)}[/dim]")
 
     # If echo_only, inject --echo-for-testing into all arborist commands (in all documents)
     if echo_only:
@@ -5017,8 +3825,8 @@ def dashboard(ctx: click.Context, port: int, host: str, open: bool) -> None:
         raise SystemExit(1)
 
 
-# Register jj commands
-register_jj_commands(main)
+# Register task commands
+register_task_commands(main)
 
 if __name__ == "__main__":
     main()

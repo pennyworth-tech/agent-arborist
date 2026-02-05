@@ -1,546 +1,663 @@
-"""Tests for dag_builder module with subdag architecture."""
+"""Tests for dag_builder module."""
 
+from unittest.mock import patch, MagicMock
 import pytest
 import yaml
-from pathlib import Path
 
-from agent_arborist.task_spec import Task, Phase, TaskSpec, parse_task_spec
-from agent_arborist.task_state import TaskTree, TaskNode
+from agent_arborist.container_runner import ContainerMode
 from agent_arborist.dag_builder import (
-    SubDagStep, SubDag, DagBundle, DagConfig,
-    SubDagBuilder, DagBuilder, DagStep, build_dag,
-    _build_tree_from_spec,
+    SubDagStep,
+    SubDag,
+    DagBundle,
+    DagConfig,
+    build_arborist_command,
+    SubDagBuilder,
+    build_dag_yaml,
+    parse_yaml_to_bundle,
+    is_task_dag,
 )
+from agent_arborist.task_state import TaskTree, TaskNode
 
 
 class TestSubDagStep:
     """Tests for SubDagStep dataclass."""
 
-    def test_command_step(self):
-        step = SubDagStep(name="test-step", command="echo test")
-        assert step.name == "test-step"
-        assert step.command == "echo test"
+    def test_create_command_step(self):
+        """Creates a command step."""
+        step = SubDagStep(
+            name="run",
+            command="arborist task run T001",
+            depends=["pre-sync"],
+        )
+        assert step.name == "run"
+        assert step.command == "arborist task run T001"
+        assert step.call is None
+        assert step.depends == ["pre-sync"]
+        assert step.output is None
+
+    def test_create_call_step(self):
+        """Creates a call (subdag) step."""
+        step = SubDagStep(
+            name="c-T001",
+            call="T001",
+            depends=["setup-changes"],
+        )
+        assert step.name == "c-T001"
+        assert step.command is None
+        assert step.call == "T001"
+        assert step.depends == ["setup-changes"]
+
+    def test_create_step_with_output(self):
+        """Creates a step with output configuration."""
+        step = SubDagStep(
+            name="run",
+            command="arborist task run T001",
+            output={"name": "T001_RUN_RESULT", "key": "T001_RUN_RESULT"},
+        )
+        assert step.output == {"name": "T001_RUN_RESULT", "key": "T001_RUN_RESULT"}
+
+    def test_default_values(self):
+        """Verifies default values."""
+        step = SubDagStep(name="test")
+        assert step.command is None
         assert step.call is None
         assert step.depends == []
-
-    def test_call_step(self):
-        step = SubDagStep(name="c-T001", call="T001", depends=["pre-sync"])
-        assert step.call == "T001"
-        assert step.command is None
-        assert step.depends == ["pre-sync"]
+        assert step.output is None
 
 
 class TestSubDag:
     """Tests for SubDag dataclass."""
 
-    def test_basic_subdag(self):
-        subdag = SubDag(name="T001", steps=[])
+    def test_create_subdag(self):
+        """Creates a subdag with steps."""
+        step1 = SubDagStep(name="pre-sync", command="arborist task pre-sync T001")
+        step2 = SubDagStep(name="run", command="arborist task run T001", depends=["pre-sync"])
+
+        subdag = SubDag(
+            name="T001",
+            steps=[step1, step2],
+            description="Task T001",
+            env=["ARBORIST_TASK_ID=T001"],
+        )
+
         assert subdag.name == "T001"
-        assert subdag.steps == []
+        assert len(subdag.steps) == 2
+        assert subdag.description == "Task T001"
+        assert subdag.env == ["ARBORIST_TASK_ID=T001"]
         assert subdag.is_root is False
 
-    def test_root_dag(self):
-        """Test root DAG with environment variables."""
+    def test_create_root_subdag(self):
+        """Creates a root DAG."""
         subdag = SubDag(
-            name="my-dag",
-            env=["ARBORIST_SPEC_ID=spec"],
+            name="002-feature",
             is_root=True,
+            env=["ARBORIST_VCS=jj"],
         )
         assert subdag.is_root is True
-        assert len(subdag.env) == 1
+
+    def test_default_values(self):
+        """Verifies default values."""
+        subdag = SubDag(name="test")
+        assert subdag.steps == []
+        assert subdag.description == ""
+        assert subdag.env == []
+        assert subdag.is_root is False
+
+
+class TestDagBundle:
+    """Tests for DagBundle dataclass."""
+
+    def test_create_bundle(self):
+        """Creates a bundle with root and subdags."""
+        root = SubDag(name="002-feature", is_root=True)
+        subdags = [
+            SubDag(name="T001"),
+            SubDag(name="T002"),
+        ]
+
+        bundle = DagBundle(root=root, subdags=subdags)
+
+        assert bundle.root.name == "002-feature"
+        assert len(bundle.subdags) == 2
+        assert bundle.subdags[0].name == "T001"
 
 
 class TestDagConfig:
     """Tests for DagConfig dataclass."""
 
-    def test_config_defaults(self):
-        config = DagConfig(name="test-dag")
-        assert config.name == "test-dag"
+    def test_create_config(self):
+        """Creates config with all fields."""
+        config = DagConfig(
+            name="002_feature",
+            description="Feature implementation",
+            spec_id="002-feature",
+            container_mode=ContainerMode.ENABLED,
+        )
+
+        assert config.name == "002_feature"
+        assert config.description == "Feature implementation"
+        assert config.spec_id == "002-feature"
+        assert config.container_mode == ContainerMode.ENABLED
+
+    def test_default_values(self):
+        """Verifies default values."""
+        config = DagConfig(name="test")
         assert config.description == ""
         assert config.spec_id == ""
+        assert config.container_mode == ContainerMode.AUTO
+        assert config.repo_path is None
+        assert config.runner is None
+        assert config.model is None
 
 
-class TestBuildTreeFromSpec:
-    """Tests for _build_tree_from_spec helper."""
+class TestBuildArboristCommand:
+    """Tests for build_arborist_command function."""
 
-    def test_linear_chain(self):
-        """T001 -> T002 -> T003 (linear dependency chain)."""
-        spec = TaskSpec(
-            project="Test",
-            total_tasks=3,
-            phases=[Phase(
-                name="P1",
-                tasks=[
-                    Task(id="T001", description="First"),
-                    Task(id="T002", description="Second"),
-                    Task(id="T003", description="Third"),
-                ],
-            )],
-            dependencies={"T001": [], "T002": ["T001"], "T003": ["T002"]},
-        )
+    def test_build_run_command(self):
+        """Builds run command."""
+        cmd = build_arborist_command("T001", "run")
+        assert cmd == "arborist task run T001"
 
-        tree = _build_tree_from_spec(spec, "test-spec")
+    def test_build_complete_command(self):
+        """Builds complete command."""
+        cmd = build_arborist_command("T002", "complete")
+        assert cmd == "arborist task complete T002"
 
-        # T001 is root
-        assert "T001" in tree.root_tasks
-        assert tree.tasks["T001"].parent_id is None
-        assert "T002" in tree.tasks["T001"].children
+    def test_build_sync_parent_command(self):
+        """Builds sync-parent command."""
+        cmd = build_arborist_command("T003", "sync-parent")
+        assert cmd == "arborist task sync-parent T003"
 
-        # T002 has parent T001 and child T003
-        assert tree.tasks["T002"].parent_id == "T001"
-        assert "T003" in tree.tasks["T002"].children
-
-        # T003 is leaf
-        assert tree.tasks["T003"].parent_id == "T002"
-        assert tree.tasks["T003"].children == []
-
-    def test_parallel_children(self):
-        """T001 -> (T002, T003, T004) parallel children."""
-        spec = TaskSpec(
-            project="Test",
-            total_tasks=4,
-            phases=[Phase(
-                name="P1",
-                tasks=[
-                    Task(id="T001", description="Parent"),
-                    Task(id="T002", description="Child A"),
-                    Task(id="T003", description="Child B"),
-                    Task(id="T004", description="Child C"),
-                ],
-            )],
-            dependencies={
-                "T001": [],
-                "T002": ["T001"],
-                "T003": ["T001"],
-                "T004": ["T001"],
-            },
-        )
-
-        tree = _build_tree_from_spec(spec, "test-spec")
-
-        # T001 is root with 3 children
-        assert tree.tasks["T001"].parent_id is None
-        assert set(tree.tasks["T001"].children) == {"T002", "T003", "T004"}
-
-        # All children have T001 as parent
-        for tid in ["T002", "T003", "T004"]:
-            assert tree.tasks[tid].parent_id == "T001"
-            assert tree.tasks[tid].children == []
+    def test_build_pre_sync_command(self):
+        """Builds pre-sync command."""
+        cmd = build_arborist_command("T004", "pre-sync")
+        assert cmd == "arborist task pre-sync T004"
 
 
 class TestSubDagBuilder:
-    """Tests for SubDagBuilder."""
+    """Tests for SubDagBuilder class."""
 
     @pytest.fixture
-    def linear_tree(self):
-        """T001 -> T002 -> T003 linear chain."""
-        tree = TaskTree(spec_id="test")
-        tree.tasks = {
-            "T001": TaskNode(task_id="T001", description="First", children=["T002"]),
-            "T002": TaskNode(task_id="T002", description="Second", parent_id="T001", children=["T003"]),
-            "T003": TaskNode(task_id="T003", description="Third", parent_id="T002"),
-        }
+    def simple_tree(self):
+        """Creates a simple task tree with one task."""
+        tree = TaskTree(spec_id="002-feature")
+        tree.tasks["T001"] = TaskNode(
+            task_id="T001",
+            description="First task",
+            parent_id=None,
+            children=[],
+        )
         tree.root_tasks = ["T001"]
         return tree
 
     @pytest.fixture
-    def parallel_tree(self):
-        """T001 with parallel children T002, T003."""
-        tree = TaskTree(spec_id="test")
-        tree.tasks = {
-            "T001": TaskNode(task_id="T001", description="Parent", children=["T002", "T003"]),
-            "T002": TaskNode(task_id="T002", description="Child A", parent_id="T001"),
-            "T003": TaskNode(task_id="T003", description="Child B", parent_id="T001"),
-        }
+    def tree_with_children(self):
+        """Creates a task tree with parent and children."""
+        tree = TaskTree(spec_id="002-feature")
+        tree.tasks["T001"] = TaskNode(
+            task_id="T001",
+            description="Parent task",
+            parent_id=None,
+            children=["T002", "T003"],
+        )
+        tree.tasks["T002"] = TaskNode(
+            task_id="T002",
+            description="First child",
+            parent_id="T001",
+            children=[],
+        )
+        tree.tasks["T003"] = TaskNode(
+            task_id="T003",
+            description="Second child",
+            parent_id="T001",
+            children=[],
+        )
         tree.root_tasks = ["T001"]
         return tree
 
-    def test_build_leaf_subdag(self, linear_tree):
-        config = DagConfig(name="test", spec_id="test")
+    @pytest.fixture
+    def builder(self):
+        """Creates a builder with default config."""
+        config = DagConfig(
+            name="002_feature",
+            spec_id="002-feature",
+            container_mode=ContainerMode.DISABLED,
+        )
+        return SubDagBuilder(config)
+
+    def test_build_from_simple_tree(self, builder, simple_tree):
+        """Builds DAG from simple tree."""
+        with patch("agent_arborist.dag_builder.should_use_container", return_value=False):
+            bundle = builder.build_from_tree(simple_tree)
+
+        assert bundle.root.name == "002_feature"
+        assert bundle.root.is_root is True
+        assert len(bundle.subdags) == 1
+        assert bundle.subdags[0].name == "T001"
+
+    def test_build_root_dag_steps(self, builder, simple_tree):
+        """Verifies root DAG has correct steps."""
+        with patch("agent_arborist.dag_builder.should_use_container", return_value=False):
+            bundle = builder.build_from_tree(simple_tree)
+
+        root = bundle.root
+        step_names = [s.name for s in root.steps]
+
+        # Should have: setup-changes, c-T001
+        assert "setup-changes" in step_names
+        assert "c-T001" in step_names
+
+        # Verify dependencies
+        call_step = next(s for s in root.steps if s.name == "c-T001")
+        assert "setup-changes" in call_step.depends
+
+    def test_build_root_dag_with_container(self, simple_tree):
+        """Verifies root DAG includes merge container when enabled."""
+        config = DagConfig(
+            name="002_feature",
+            spec_id="002-feature",
+            container_mode=ContainerMode.ENABLED,
+        )
         builder = SubDagBuilder(config)
 
-        subdag = builder._build_leaf_subdag("T003")
+        with patch("agent_arborist.dag_builder.should_use_container", return_value=True):
+            bundle = builder.build_from_tree(simple_tree)
 
-        assert subdag.name == "T003"
+        root = bundle.root
+        step_names = [s.name for s in root.steps]
 
-        # Verify required steps are present (at least 4: pre-sync, run, commit, post-merge)
-        step_names = [s.name for s in subdag.steps]
+        assert "merge-container-up" in step_names
+
+        # Verify c-T001 depends on merge-container-up
+        call_step = next(s for s in root.steps if s.name == "c-T001")
+        assert "merge-container-up" in call_step.depends
+
+    def test_build_root_dag_env(self, builder, simple_tree):
+        """Verifies root DAG has correct environment."""
+        with patch("agent_arborist.dag_builder.should_use_container", return_value=False):
+            bundle = builder.build_from_tree(simple_tree)
+
+        env = bundle.root.env
+        assert "ARBORIST_SPEC_ID=002-feature" in env
+        assert "ARBORIST_VCS=jj" in env
+
+    def test_build_leaf_subdag(self, builder, simple_tree):
+        """Verifies leaf subdag structure."""
+        with patch("agent_arborist.dag_builder.should_use_container", return_value=False):
+            bundle = builder.build_from_tree(simple_tree)
+
+        leaf = bundle.subdags[0]  # T001 is a leaf
+        step_names = [s.name for s in leaf.steps]
+
+        # Should have: pre-sync, run, run-test, complete
         assert "pre-sync" in step_names
         assert "run" in step_names
-        assert "commit" in step_names
-        assert "post-merge" in step_names
+        assert "run-test" in step_names
+        assert "complete" in step_names
 
-        # Get indices for required steps to verify order and dependencies
-        pre_sync_idx = step_names.index("pre-sync")
-        run_idx = step_names.index("run")
-        commit_idx = step_names.index("commit")
-        post_merge_idx = step_names.index("post-merge")
+        # No container steps
+        assert "container-up" not in step_names
+        assert "container-down" not in step_names
 
-        # Verify required steps are in the correct order
-        assert pre_sync_idx < run_idx < commit_idx < post_merge_idx
-
-        # Verify dependencies for required steps
-        assert subdag.steps[pre_sync_idx].depends == []  # pre-sync
-        assert "pre-sync" in subdag.steps[run_idx].depends  # run
-        assert "run" in subdag.steps[commit_idx].depends  # commit
-        assert subdag.steps[post_merge_idx].depends[-1] in ["run-test", "commit"]  # post-merge depends on prior step
-
-        # Verify commands
-        assert "arborist task pre-sync T003" in subdag.steps[pre_sync_idx].command
-        assert "arborist task run T003" in subdag.steps[1].command
-
-    def test_build_parent_subdag(self, parallel_tree):
-        config = DagConfig(name="test", spec_id="test")
+    def test_build_leaf_subdag_with_container(self, simple_tree):
+        """Verifies leaf subdag includes container steps."""
+        config = DagConfig(
+            name="002_feature",
+            spec_id="002-feature",
+            container_mode=ContainerMode.ENABLED,
+        )
         builder = SubDagBuilder(config)
 
-        subdag = builder._build_parent_subdag("T001", parallel_tree)
+        with patch("agent_arborist.dag_builder.should_use_container", return_value=True):
+            bundle = builder.build_from_tree(simple_tree)
 
-        assert subdag.name == "T001"
+        leaf = bundle.subdags[0]
+        step_names = [s.name for s in leaf.steps]
 
-        # Should have: pre-sync, c-T002, c-T003, run-test, post-merge, post-cleanup
-        assert len(subdag.steps) == 6
+        assert "container-up" in step_names
+        assert "container-down" in step_names
 
-        step_names = [s.name for s in subdag.steps]
+    def test_build_leaf_subdag_dependencies(self, builder, simple_tree):
+        """Verifies leaf subdag step dependencies."""
+        with patch("agent_arborist.dag_builder.should_use_container", return_value=False):
+            bundle = builder.build_from_tree(simple_tree)
+
+        leaf = bundle.subdags[0]
+
+        run_step = next(s for s in leaf.steps if s.name == "run")
+        assert "pre-sync" in run_step.depends
+
+        test_step = next(s for s in leaf.steps if s.name == "run-test")
+        assert "run" in test_step.depends
+
+        complete_step = next(s for s in leaf.steps if s.name == "complete")
+        assert "run-test" in complete_step.depends
+
+    def test_build_parent_subdag(self, builder, tree_with_children):
+        """Verifies parent subdag structure."""
+        with patch("agent_arborist.dag_builder.should_use_container", return_value=False):
+            bundle = builder.build_from_tree(tree_with_children)
+
+        # Find T001 (parent)
+        parent = next(s for s in bundle.subdags if s.name == "T001")
+        step_names = [s.name for s in parent.steps]
+
+        # Should have: pre-sync, c-T002, sync-after-T002, c-T003, sync-after-T003, run-test, complete, cleanup
         assert "pre-sync" in step_names
         assert "c-T002" in step_names
+        assert "sync-after-T002" in step_names
         assert "c-T003" in step_names
+        assert "sync-after-T003" in step_names
         assert "run-test" in step_names
-        assert "post-merge" in step_names
-        assert "post-cleanup" in step_names
+        assert "complete" in step_names
+        assert "cleanup" in step_names
 
-        # Verify pre-sync has no deps
-        pre_sync = next(s for s in subdag.steps if s.name == "pre-sync")
-        assert pre_sync.depends == []
+    def test_build_parent_subdag_sequential_children(self, builder, tree_with_children):
+        """Verifies children are called sequentially with sync between."""
+        with patch("agent_arborist.dag_builder.should_use_container", return_value=False):
+            bundle = builder.build_from_tree(tree_with_children)
 
-        # Verify calls depend on pre-sync (parallel)
-        call_t002 = next(s for s in subdag.steps if s.name == "c-T002")
-        assert call_t002.call == "T002"
-        assert call_t002.depends == ["pre-sync"]
+        parent = next(s for s in bundle.subdags if s.name == "T001")
 
-        call_t003 = next(s for s in subdag.steps if s.name == "c-T003")
-        assert call_t003.depends == ["pre-sync"]
+        # c-T002 depends on pre-sync
+        c_t002 = next(s for s in parent.steps if s.name == "c-T002")
+        assert "pre-sync" in c_t002.depends
 
-        # Verify run-test depends on all calls
-        run_test = next(s for s in subdag.steps if s.name == "run-test")
-        assert set(run_test.depends) == {"c-T002", "c-T003"}
+        # sync-after-T002 depends on c-T002
+        sync_t002 = next(s for s in parent.steps if s.name == "sync-after-T002")
+        assert "c-T002" in sync_t002.depends
 
-        # Verify post-merge depends on run-test and has retry
-        post_merge = next(s for s in subdag.steps if s.name == "post-merge")
-        assert post_merge.depends == ["run-test"]
-        assert post_merge.retry == {"limit": 60, "intervalSec": 60}
+        # c-T003 depends on sync-after-T002
+        c_t003 = next(s for s in parent.steps if s.name == "c-T003")
+        assert "sync-after-T002" in c_t003.depends
 
-        # Verify post-cleanup depends on post-merge
-        post_cleanup = next(s for s in subdag.steps if s.name == "post-cleanup")
-        assert post_cleanup.depends == ["post-merge"]
+    def test_build_multiple_root_tasks(self):
+        """Verifies multiple root tasks are handled."""
+        tree = TaskTree(spec_id="002-feature")
+        tree.tasks["T001"] = TaskNode(task_id="T001", description="First root", parent_id=None, children=[])
+        tree.tasks["T002"] = TaskNode(task_id="T002", description="Second root", parent_id=None, children=[])
+        tree.root_tasks = ["T001", "T002"]
 
-    def test_build_root_dag(self, linear_tree):
-        config = DagConfig(name="test_dag", spec_id="test-spec")
+        config = DagConfig(name="002_feature", spec_id="002-feature", container_mode=ContainerMode.DISABLED)
         builder = SubDagBuilder(config)
 
-        root = builder._build_root_dag(linear_tree)
+        with patch("agent_arborist.dag_builder.should_use_container", return_value=False):
+            bundle = builder.build_from_tree(tree)
 
-        assert root.name == "test_dag"
-        assert root.is_root is True
-        assert "ARBORIST_SPEC_ID=test-spec" in root.env
+        root = bundle.root
+        call_steps = [s for s in root.steps if s.call]
+        assert len(call_steps) == 2
 
-        # Should have: branches-setup, c-T001
-        assert len(root.steps) == 2
+        # Calls should be sequential
+        c_t001 = next(s for s in root.steps if s.name == "c-T001")
+        c_t002 = next(s for s in root.steps if s.name == "c-T002")
+        assert "setup-changes" in c_t001.depends
+        assert "c-T001" in c_t002.depends
 
-        # Verify branches-setup
-        assert root.steps[0].name == "branches-setup"
-        assert root.steps[0].command == "arborist spec branch-create-all"
-        assert root.steps[0].depends == []
-
-        # Verify c-T001
-        assert root.steps[1].name == "c-T001"
-        assert root.steps[1].call == "T001"
-        assert root.steps[1].depends == ["branches-setup"]
-
-    def test_build_root_dag_multiple_roots(self):
-        """Test root DAG with multiple root tasks."""
-        tree = TaskTree(spec_id="test")
-        tree.tasks = {
-            "T001": TaskNode(task_id="T001", description="First"),
-            "T005": TaskNode(task_id="T005", description="Fifth"),
-        }
-        tree.root_tasks = ["T001", "T005"]
-
-        config = DagConfig(name="test", spec_id="test")
-        builder = SubDagBuilder(config)
-
-        root = builder._build_root_dag(tree)
-
-        # Should have: branches-setup, c-T001, c-T005 (in linear sequence)
-        assert len(root.steps) == 3
-
-        # Linear chain: branches-setup -> c-T001 -> c-T005
-        assert root.steps[1].name == "c-T001"
-        assert root.steps[1].depends == ["branches-setup"]
-
-        assert root.steps[2].name == "c-T005"
-        assert root.steps[2].depends == ["c-T001"]
-
-    def test_build_all_subdags(self, linear_tree):
-        config = DagConfig(name="test", spec_id="test")
-        builder = SubDagBuilder(config)
-
-        subdags = builder._build_all_subdags(linear_tree)
-
-        # Should have 3 subdags (T001, T002, T003)
-        assert len(subdags) == 3
-
-        subdag_names = [s.name for s in subdags]
-        assert "T001" in subdag_names
-        assert "T002" in subdag_names
-        assert "T003" in subdag_names
-
-        # T001 and T002 are parents (have children)
-        t001 = next(s for s in subdags if s.name == "T001")
-        assert any(step.call is not None for step in t001.steps)
-
-        # T003 is leaf (no calls)
-        t003 = next(s for s in subdags if s.name == "T003")
-        assert all(step.call is None for step in t003.steps)
-
-        # Verify required steps are present (at least 4: pre-sync, run, commit, post-merge)
-        step_names = [s.name for s in t003.steps]
-        assert "pre-sync" in step_names
-        assert "run" in step_names
-        assert "commit" in step_names
-        assert "post-merge" in step_names
-
-    def test_build_complete_bundle(self, parallel_tree):
-        spec = TaskSpec(
-            project="Test",
-            total_tasks=3,
-            phases=[Phase(name="P1", tasks=[
-                Task(id="T001", description="Parent"),
-                Task(id="T002", description="Child A"),
-                Task(id="T003", description="Child B"),
-            ])],
-            dependencies={"T001": [], "T002": ["T001"], "T003": ["T001"]},
-        )
-
-        config = DagConfig(name="test", spec_id="test")
-        builder = SubDagBuilder(config)
-
-        bundle = builder.build(spec, parallel_tree)
-
-        assert bundle.root.name == "test"
-        assert bundle.root.is_root is True
-        assert len(bundle.subdags) == 3
-
-    def test_build_yaml_multi_document(self, linear_tree):
-        spec = TaskSpec(
-            project="Test",
-            total_tasks=3,
-            phases=[Phase(name="P1", tasks=[
-                Task(id="T001", description="First"),
-                Task(id="T002", description="Second"),
-                Task(id="T003", description="Third"),
-            ])],
-            dependencies={"T001": [], "T002": ["T001"], "T003": ["T002"]},
-        )
-
-        config = DagConfig(name="test", spec_id="test")
-        builder = SubDagBuilder(config)
-
-        yaml_content = builder.build_yaml(spec, linear_tree)
+    def test_build_yaml(self, builder, simple_tree):
+        """Builds YAML from task tree."""
+        with patch("agent_arborist.dag_builder.should_use_container", return_value=False):
+            bundle = builder.build_from_tree(simple_tree)
+            yaml_content = builder._serialize_bundle(bundle)
 
         # Should be multi-document YAML
         assert "---" in yaml_content
 
-        # Parse all documents
-        documents = list(yaml.safe_load_all(yaml_content))
+        # Parse and verify
+        docs = list(yaml.safe_load_all(yaml_content))
+        assert len(docs) == 2  # root + T001
 
-        # Should have 4 documents: root + 3 subdags
-        assert len(documents) == 4
+        # Root doc
+        assert docs[0]["name"] == "002_feature"
+        assert "ARBORIST_VCS=jj" in docs[0]["env"]
 
-        # First is root
-        assert documents[0]["name"] == "test"
-        assert "env" in documents[0]
-
-        # Others are subdags
-        subdag_names = [d["name"] for d in documents[1:]]
-        assert "T001" in subdag_names
-        assert "T002" in subdag_names
-        assert "T003" in subdag_names
+        # T001 doc
+        assert docs[1]["name"] == "T001"
 
 
-class TestDagBuilderLegacy:
-    """Tests for legacy DagBuilder compatibility."""
+class TestBuildDagYaml:
+    """Tests for build_dag_yaml function."""
 
-    def test_legacy_builder_produces_yaml(self):
-        spec = TaskSpec(
-            project="Test",
-            total_tasks=2,
-            phases=[Phase(name="P1", tasks=[
-                Task(id="T001", description="First"),
-                Task(id="T002", description="Second"),
-            ])],
-            dependencies={"T001": [], "T002": ["T001"]},
+    def test_build_dag_yaml(self):
+        """Builds YAML via convenience function."""
+        tree = TaskTree(spec_id="002-feature")
+        tree.tasks["T001"] = TaskNode(task_id="T001", description="Task", parent_id=None, children=[])
+        tree.root_tasks = ["T001"]
+
+        with patch("agent_arborist.dag_builder.should_use_container", return_value=False):
+            yaml_content = build_dag_yaml(
+                task_tree=tree,
+                dag_name="002-feature",
+                description="Feature description",
+            )
+
+        docs = list(yaml.safe_load_all(yaml_content))
+        assert docs[0]["name"] == "002_feature"
+        assert docs[0]["description"] == "Feature description"
+
+
+class TestParseYamlToBundle:
+    """Tests for parse_yaml_to_bundle function."""
+
+    def test_parse_simple_yaml(self):
+        """Parses simple multi-document YAML."""
+        yaml_content = """name: 002_feature
+description: Test DAG
+env: [ARBORIST_VCS=jj]
+steps:
+  - name: setup-changes
+    command: arborist task setup-spec
+  - name: c-T001
+    call: T001
+    depends: [setup-changes]
+---
+name: T001
+env: [ARBORIST_TASK_ID=T001]
+steps:
+  - name: pre-sync
+    command: arborist task pre-sync T001
+  - name: run
+    command: arborist task run T001
+    depends: [pre-sync]
+"""
+        bundle = parse_yaml_to_bundle(yaml_content)
+
+        assert bundle.root.name == "002_feature"
+        assert bundle.root.is_root is True
+        assert len(bundle.root.steps) == 2
+
+        assert len(bundle.subdags) == 1
+        assert bundle.subdags[0].name == "T001"
+        assert bundle.subdags[0].is_root is False
+        assert len(bundle.subdags[0].steps) == 2
+
+    def test_parse_step_details(self):
+        """Verifies step details are parsed correctly."""
+        yaml_content = """name: root
+steps:
+  - name: run
+    command: arborist task run T001
+    depends: [pre-sync]
+    output:
+      name: T001_RUN_RESULT
+      key: T001_RUN_RESULT
+"""
+        bundle = parse_yaml_to_bundle(yaml_content)
+
+        step = bundle.root.steps[0]
+        assert step.name == "run"
+        assert step.command == "arborist task run T001"
+        assert step.depends == ["pre-sync"]
+        assert step.output == {"name": "T001_RUN_RESULT", "key": "T001_RUN_RESULT"}
+
+    def test_parse_empty_yaml(self):
+        """Raises error for empty YAML."""
+        with pytest.raises(ValueError, match="No YAML documents"):
+            parse_yaml_to_bundle("")
+
+
+class TestIsTaskDag:
+    """Tests for is_task_dag function."""
+
+    def test_is_task_dag_true(self):
+        """Returns True for jj DAG."""
+        yaml_content = """name: test
+env: [ARBORIST_VCS=jj]
+steps: []
+"""
+        assert is_task_dag(yaml_content) is True
+
+    def test_is_task_dag_false(self):
+        """Returns False for non-jj DAG."""
+        yaml_content = """name: test
+env: [ARBORIST_SPEC_ID=002-feature]
+steps: []
+"""
+        assert is_task_dag(yaml_content) is False
+
+    def test_is_task_dag_no_env(self):
+        """Returns False when no env."""
+        yaml_content = """name: test
+steps: []
+"""
+        assert is_task_dag(yaml_content) is False
+
+    def test_is_task_dag_invalid_yaml(self):
+        """Returns False for invalid YAML."""
+        assert is_task_dag("not: valid: yaml:") is False
+
+    def test_is_task_dag_empty(self):
+        """Returns False for empty content."""
+        assert is_task_dag("") is False
+
+
+class TestOutputVariables:
+    """Tests for output variable generation."""
+
+    def test_leaf_output_variables(self):
+        """Verifies leaf subdag generates output variables."""
+        tree = TaskTree(spec_id="002-feature")
+        tree.tasks["T001"] = TaskNode(task_id="T001", description="Task", parent_id=None, children=[])
+        tree.root_tasks = ["T001"]
+
+        config = DagConfig(name="002_feature", spec_id="002-feature", container_mode=ContainerMode.DISABLED)
+        builder = SubDagBuilder(config)
+
+        with patch("agent_arborist.dag_builder.should_use_container", return_value=False):
+            bundle = builder.build_from_tree(tree)
+
+        leaf = bundle.subdags[0]
+
+        pre_sync = next(s for s in leaf.steps if s.name == "pre-sync")
+        assert pre_sync.output == {"name": "T001_PRE_SYNC_RESULT", "key": "T001_PRE_SYNC_RESULT"}
+
+        run = next(s for s in leaf.steps if s.name == "run")
+        assert run.output == {"name": "T001_RUN_RESULT", "key": "T001_RUN_RESULT"}
+
+    def test_parent_output_variables(self):
+        """Verifies parent subdag generates output variables for sync steps."""
+        tree = TaskTree(spec_id="002-feature")
+        tree.tasks["T001"] = TaskNode(task_id="T001", description="Parent", parent_id=None, children=["T002"])
+        tree.tasks["T002"] = TaskNode(task_id="T002", description="Child", parent_id="T001", children=[])
+        tree.root_tasks = ["T001"]
+
+        config = DagConfig(name="002_feature", spec_id="002-feature", container_mode=ContainerMode.DISABLED)
+        builder = SubDagBuilder(config)
+
+        with patch("agent_arborist.dag_builder.should_use_container", return_value=False):
+            bundle = builder.build_from_tree(tree)
+
+        parent = next(s for s in bundle.subdags if s.name == "T001")
+
+        sync = next(s for s in parent.steps if s.name == "sync-after-T002")
+        assert sync.output == {"name": "T001_SYNC_T002_RESULT", "key": "T001_SYNC_T002_RESULT"}
+
+
+class TestStepSerialization:
+    """Tests for step/subdag serialization."""
+
+    def test_step_to_dict_command(self):
+        """Serializes command step."""
+        config = DagConfig(name="test", container_mode=ContainerMode.DISABLED)
+        builder = SubDagBuilder(config)
+
+        step = SubDagStep(
+            name="run",
+            command="arborist task run T001",
+            depends=["pre-sync"],
+            output={"name": "VAR", "key": "VAR"},
         )
 
-        config = DagConfig(name="test", spec_id="test")
-        builder = DagBuilder(config)
+        d = builder._step_to_dict(step)
 
-        yaml_content = builder.build_yaml(spec)
+        assert d["name"] == "run"
+        assert d["command"] == "arborist task run T001"
+        assert d["depends"] == ["pre-sync"]
+        assert d["output"] == {"name": "VAR", "key": "VAR"}
+        assert "call" not in d
 
-        # Should be valid multi-document YAML
-        documents = list(yaml.safe_load_all(yaml_content))
-        assert len(documents) >= 1
-        assert documents[0]["name"] == "test"
+    def test_step_to_dict_call(self):
+        """Serializes call step."""
+        config = DagConfig(name="test", container_mode=ContainerMode.DISABLED)
+        builder = SubDagBuilder(config)
 
-
-class TestBuildDag:
-    """Tests for build_dag convenience function."""
-
-    def test_build_dag_simple(self):
-        spec = TaskSpec(
-            project="Test",
-            total_tasks=2,
-            phases=[Phase(name="P1", tasks=[
-                Task(id="T001", description="First"),
-                Task(id="T002", description="Second"),
-            ])],
-            dependencies={"T001": [], "T002": ["T001"]},
+        step = SubDagStep(
+            name="c-T001",
+            call="T001",
+            depends=["setup"],
         )
 
-        yaml_content = build_dag(spec, "test-dag")
+        d = builder._step_to_dict(step)
 
-        # Should be valid multi-document YAML
-        documents = list(yaml.safe_load_all(yaml_content))
-        assert documents[0]["name"] == "test-dag"
+        assert d["name"] == "c-T001"
+        assert d["call"] == "T001"
+        assert d["depends"] == ["setup"]
+        assert "command" not in d
 
+    def test_subdag_to_dict(self):
+        """Serializes subdag."""
+        config = DagConfig(name="test", container_mode=ContainerMode.DISABLED)
+        builder = SubDagBuilder(config)
 
-class TestBuildDagFromFixtures:
-    """Integration tests with fixture files."""
-
-    @pytest.fixture
-    def fixtures_dir(self):
-        return Path(__file__).parent / "fixtures"
-
-    def test_build_hello_world_dag(self, fixtures_dir):
-        spec = parse_task_spec(fixtures_dir / "tasks-hello-world.md")
-        yaml_content = build_dag(spec, "hello-world")
-
-        documents = list(yaml.safe_load_all(yaml_content))
-
-        # First document is root DAG
-        root = documents[0]
-        assert root["name"] == "hello-world"
-
-        # Should have subdags for each task
-        # tasks-hello-world.md has 6 tasks
-        assert len(documents) == 7  # 1 root + 6 subdags
-
-    def test_build_calculator_dag(self, fixtures_dir):
-        spec = parse_task_spec(fixtures_dir / "tasks-calculator.md")
-        yaml_content = build_dag(spec, "calculator")
-
-        documents = list(yaml.safe_load_all(yaml_content))
-
-        # First document is root DAG
-        root = documents[0]
-        assert root["name"] == "calculator"
-
-        # tasks-calculator.md has 12 tasks
-        assert len(documents) == 13  # 1 root + 12 subdags
-
-    def test_build_todo_app_dag(self, fixtures_dir):
-        spec = parse_task_spec(fixtures_dir / "tasks-todo-app.md")
-        yaml_content = build_dag(spec, "todo-app")
-
-        documents = list(yaml.safe_load_all(yaml_content))
-
-        # tasks-todo-app.md has 18 tasks
-        assert len(documents) == 19  # 1 root + 18 subdags
-
-    def test_leaf_subdag_has_six_steps(self, fixtures_dir):
-        """Verify leaf subdags have exactly 6 steps."""
-        spec = parse_task_spec(fixtures_dir / "tasks-hello-world.md")
-        yaml_content = build_dag(spec, "hello-world")
-
-        documents = list(yaml.safe_load_all(yaml_content))
-
-        # Find a leaf task (one that has no 'call' steps)
-        for doc in documents[1:]:  # Skip root
-            steps = doc.get("steps", [])
-            has_call = any("call" in step for step in steps)
-            if not has_call:
-                # This is a leaf - should have required steps
-                step_names = [s["name"] for s in steps]
-                # Verify required steps are present (at least 4: pre-sync, run, commit, post-merge)
-                assert "pre-sync" in step_names
-                assert "run" in step_names
-                assert "commit" in step_names
-                assert "post-merge" in step_names
-                break
-
-    def test_root_dag_has_branches_setup(self, fixtures_dir):
-        """Verify root DAG starts with branches-setup."""
-        spec = parse_task_spec(fixtures_dir / "tasks-hello-world.md")
-        yaml_content = build_dag(spec, "hello-world")
-
-        documents = list(yaml.safe_load_all(yaml_content))
-        root = documents[0]
-
-        first_step = root["steps"][0]
-        assert first_step["name"] == "branches-setup"
-        assert first_step["command"] == "arborist spec branch-create-all"
-
-    def test_root_dag_has_merge_container_up_when_containers_enabled(self, fixtures_dir, tmp_path):
-        """Verify root DAG has merge-container-up step when containers are enabled."""
-        from agent_arborist.container_runner import ContainerMode
-
-        spec = parse_task_spec(fixtures_dir / "tasks-hello-world.md")
-
-        # Create a .devcontainer directory so container mode check passes
-        (tmp_path / ".devcontainer").mkdir()
-        (tmp_path / ".devcontainer" / "devcontainer.json").write_text("{}")
-
-        # Build with containers enabled
-        config = DagConfig(
-            name="hello-world",
-            container_mode=ContainerMode.ENABLED,
-            repo_path=tmp_path,
+        subdag = SubDag(
+            name="T001",
+            description="Task T001",
+            env=["VAR=value"],
+            steps=[SubDagStep(name="run", command="cmd")],
         )
-        builder = DagBuilder(config)
-        yaml_content = builder.build_yaml(spec)
 
-        documents = list(yaml.safe_load_all(yaml_content))
-        root = documents[0]
-        step_names = [step["name"] for step in root["steps"]]
+        d = builder._subdag_to_dict(subdag)
 
-        # merge-container-up should be right after branches-setup
-        assert "branches-setup" in step_names
-        assert "merge-container-up" in step_names
+        assert d["name"] == "T001"
+        assert d["description"] == "Task T001"
+        assert d["env"] == ["VAR=value"]
+        assert len(d["steps"]) == 1
 
-        branches_idx = step_names.index("branches-setup")
-        merge_idx = step_names.index("merge-container-up")
-        assert merge_idx == branches_idx + 1, "merge-container-up should be right after branches-setup"
 
-        # Verify the merge-container-up step depends on branches-setup
-        merge_step = root["steps"][merge_idx]
-        assert "branches-setup" in merge_step["depends"]
+class TestRoundTrip:
+    """Tests for YAML round-trip (build -> parse)."""
 
-    def test_root_dag_no_merge_container_when_containers_disabled(self, fixtures_dir):
-        """Verify root DAG has no merge-container-up step when containers are disabled."""
-        from agent_arborist.container_runner import ContainerMode
+    def test_round_trip(self):
+        """Verifies YAML survives round-trip."""
+        tree = TaskTree(spec_id="002-feature")
+        tree.tasks["T001"] = TaskNode(task_id="T001", description="Parent", parent_id=None, children=["T002"])
+        tree.tasks["T002"] = TaskNode(task_id="T002", description="Child", parent_id="T001", children=[])
+        tree.root_tasks = ["T001"]
 
-        spec = parse_task_spec(fixtures_dir / "tasks-hello-world.md")
+        config = DagConfig(name="002_feature", spec_id="002-feature", container_mode=ContainerMode.DISABLED)
+        builder = SubDagBuilder(config)
 
-        # Build without containers
-        config = DagConfig(
-            name="hello-world",
-            container_mode=ContainerMode.DISABLED,
-        )
-        builder = DagBuilder(config)
-        yaml_content = builder.build_yaml(spec)
+        with patch("agent_arborist.dag_builder.should_use_container", return_value=False):
+            bundle = builder.build_from_tree(tree)
+            yaml_content = builder._serialize_bundle(bundle)
 
-        documents = list(yaml.safe_load_all(yaml_content))
-        root = documents[0]
-        step_names = [step["name"] for step in root["steps"]]
+        # Parse it back
+        parsed = parse_yaml_to_bundle(yaml_content)
 
-        # merge-container-up should NOT be present
-        assert "merge-container-up" not in step_names
+        # Verify structure matches
+        assert parsed.root.name == bundle.root.name
+        assert len(parsed.subdags) == len(bundle.subdags)
+
+        for orig, parsed_subdag in zip(bundle.subdags, parsed.subdags):
+            assert parsed_subdag.name == orig.name
+            assert len(parsed_subdag.steps) == len(orig.steps)

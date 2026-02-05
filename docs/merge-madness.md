@@ -1,5 +1,9 @@
 # Merge Madness: Post-Merge Worktree Investigation
 
+> **DEPRECATED**: This document describes the old git-based worktree approach.
+> Agent Arborist now uses Jujutsu (jj) for task execution with atomic operations.
+> See the jj-based implementation in `agent_arborist/tasks.py` and `agent_arborist/task_cli.py`.
+
 ## Executive Summary
 
 Post-merge steps in arborist DAG runs are failing silently because:

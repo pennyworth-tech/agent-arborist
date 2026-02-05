@@ -387,12 +387,12 @@ class TestBuildSimpleDag:
         t002 = next(d for d in documents if d["name"] == "T002")
         assert all(s.get("call") is None for s in t002["steps"])
 
-        # Verify required steps are present (at least 4: pre-sync, run, commit, post-merge)
+        # Verify required steps are present (jj uses: pre-sync, run, run-test, complete)
         step_names = [s["name"] for s in t002["steps"]]
         assert "pre-sync" in step_names
         assert "run" in step_names
-        assert "commit" in step_names
-        assert "post-merge" in step_names
+        assert "run-test" in step_names
+        assert "complete" in step_names
 
     def test_build_simple_dag_parallel_children(self):
         """Test building DAG with parallel children."""
@@ -414,8 +414,10 @@ class TestBuildSimpleDag:
         assert "T002" in calls
         assert "T003" in calls
 
-        # Both children should depend on pre-sync (parallel)
+        # In jj model, children run sequentially with sync steps between them
+        # T002 depends on pre-sync, T003 depends on sync-after-T002
         call_t002 = next(s for s in t001["steps"] if s.get("call") == "T002")
         call_t003 = next(s for s in t001["steps"] if s.get("call") == "T003")
         assert call_t002["depends"] == ["pre-sync"]
-        assert call_t003["depends"] == ["pre-sync"]
+        # T003 depends on sync step after T002
+        assert "sync-after-T002" in call_t003["depends"]

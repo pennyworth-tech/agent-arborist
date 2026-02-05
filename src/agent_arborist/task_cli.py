@@ -1,10 +1,7 @@
-"""CLI commands for Jujutsu (jj) based task execution.
+"""CLI commands for task execution.
 
-This module provides commands for running tasks using jj instead of git worktrees.
-Key differences:
-- Uses jj workspaces instead of git worktrees
-- Uses jj squash for atomic merges (no lock contention)
-- Task state tracked via change descriptions
+This module provides the task subcommands for running tasks.
+Uses jj workspaces for parallel execution with atomic squash operations.
 """
 
 import os
@@ -21,7 +18,7 @@ from agent_arborist.step_results import (
     RunTestResult,
     CommitResult,
 )
-from agent_arborist.jj_tasks import (
+from agent_arborist.tasks import (
     run_jj,
     is_jj_repo,
     get_change_id,
@@ -38,8 +35,9 @@ from agent_arborist.jj_tasks import (
     edit_change,
     JJResult,
     TaskChange,
+    detect_test_command,
 )
-from agent_arborist.jj_manifest import (
+from agent_arborist.manifest import (
     load_manifest,
     load_manifest_from_env,
     save_manifest,
@@ -108,10 +106,10 @@ def _echo_command(cmd: str, **kwargs: str | None) -> None:
 
 
 @click.group()
-def jj() -> None:
-    """Jujutsu (jj) based task execution commands.
+def task() -> None:
+    """Task execution commands.
 
-    These commands use jj instead of git worktrees for task execution.
+    Commands for executing parallel tasks with jj workspaces.
     Key benefits:
     - Atomic squash operations (no merge conflicts during sync)
     - Change IDs are stable across amends
@@ -120,11 +118,11 @@ def jj() -> None:
     pass
 
 
-@jj.command("status")
+@task.command("status")
 @click.argument("task_id", required=False)
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON")
 @click.pass_context
-def jj_status(ctx: click.Context, task_id: str | None, as_json: bool) -> None:
+def task_status(ctx: click.Context, task_id: str | None, as_json: bool) -> None:
     """Show status of jj tasks.
 
     Without TASK_ID, shows all tasks in the current spec.
@@ -133,7 +131,7 @@ def jj_status(ctx: click.Context, task_id: str | None, as_json: bool) -> None:
     spec_id = _get_spec_id(ctx)
 
     if ctx.obj and ctx.obj.get("echo_for_testing"):
-        _echo_command("jj status", spec_id=spec_id, task_id=task_id)
+        _echo_command("task status", spec_id=spec_id or "", task_id=task_id or "all", json=str(as_json))
         return
 
     if not is_jj_repo():
@@ -216,9 +214,9 @@ def jj_status(ctx: click.Context, task_id: str | None, as_json: bool) -> None:
                 console.print(table)
 
 
-@jj.command("setup-spec")
+@task.command("setup-spec")
 @click.pass_context
-def jj_setup_spec(ctx: click.Context) -> None:
+def task_setup_spec(ctx: click.Context) -> None:
     """Setup jj changes for all tasks in the spec.
 
     Creates all changes from the manifest if they don't exist.
@@ -227,7 +225,7 @@ def jj_setup_spec(ctx: click.Context) -> None:
     spec_id = _get_spec_id(ctx)
 
     if ctx.obj and ctx.obj.get("echo_for_testing"):
-        _echo_command("jj setup-spec", spec_id=spec_id)
+        _echo_command("task setup-spec", spec_id=spec_id)
         return
 
     if not spec_id:
@@ -235,6 +233,12 @@ def jj_setup_spec(ctx: click.Context) -> None:
         raise SystemExit(1)
 
     try:
+        # Auto-initialize jj in colocated mode if not already a jj repo
+        if not is_jj_repo():
+            console.print("[cyan]Initializing jj in colocated mode...[/cyan]")
+            run_jj("git", "init", "--colocate")
+            console.print("[green]jj initialized successfully[/green]")
+
         manifest = _get_manifest(ctx, spec_id)
 
         console.print(f"[cyan]Setting up jj changes for spec:[/cyan] {spec_id}")
@@ -258,10 +262,10 @@ def jj_setup_spec(ctx: click.Context) -> None:
         raise SystemExit(1)
 
 
-@jj.command("pre-sync")
+@task.command("pre-sync")
 @click.argument("task_id")
 @click.pass_context
-def jj_pre_sync(ctx: click.Context, task_id: str) -> None:
+def task_pre_sync(ctx: click.Context, task_id: str) -> None:
     """Prepare task for execution by creating/switching workspace and rebasing.
 
     This command:
@@ -272,7 +276,7 @@ def jj_pre_sync(ctx: click.Context, task_id: str) -> None:
     spec_id = _get_spec_id(ctx)
 
     if ctx.obj and ctx.obj.get("echo_for_testing"):
-        _echo_command("jj pre-sync", spec_id=spec_id, task_id=task_id)
+        _echo_command("task pre-sync", spec_id=spec_id, task_id=task_id)
         return
 
     try:
@@ -335,11 +339,11 @@ def jj_pre_sync(ctx: click.Context, task_id: str) -> None:
         raise SystemExit(1)
 
 
-@jj.command("run")
+@task.command("run")
 @click.argument("task_id")
 @click.option("--timeout", "-t", default=1800, help="Timeout in seconds")
 @click.pass_context
-def jj_run(ctx: click.Context, task_id: str, timeout: int) -> None:
+def task_run(ctx: click.Context, task_id: str, timeout: int) -> None:
     """Execute the AI runner for a task.
 
     Runs the configured AI runner (e.g., Claude Code) in the task's workspace.
@@ -349,7 +353,7 @@ def jj_run(ctx: click.Context, task_id: str, timeout: int) -> None:
     spec_id = _get_spec_id(ctx)
 
     if ctx.obj and ctx.obj.get("echo_for_testing"):
-        _echo_command("jj run", spec_id=spec_id, task_id=task_id, timeout=str(timeout))
+        _echo_command("task run", spec_id=spec_id, task_id=task_id, timeout=str(timeout))
         return
 
     try:
@@ -419,21 +423,19 @@ def jj_run(ctx: click.Context, task_id: str, timeout: int) -> None:
         raise SystemExit(1)
 
 
-@jj.command("run-test")
+@task.command("run-test")
 @click.argument("task_id")
 @click.option("--cmd", help="Override test command")
 @click.pass_context
-def jj_run_test(ctx: click.Context, task_id: str, cmd: str | None) -> None:
+def task_run_test(ctx: click.Context, task_id: str, cmd: str | None) -> None:
     """Run tests in the task's workspace.
 
     Detects and runs the appropriate test command for the project.
     """
-    from agent_arborist.git_tasks import detect_test_command
-
     spec_id = _get_spec_id(ctx)
 
     if ctx.obj and ctx.obj.get("echo_for_testing"):
-        _echo_command("jj run-test", spec_id=spec_id, task_id=task_id, test_cmd=cmd)
+        _echo_command("task run-test", spec_id=spec_id, task_id=task_id, test_cmd=cmd)
         return
 
     try:
@@ -511,10 +513,10 @@ def jj_run_test(ctx: click.Context, task_id: str, cmd: str | None) -> None:
         raise SystemExit(1)
 
 
-@jj.command("complete")
+@task.command("complete")
 @click.argument("task_id")
 @click.pass_context
-def jj_complete(ctx: click.Context, task_id: str) -> None:
+def task_complete(ctx: click.Context, task_id: str) -> None:
     """Complete a task by squashing into parent.
 
     This command:
@@ -525,7 +527,7 @@ def jj_complete(ctx: click.Context, task_id: str) -> None:
     spec_id = _get_spec_id(ctx)
 
     if ctx.obj and ctx.obj.get("echo_for_testing"):
-        _echo_command("jj complete", spec_id=spec_id, task_id=task_id)
+        _echo_command("task complete", spec_id=spec_id, task_id=task_id)
         return
 
     try:
@@ -585,10 +587,10 @@ def jj_complete(ctx: click.Context, task_id: str) -> None:
         raise SystemExit(1)
 
 
-@jj.command("sync-parent")
+@task.command("sync-parent")
 @click.argument("task_id")
 @click.pass_context
-def jj_sync_parent(ctx: click.Context, task_id: str) -> None:
+def task_sync_parent(ctx: click.Context, task_id: str) -> None:
     """Sync parent task after a child completes.
 
     This rebases remaining children onto the updated parent.
@@ -597,7 +599,7 @@ def jj_sync_parent(ctx: click.Context, task_id: str) -> None:
     spec_id = _get_spec_id(ctx)
 
     if ctx.obj and ctx.obj.get("echo_for_testing"):
-        _echo_command("jj sync-parent", spec_id=spec_id, task_id=task_id)
+        _echo_command("task sync-parent", spec_id=spec_id, task_id=task_id)
         return
 
     try:
@@ -635,10 +637,10 @@ def jj_sync_parent(ctx: click.Context, task_id: str) -> None:
         raise SystemExit(1)
 
 
-@jj.command("cleanup")
+@task.command("cleanup")
 @click.argument("task_id")
 @click.pass_context
-def jj_cleanup(ctx: click.Context, task_id: str) -> None:
+def task_cleanup(ctx: click.Context, task_id: str) -> None:
     """Clean up task workspace.
 
     Removes the workspace for a completed task.
@@ -646,7 +648,7 @@ def jj_cleanup(ctx: click.Context, task_id: str) -> None:
     spec_id = _get_spec_id(ctx)
 
     if ctx.obj and ctx.obj.get("echo_for_testing"):
-        _echo_command("jj cleanup", spec_id=spec_id, task_id=task_id)
+        _echo_command("task cleanup", spec_id=spec_id, task_id=task_id)
         return
 
     try:
@@ -677,10 +679,10 @@ def jj_cleanup(ctx: click.Context, task_id: str) -> None:
         raise SystemExit(1)
 
 
-@jj.command("container-up")
+@task.command("container-up")
 @click.argument("task_id")
 @click.pass_context
-def jj_container_up(ctx: click.Context, task_id: str) -> None:
+def task_container_up(ctx: click.Context, task_id: str) -> None:
     """Start devcontainer for a task's workspace.
 
     Uses devcontainer CLI to start a container in the task's workspace.
@@ -690,7 +692,7 @@ def jj_container_up(ctx: click.Context, task_id: str) -> None:
     spec_id = _get_spec_id(ctx)
 
     if ctx.obj and ctx.obj.get("echo_for_testing"):
-        _echo_command("jj container-up", spec_id=spec_id, task_id=task_id)
+        _echo_command("task container-up", spec_id=spec_id, task_id=task_id)
         return
 
     try:
@@ -733,17 +735,17 @@ def jj_container_up(ctx: click.Context, task_id: str) -> None:
         raise SystemExit(1)
 
 
-@jj.command("container-stop")
+@task.command("container-stop")
 @click.argument("task_id")
 @click.pass_context
-def jj_container_stop(ctx: click.Context, task_id: str) -> None:
+def task_container_stop(ctx: click.Context, task_id: str) -> None:
     """Stop devcontainer for a task's workspace."""
     from agent_arborist.step_results import ContainerStopResult
 
     spec_id = _get_spec_id(ctx)
 
     if ctx.obj and ctx.obj.get("echo_for_testing"):
-        _echo_command("jj container-stop", spec_id=spec_id, task_id=task_id)
+        _echo_command("task container-stop", spec_id=spec_id, task_id=task_id)
         return
 
     try:
@@ -793,6 +795,6 @@ def jj_container_stop(ctx: click.Context, task_id: str) -> None:
         raise SystemExit(1)
 
 
-def register_jj_commands(main_cli: click.Group) -> None:
-    """Register jj command group with main CLI."""
-    main_cli.add_command(jj)
+def register_task_commands(main_cli: click.Group) -> None:
+    """Register task command group with main CLI."""
+    main_cli.add_command(task)
