@@ -1552,7 +1552,7 @@ class TestDagBuilderConfig:
         arborist_config = ArboristConfig(
             steps={
                 "run": StepConfig(runner="opencode", model="glm-4.7"),
-                "post-merge": StepConfig(runner="gemini", model="flash"),
+                "complete": StepConfig(runner="gemini", model="flash"),  # jj uses complete instead of post-merge
             }
         )
 
@@ -1586,14 +1586,14 @@ class TestDagBuilderConfig:
         assert "--runner" not in run_step.command
         assert "--model" not in run_step.command
 
-        # Verify post-merge step does NOT contain runner/model
-        post_merge_step = next(
-            (s for s in t001_subdag.steps if s.name == "post-merge"), None
+        # Verify complete step does NOT contain runner/model (jj uses complete instead of post-merge)
+        complete_step = next(
+            (s for s in t001_subdag.steps if s.name == "complete"), None
         )
-        assert post_merge_step is not None
-        assert post_merge_step.command == "arborist task post-merge T001"
-        assert "--runner" not in post_merge_step.command
-        assert "--model" not in post_merge_step.command
+        assert complete_step is not None
+        assert complete_step.command == "arborist task complete T001"
+        assert "--runner" not in complete_step.command
+        assert "--model" not in complete_step.command
 
     def test_dag_config_get_step_runner_model_still_works(self, tmp_path):
         """DagConfig.get_step_runner_model() should still resolve for other uses."""

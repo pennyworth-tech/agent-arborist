@@ -1,9 +1,9 @@
-"""Change manifest for Jujutsu-based task tracking.
+"""Task manifest for tracking changes in Jujutsu (jj).
 
 The manifest is generated at DAG build time and contains pre-computed change IDs
-for all tasks. This replaces branch_manifest.py's branch naming with jj change IDs.
+for all tasks.
 
-Key differences from branch_manifest.py:
+Key features:
 - Change IDs are stable (don't change on amend, unlike commit SHAs)
 - No branch naming scheme needed - changes ARE the identifiers
 - Hierarchy is encoded in the change DAG, not branch names
@@ -84,7 +84,7 @@ def generate_manifest(
     Returns:
         ChangeManifest with all change IDs populated
     """
-    from agent_arborist.jj_tasks import (
+    from agent_arborist.tasks import (
         create_task_change,
         get_change_id,
         is_jj_repo,
@@ -338,7 +338,7 @@ def create_all_changes_from_manifest(
         - created: list of change IDs that were created
         - errors: list of errors encountered
     """
-    from agent_arborist.jj_tasks import (
+    from agent_arborist.tasks import (
         get_change_id,
         create_task_change,
         run_jj,
@@ -409,7 +409,7 @@ def refresh_manifest_from_repo(
     Returns:
         ChangeManifest rebuilt from repo, or None if no changes found
     """
-    from agent_arborist.jj_tasks import (
+    from agent_arborist.tasks import (
         find_tasks_by_spec,
         get_change_id,
         run_jj,
@@ -521,3 +521,4 @@ def detect_manifest_type(manifest_path: Path) -> str:
 
     except Exception:
         return "unknown"
+

@@ -545,13 +545,13 @@ def build_simple_dag(
     builder = SubDagBuilder(config)
 
     # We need a TaskSpec but we don't have one, so we build manually
-    # Build root DAG
+    # Build root DAG using jj setup
     root_steps: list[SubDagStep] = [
-        SubDagStep(name="branches-setup", command="arborist spec branch-create-all")
+        SubDagStep(name="setup-changes", command="arborist task setup-spec")
     ]
 
     # Linear calls to root tasks
-    prev_step = "branches-setup"
+    prev_step = "setup-changes"
     for task_id in sorted(tree.root_tasks):
         root_steps.append(SubDagStep(
             name=f"c-{task_id}",
@@ -563,7 +563,7 @@ def build_simple_dag(
     root = SubDag(
         name=dag_name,
         description=description or f"DAG for {spec_id}",
-        env=[f"ARBORIST_SPEC_ID={spec_id}"],
+        env=[f"ARBORIST_SPEC_ID={spec_id}", "ARBORIST_VCS=jj"],
         steps=root_steps,
         is_root=True,
     )

@@ -1,4 +1,4 @@
-"""Tests for jj_cli module."""
+"""Tests for task_cli module."""
 
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -7,7 +7,7 @@ import json
 import pytest
 from click.testing import CliRunner
 
-from agent_arborist.jj_cli import jj
+from agent_arborist.task_cli import task
 
 
 class TestJJStatus:
@@ -16,23 +16,23 @@ class TestJJStatus:
     def test_status_help(self):
         """Shows help text."""
         runner = CliRunner()
-        result = runner.invoke(jj, ["status", "--help"])
+        result = runner.invoke(task, ["status", "--help"])
         assert result.exit_code == 0
         assert "Show status of jj tasks" in result.output
 
     def test_status_not_jj_repo(self):
         """Errors when not in jj repo."""
         runner = CliRunner()
-        with patch("agent_arborist.jj_cli.is_jj_repo", return_value=False):
-            result = runner.invoke(jj, ["status"], obj={})
+        with patch("agent_arborist.task_cli.is_jj_repo", return_value=False):
+            result = runner.invoke(task, ["status"], obj={})
         assert result.exit_code == 1
         assert "Not in a jj repository" in result.output
 
     def test_status_no_spec(self):
         """Errors when no spec available."""
         runner = CliRunner()
-        with patch("agent_arborist.jj_cli.is_jj_repo", return_value=True):
-            result = runner.invoke(jj, ["status"], obj={})
+        with patch("agent_arborist.task_cli.is_jj_repo", return_value=True):
+            result = runner.invoke(task, ["status"], obj={})
         assert result.exit_code == 1
         assert "No spec available" in result.output
 
@@ -43,9 +43,9 @@ class TestJJStatus:
             MagicMock(task_id="T001", change_id="abc123", status="pending"),
             MagicMock(task_id="T002", change_id="def456", status="done"),
         ]
-        with patch("agent_arborist.jj_cli.is_jj_repo", return_value=True):
-            with patch("agent_arborist.jj_cli.find_tasks_by_spec", return_value=mock_tasks):
-                result = runner.invoke(jj, ["status"], obj={"spec_id": "002-feature"})
+        with patch("agent_arborist.task_cli.is_jj_repo", return_value=True):
+            with patch("agent_arborist.task_cli.find_tasks_by_spec", return_value=mock_tasks):
+                result = runner.invoke(task, ["status"], obj={"spec_id": "002-feature"})
         assert result.exit_code == 0
         assert "T001" in result.output
         assert "T002" in result.output
@@ -61,10 +61,10 @@ class TestJJStatus:
         )
         mock_tasks = [MagicMock(task_id="T001", change_id="abc123", status="running")]
 
-        with patch("agent_arborist.jj_cli.is_jj_repo", return_value=True):
-            with patch("agent_arborist.jj_cli._get_manifest", return_value=mock_manifest):
-                with patch("agent_arborist.jj_cli.find_tasks_by_spec", return_value=mock_tasks):
-                    result = runner.invoke(jj, ["status", "T001"], obj={"spec_id": "002-feature"})
+        with patch("agent_arborist.task_cli.is_jj_repo", return_value=True):
+            with patch("agent_arborist.task_cli._get_manifest", return_value=mock_manifest):
+                with patch("agent_arborist.task_cli.find_tasks_by_spec", return_value=mock_tasks):
+                    result = runner.invoke(task, ["status", "T001"], obj={"spec_id": "002-feature"})
 
         assert result.exit_code == 0
         assert "T001" in result.output
@@ -73,9 +73,9 @@ class TestJJStatus:
     def test_status_echo_mode(self):
         """Echoes command in test mode."""
         runner = CliRunner()
-        result = runner.invoke(jj, ["status", "T001"], obj={"echo_for_testing": True, "spec_id": "002-feature"})
+        result = runner.invoke(task, ["status", "T001"], obj={"echo_for_testing": True, "spec_id": "002-feature"})
         assert result.exit_code == 0
-        assert "ECHO: jj status" in result.output
+        assert "ECHO: task status" in result.output
 
 
 class TestJJSetupSpec:
@@ -84,14 +84,14 @@ class TestJJSetupSpec:
     def test_setup_spec_help(self):
         """Shows help text."""
         runner = CliRunner()
-        result = runner.invoke(jj, ["setup-spec", "--help"])
+        result = runner.invoke(task, ["setup-spec", "--help"])
         assert result.exit_code == 0
         assert "Setup jj changes" in result.output
 
     def test_setup_spec_no_spec(self):
         """Errors when no spec available."""
         runner = CliRunner()
-        result = runner.invoke(jj, ["setup-spec"], obj={})
+        result = runner.invoke(task, ["setup-spec"], obj={})
         assert result.exit_code == 1
         assert "No spec available" in result.output
 
@@ -101,9 +101,9 @@ class TestJJSetupSpec:
         mock_manifest = MagicMock()
         mock_result = {"verified": ["a", "b"], "created": ["c"], "errors": []}
 
-        with patch("agent_arborist.jj_cli._get_manifest", return_value=mock_manifest):
-            with patch("agent_arborist.jj_cli.create_all_changes_from_manifest", return_value=mock_result):
-                result = runner.invoke(jj, ["setup-spec"], obj={"spec_id": "002-feature"})
+        with patch("agent_arborist.task_cli._get_manifest", return_value=mock_manifest):
+            with patch("agent_arborist.task_cli.create_all_changes_from_manifest", return_value=mock_result):
+                result = runner.invoke(task, ["setup-spec"], obj={"spec_id": "002-feature"})
 
         assert result.exit_code == 0
         assert "Verified:" in result.output
@@ -112,9 +112,9 @@ class TestJJSetupSpec:
     def test_setup_spec_echo_mode(self):
         """Echoes command in test mode."""
         runner = CliRunner()
-        result = runner.invoke(jj, ["setup-spec"], obj={"echo_for_testing": True, "spec_id": "002-feature"})
+        result = runner.invoke(task, ["setup-spec"], obj={"echo_for_testing": True, "spec_id": "002-feature"})
         assert result.exit_code == 0
-        assert "ECHO: jj setup-spec" in result.output
+        assert "ECHO: task setup-spec" in result.output
 
 
 class TestJJPreSync:
@@ -123,14 +123,14 @@ class TestJJPreSync:
     def test_pre_sync_help(self):
         """Shows help text."""
         runner = CliRunner()
-        result = runner.invoke(jj, ["pre-sync", "--help"])
+        result = runner.invoke(task, ["pre-sync", "--help"])
         assert result.exit_code == 0
         assert "Prepare task for execution" in result.output
 
     def test_pre_sync_no_spec(self):
         """Errors when no spec available."""
         runner = CliRunner()
-        result = runner.invoke(jj, ["pre-sync", "T001"], obj={})
+        result = runner.invoke(task, ["pre-sync", "T001"], obj={})
         assert result.exit_code == 1
 
     def test_pre_sync_success(self):
@@ -143,11 +143,11 @@ class TestJJPreSync:
         )
         mock_setup_result = MagicMock(success=True)
 
-        with patch("agent_arborist.jj_cli._get_manifest", return_value=mock_manifest):
-            with patch("agent_arborist.jj_cli.get_workspace_path", return_value=Path("/tmp/ws")):
-                with patch("agent_arborist.jj_cli.setup_task_workspace", return_value=mock_setup_result):
-                    with patch("agent_arborist.jj_cli.describe_change"):
-                        result = runner.invoke(jj, ["pre-sync", "T001"], obj={"spec_id": "002-feature"})
+        with patch("agent_arborist.task_cli._get_manifest", return_value=mock_manifest):
+            with patch("agent_arborist.task_cli.get_workspace_path", return_value=Path("/tmp/ws")):
+                with patch("agent_arborist.task_cli.setup_task_workspace", return_value=mock_setup_result):
+                    with patch("agent_arborist.task_cli.describe_change"):
+                        result = runner.invoke(task, ["pre-sync", "T001"], obj={"spec_id": "002-feature"})
 
         assert result.exit_code == 0
         assert "Pre-sync complete" in result.output
@@ -155,9 +155,9 @@ class TestJJPreSync:
     def test_pre_sync_echo_mode(self):
         """Echoes command in test mode."""
         runner = CliRunner()
-        result = runner.invoke(jj, ["pre-sync", "T001"], obj={"echo_for_testing": True, "spec_id": "002-feature"})
+        result = runner.invoke(task, ["pre-sync", "T001"], obj={"echo_for_testing": True, "spec_id": "002-feature"})
         assert result.exit_code == 0
-        assert "ECHO: jj pre-sync" in result.output
+        assert "ECHO: task pre-sync" in result.output
 
 
 class TestJJRun:
@@ -166,16 +166,16 @@ class TestJJRun:
     def test_run_help(self):
         """Shows help text."""
         runner = CliRunner()
-        result = runner.invoke(jj, ["run", "--help"])
+        result = runner.invoke(task, ["run", "--help"])
         assert result.exit_code == 0
         assert "Execute the AI runner" in result.output
 
     def test_run_echo_mode(self):
         """Echoes command in test mode."""
         runner = CliRunner()
-        result = runner.invoke(jj, ["run", "T001"], obj={"echo_for_testing": True, "spec_id": "002-feature"})
+        result = runner.invoke(task, ["run", "T001"], obj={"echo_for_testing": True, "spec_id": "002-feature"})
         assert result.exit_code == 0
-        assert "ECHO: jj run" in result.output
+        assert "ECHO: task run" in result.output
 
 
 class TestJJRunTest:
@@ -184,16 +184,16 @@ class TestJJRunTest:
     def test_run_test_help(self):
         """Shows help text."""
         runner = CliRunner()
-        result = runner.invoke(jj, ["run-test", "--help"])
+        result = runner.invoke(task, ["run-test", "--help"])
         assert result.exit_code == 0
         assert "Run tests" in result.output
 
     def test_run_test_echo_mode(self):
         """Echoes command in test mode."""
         runner = CliRunner()
-        result = runner.invoke(jj, ["run-test", "T001"], obj={"echo_for_testing": True, "spec_id": "002-feature"})
+        result = runner.invoke(task, ["run-test", "T001"], obj={"echo_for_testing": True, "spec_id": "002-feature"})
         assert result.exit_code == 0
-        assert "ECHO: jj run-test" in result.output
+        assert "ECHO: task run-test" in result.output
 
 
 class TestJJComplete:
@@ -202,16 +202,16 @@ class TestJJComplete:
     def test_complete_help(self):
         """Shows help text."""
         runner = CliRunner()
-        result = runner.invoke(jj, ["complete", "--help"])
+        result = runner.invoke(task, ["complete", "--help"])
         assert result.exit_code == 0
         assert "Complete a task" in result.output
 
     def test_complete_echo_mode(self):
         """Echoes command in test mode."""
         runner = CliRunner()
-        result = runner.invoke(jj, ["complete", "T001"], obj={"echo_for_testing": True, "spec_id": "002-feature"})
+        result = runner.invoke(task, ["complete", "T001"], obj={"echo_for_testing": True, "spec_id": "002-feature"})
         assert result.exit_code == 0
-        assert "ECHO: jj complete" in result.output
+        assert "ECHO: task complete" in result.output
 
 
 class TestJJSyncParent:
@@ -220,16 +220,16 @@ class TestJJSyncParent:
     def test_sync_parent_help(self):
         """Shows help text."""
         runner = CliRunner()
-        result = runner.invoke(jj, ["sync-parent", "--help"])
+        result = runner.invoke(task, ["sync-parent", "--help"])
         assert result.exit_code == 0
         assert "Sync parent task" in result.output
 
     def test_sync_parent_echo_mode(self):
         """Echoes command in test mode."""
         runner = CliRunner()
-        result = runner.invoke(jj, ["sync-parent", "T001"], obj={"echo_for_testing": True, "spec_id": "002-feature"})
+        result = runner.invoke(task, ["sync-parent", "T001"], obj={"echo_for_testing": True, "spec_id": "002-feature"})
         assert result.exit_code == 0
-        assert "ECHO: jj sync-parent" in result.output
+        assert "ECHO: task sync-parent" in result.output
 
 
 class TestJJCleanup:
@@ -238,16 +238,16 @@ class TestJJCleanup:
     def test_cleanup_help(self):
         """Shows help text."""
         runner = CliRunner()
-        result = runner.invoke(jj, ["cleanup", "--help"])
+        result = runner.invoke(task, ["cleanup", "--help"])
         assert result.exit_code == 0
         assert "Clean up task workspace" in result.output
 
     def test_cleanup_echo_mode(self):
         """Echoes command in test mode."""
         runner = CliRunner()
-        result = runner.invoke(jj, ["cleanup", "T001"], obj={"echo_for_testing": True, "spec_id": "002-feature"})
+        result = runner.invoke(task, ["cleanup", "T001"], obj={"echo_for_testing": True, "spec_id": "002-feature"})
         assert result.exit_code == 0
-        assert "ECHO: jj cleanup" in result.output
+        assert "ECHO: task cleanup" in result.output
 
 
 class TestJJContainerUp:
@@ -256,16 +256,16 @@ class TestJJContainerUp:
     def test_container_up_help(self):
         """Shows help text."""
         runner = CliRunner()
-        result = runner.invoke(jj, ["container-up", "--help"])
+        result = runner.invoke(task, ["container-up", "--help"])
         assert result.exit_code == 0
         assert "Start devcontainer" in result.output
 
     def test_container_up_echo_mode(self):
         """Echoes command in test mode."""
         runner = CliRunner()
-        result = runner.invoke(jj, ["container-up", "T001"], obj={"echo_for_testing": True, "spec_id": "002-feature"})
+        result = runner.invoke(task, ["container-up", "T001"], obj={"echo_for_testing": True, "spec_id": "002-feature"})
         assert result.exit_code == 0
-        assert "ECHO: jj container-up" in result.output
+        assert "ECHO: task container-up" in result.output
 
 
 class TestJJContainerStop:
@@ -274,13 +274,13 @@ class TestJJContainerStop:
     def test_container_stop_help(self):
         """Shows help text."""
         runner = CliRunner()
-        result = runner.invoke(jj, ["container-stop", "--help"])
+        result = runner.invoke(task, ["container-stop", "--help"])
         assert result.exit_code == 0
         assert "Stop devcontainer" in result.output
 
     def test_container_stop_echo_mode(self):
         """Echoes command in test mode."""
         runner = CliRunner()
-        result = runner.invoke(jj, ["container-stop", "T001"], obj={"echo_for_testing": True, "spec_id": "002-feature"})
+        result = runner.invoke(task, ["container-stop", "T001"], obj={"echo_for_testing": True, "spec_id": "002-feature"})
         assert result.exit_code == 0
-        assert "ECHO: jj container-stop" in result.output
+        assert "ECHO: task container-stop" in result.output
