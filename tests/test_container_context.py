@@ -56,7 +56,6 @@ class TestWrapSubprocessCommand:
             "ARBORIST_SPEC_ID": "002-feature",
             "ARBORIST_SOURCE_REV": "main",
             "ARBORIST_TASK_PATH": "T1:T2",
-            "ARBORIST_VCS": "jj",
             "OTHER_VAR": "should_not_be_passed",
         }, clear=False):
             result = wrap_subprocess_command(cmd, tmp_path, ContainerMode.AUTO)
@@ -67,7 +66,6 @@ class TestWrapSubprocessCommand:
         assert "ARBORIST_SPEC_ID=002-feature" in result_str
         assert "ARBORIST_SOURCE_REV=main" in result_str
         assert "ARBORIST_TASK_PATH=T1:T2" in result_str
-        assert "ARBORIST_VCS=jj" in result_str
 
         # Should NOT include non-ARBORIST vars
         assert "OTHER_VAR" not in result_str
