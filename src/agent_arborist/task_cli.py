@@ -24,6 +24,7 @@ from agent_arborist.tasks import (
     is_jj_repo,
     is_colocated,
     get_change_id,
+    create_change,
     create_task_change,
     complete_task,
     mark_task_done,
@@ -202,6 +203,16 @@ def _create_changes_from_tree(
     # Process in topological order
     task_order = _topological_sort(task_tree)
 
+    # Create TIP change - mutable accumulator for root tasks to roll up into
+    tip_desc = f"{spec_id}:TIP"
+    existing_tip = find_change_by_description(spec_id, ["TIP"])
+    if existing_tip:
+        tip_change = existing_tip
+        result["verified"].append("TIP")
+    else:
+        tip_change = create_change(parent=source_rev, description=tip_desc)
+        result["created"].append("TIP")
+
     for task_id in task_order:
         task_path = task_paths[task_id]
 
@@ -223,8 +234,8 @@ def _create_changes_from_tree(
                 continue
             parent_change = change_ids[task.parent_id]
         else:
-            # Root task - parent is the source revision
-            parent_change = source_rev
+            # Root task - parent is TIP (mutable accumulator)
+            parent_change = tip_change
 
         # Create the change
         try:
@@ -784,25 +795,20 @@ def task_complete(ctx: click.Context, task_id: str) -> None:
         cwd = workspace_path if workspace_path.exists() else None
 
         if not parent_change:
-            # Root task - don't squash into immutable source_rev
-            # Just mark as done, finalize will handle moving to target branch
+            # Root task - find TIP to roll up into
+            parent_change = find_change_by_description(spec_id, ["TIP"])
+            if not parent_change:
+                console.print("[red]Error:[/red] TIP change not found - run setup-spec first")
+                raise SystemExit(1)
             console.print(f"[cyan]Completing root task:[/cyan] {task_id}")
             console.print(f"[dim]Task path:[/dim] {':'.join(task_path)}")
-            mark_task_done(task_id, change_id, cwd)
-            step_result = CommitResult(
-                success=True,
-                commit_sha="",
-                message=f"Marked {task_id} done (root task)",
-            )
-            _output_result(step_result, ctx)
-            console.print("[green]Root task marked complete (no squash)[/green]")
-            return
+            console.print(f"[dim]Rolling up into TIP:[/dim] {parent_change}")
+        else:
+            console.print(f"[cyan]Completing task:[/cyan] {task_id}")
+            console.print(f"[dim]Task path:[/dim] {':'.join(task_path)}")
+            console.print(f"[dim]Squashing into parent:[/dim] {parent_change}")
 
-        # Child task - squash into parent
-        console.print(f"[cyan]Completing task:[/cyan] {task_id}")
-        console.print(f"[dim]Task path:[/dim] {':'.join(task_path)}")
-        console.print(f"[dim]Squashing into parent:[/dim] {parent_change}")
-
+        # Squash into parent (works for both root and child tasks)
         complete_result = complete_task(
             task_id=task_id,
             change_id=change_id,
@@ -947,6 +953,7 @@ def task_container_up(ctx: click.Context, task_id: str) -> None:
     """Start devcontainer for a task's workspace.
 
     Uses devcontainer CLI to start a container in the task's workspace.
+    Respects ARBORIST_CONTAINER_MODE env var: none/disabled = skip.
     """
     from agent_arborist.step_results import ContainerUpResult
 
@@ -954,6 +961,18 @@ def task_container_up(ctx: click.Context, task_id: str) -> None:
 
     if ctx.obj and ctx.obj.get("echo_for_testing"):
         _echo_command("task container-up", spec_id=spec_id, task_id=task_id)
+        return
+
+    # Check container mode - skip if disabled
+    container_mode = os.environ.get("ARBORIST_CONTAINER_MODE", "auto").lower()
+    if container_mode in ("none", "disabled"):
+        step_result = ContainerUpResult(
+            success=True,
+            skipped=True,
+            skip_reason=f"Container mode is {container_mode}",
+        )
+        _output_result(step_result, ctx)
+        console.print(f"[dim]Skipping container (mode={container_mode})[/dim]")
         return
 
     try:

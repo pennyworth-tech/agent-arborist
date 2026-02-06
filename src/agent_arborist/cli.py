@@ -1493,7 +1493,7 @@ def spec_finalize(ctx: click.Context) -> None:
 
     from agent_arborist.step_results import FinalizeResult
     from agent_arborist.home import get_git_root
-    from agent_arborist.tasks import run_jj
+    from agent_arborist.tasks import run_jj, find_change_by_description
 
     spec_id = os.environ.get("ARBORIST_SPEC_ID", "")
     source_rev = os.environ.get("ARBORIST_SOURCE_REV", "")
@@ -1524,10 +1524,20 @@ def spec_finalize(ctx: click.Context) -> None:
     git_exported = False
 
     try:
-        # Move the bookmark to current state (@ in jj)
-        # Use bookmark set to move existing bookmark, or create if doesn't exist
+        # Find TIP change (accumulated work from all root tasks)
+        tip_change = find_change_by_description(spec_id, ["TIP"], cwd=git_root)
+        target_rev = tip_change if tip_change else "@"
+
+        if tip_change:
+            if not ctx.obj.get("quiet"):
+                console.print(f"[dim]Found TIP:[/dim] {tip_change}")
+        else:
+            if not ctx.obj.get("quiet"):
+                console.print("[yellow]Warning:[/yellow] TIP not found, using @")
+
+        # Move the bookmark to TIP (or @ as fallback)
         result = run_jj(
-            "bookmark", "set", source_rev, "-r", "@",
+            "bookmark", "set", source_rev, "-r", target_rev,
             cwd=git_root,
             check=False,
         )
@@ -1539,7 +1549,7 @@ def spec_finalize(ctx: click.Context) -> None:
         else:
             # Try creating if set failed (bookmark doesn't exist)
             result = run_jj(
-                "bookmark", "create", source_rev, "-r", "@",
+                "bookmark", "create", source_rev, "-r", target_rev,
                 cwd=git_root,
                 check=False,
             )
@@ -2140,6 +2150,9 @@ def dag_run(
     env = os.environ.copy()
     env[DAGU_HOME_ENV_VAR] = str(dagu_home)
     env["ARBORIST_SOURCE_REV"] = source_rev
+    # Container mode - pass through from env or default to auto
+    if "ARBORIST_CONTAINER_MODE" not in env:
+        env["ARBORIST_CONTAINER_MODE"] = "auto"
 
     # Build dagu command
     dagu_cmd = "dry" if dry_run else "start"

@@ -279,7 +279,7 @@ class TestSubDagBuilder:
 
         env = bundle.root.env
         assert "ARBORIST_SPEC_ID=002-feature" in env
-        assert "ARBORIST_CONTAINER_MODE=disabled" in env
+        assert "ARBORIST_CONTAINER_MODE=${ARBORIST_CONTAINER_MODE}" in env
 
     def test_build_leaf_subdag(self, builder, simple_tree):
         """Verifies leaf subdag structure."""
