@@ -211,7 +211,6 @@ class SubDagBuilder:
         env = [
             f"ARBORIST_SPEC_ID={spec_id}",
             f"ARBORIST_CONTAINER_MODE={self.config.container_mode.value}",
-            "ARBORIST_VCS=jj",  # Mark as jj workflow
         ]
 
         return SubDag(
@@ -351,7 +350,6 @@ class SubDagBuilder:
             f"ARBORIST_TASK_ID={task_id}",
             f"ARBORIST_TASK_PATH={task_path_str}",
             f"ARBORIST_CONTAINER_MODE={self.config.container_mode.value}",
-            "ARBORIST_VCS=jj",
         ]
 
         return SubDag(name=task_id, steps=steps, env=env_vars)
@@ -447,7 +445,6 @@ class SubDagBuilder:
             f"ARBORIST_SPEC_ID={spec_id}",
             f"ARBORIST_TASK_ID={task_id}",
             f"ARBORIST_TASK_PATH={task_path_str}",
-            "ARBORIST_VCS=jj",
         ]
 
         return SubDag(name=task_id, steps=steps, env=env_vars)
@@ -625,15 +622,15 @@ def parse_yaml_to_bundle(yaml_content: str) -> DagBundle:
 
 
 def is_task_dag(yaml_content: str) -> bool:
-    """Check if a DAG YAML is a task-based DAG (uses jj VCS).
+    """Check if a DAG YAML is an arborist-generated task DAG.
 
-    Looks for ARBORIST_VCS=jj in the environment.
+    Looks for ARBORIST_SPEC_ID in the environment.
 
     Args:
         yaml_content: Multi-document YAML string
 
     Returns:
-        True if this is a task-based DAG
+        True if this is an arborist task DAG
     """
     try:
         documents = list(yaml.safe_load_all(yaml_content))
@@ -642,7 +639,7 @@ def is_task_dag(yaml_content: str) -> bool:
 
         root = documents[0]
         env = root.get("env", [])
-        return any("ARBORIST_VCS=jj" in e for e in env)
+        return any(e.startswith("ARBORIST_SPEC_ID=") for e in env)
     except Exception:
         return False
 

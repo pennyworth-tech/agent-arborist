@@ -91,7 +91,7 @@ class TestSubDag:
         subdag = SubDag(
             name="002-feature",
             is_root=True,
-            env=["ARBORIST_VCS=jj"],
+            env=["ARBORIST_SPEC_ID=002-feature"],
         )
         assert subdag.is_root is True
 
@@ -279,7 +279,7 @@ class TestSubDagBuilder:
 
         env = bundle.root.env
         assert "ARBORIST_SPEC_ID=002-feature" in env
-        assert "ARBORIST_VCS=jj" in env
+        assert "ARBORIST_CONTAINER_MODE=disabled" in env
 
     def test_build_leaf_subdag(self, builder, simple_tree):
         """Verifies leaf subdag structure."""
@@ -409,7 +409,7 @@ class TestSubDagBuilder:
 
         # Root doc
         assert docs[0]["name"] == "002_feature"
-        assert "ARBORIST_VCS=jj" in docs[0]["env"]
+        assert "ARBORIST_SPEC_ID=002-feature" in docs[0]["env"]
 
         # T001 doc
         assert docs[1]["name"] == "T001"
@@ -443,7 +443,7 @@ class TestParseYamlToBundle:
         """Parses simple multi-document YAML."""
         yaml_content = """name: 002_feature
 description: Test DAG
-env: [ARBORIST_VCS=jj]
+env: [ARBORIST_SPEC_ID=002-feature]
 steps:
   - name: setup-changes
     command: arborist task setup-spec
@@ -500,17 +500,17 @@ class TestIsTaskDag:
     """Tests for is_task_dag function."""
 
     def test_is_task_dag_true(self):
-        """Returns True for jj DAG."""
+        """Returns True for arborist DAG with ARBORIST_SPEC_ID."""
         yaml_content = """name: test
-env: [ARBORIST_VCS=jj]
+env: [ARBORIST_SPEC_ID=002-feature]
 steps: []
 """
         assert is_task_dag(yaml_content) is True
 
     def test_is_task_dag_false(self):
-        """Returns False for non-jj DAG."""
+        """Returns False for non-arborist DAG."""
         yaml_content = """name: test
-env: [ARBORIST_SPEC_ID=002-feature]
+env: [SOME_OTHER_VAR=value]
 steps: []
 """
         assert is_task_dag(yaml_content) is False
