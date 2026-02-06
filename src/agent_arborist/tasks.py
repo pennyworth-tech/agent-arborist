@@ -758,6 +758,33 @@ def forget_workspace(workspace_name: str, cwd: Path | None = None) -> JJResult:
     )
 
 
+def _copy_gitignored_files(source_root: Path, workspace_path: Path) -> None:
+    """Copy gitignored files that are needed in workspaces.
+
+    JJ workspaces don't include gitignored files, but some are needed
+    for devcontainer/task execution (like .env files with secrets).
+
+    Args:
+        source_root: Git root containing the original files
+        workspace_path: Target workspace path
+    """
+    import shutil
+
+    # Files to copy if they exist
+    gitignored_files = [
+        ".devcontainer/.env",
+    ]
+
+    for rel_path in gitignored_files:
+        source = source_root / rel_path
+        target = workspace_path / rel_path
+
+        if source.exists() and not target.exists():
+            # Ensure target directory exists
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+
+
 def setup_task_workspace(
     task_id: str,
     change_id: str,
@@ -769,8 +796,9 @@ def setup_task_workspace(
 
     This:
     1. Creates workspace if needed
-    2. Switches workspace to task's change
-    3. Rebases onto parent to get latest work
+    2. Copies gitignored files (like .env) from git root
+    3. Switches workspace to task's change
+    4. Rebases onto parent to get latest work
 
     Args:
         task_id: Task identifier
@@ -783,12 +811,16 @@ def setup_task_workspace(
         JJResult with operation status
     """
     workspace_name = f"ws-{task_id}"
+    git_root = cwd or Path.cwd()
 
     # Create workspace if needed
     if not workspace_exists(workspace_name, cwd):
         result = create_workspace(workspace_path, workspace_name, cwd)
         if not result.success:
             return result
+
+    # Always copy gitignored files if missing (they don't come with jj workspaces)
+    _copy_gitignored_files(git_root, workspace_path)
 
     # Switch workspace to task's change
     result = run_jj(

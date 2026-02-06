@@ -507,12 +507,16 @@ def task_pre_sync(ctx: click.Context, task_id: str) -> None:
         workspace_path = get_workspace_path(spec_id, task_id)
         console.print(f"[dim]Workspace:[/dim] {workspace_path}")
 
+        # Get git root for workspace setup
+        git_root = get_git_root()
+
         # Setup workspace (creates if needed, switches to change, rebases)
         setup_result = setup_task_workspace(
             task_id=task_id,
             change_id=change_id,
             parent_change=parent_change,
             workspace_path=workspace_path,
+            cwd=git_root,
         )
 
         if not setup_result.success:
@@ -590,26 +594,25 @@ def task_run(ctx: click.Context, task_id: str, timeout: int) -> None:
         runner_type = get_default_runner()
         model = get_default_model()
 
-        runner = get_runner(runner_type, workspace_path)
+        runner = get_runner(runner_type, model)
 
         # TODO: Load task prompt from spec
         prompt = f"Execute task {task_id} for spec {spec_id}. See the task description in the spec file."
 
-        console.print(f"[dim]Runner:[/dim] {runner_type.value}")
+        console.print(f"[dim]Runner:[/dim] {runner_type}")
         console.print(f"[dim]Model:[/dim] {model or 'default'}")
 
         # Run the task
         run_result = runner.run(
             prompt=prompt,
             timeout=timeout,
-            model=model,
+            cwd=workspace_path,
         )
 
         result = RunResult(
             success=run_result.success,
-            runner_type=runner_type.value,
-            worktree_path=str(workspace_path),
-            prompt=prompt,
+            runner=runner_type,
+            model=model,
             error=run_result.error if not run_result.success else None,
         )
         _output_result(result, ctx)
@@ -669,9 +672,7 @@ def task_run_test(ctx: click.Context, task_id: str, cmd: str | None) -> None:
             console.print("[yellow]No test command detected, skipping tests[/yellow]")
             result = RunTestResult(
                 success=True,
-                skipped=True,
                 skip_reason="No test command detected",
-                worktree_path=str(workspace_path),
             )
             _output_result(result, ctx)
             return
@@ -692,8 +693,7 @@ def task_run_test(ctx: click.Context, task_id: str, cmd: str | None) -> None:
         result = RunTestResult(
             success=success,
             test_command=test_cmd,
-            worktree_path=str(workspace_path),
-            test_output=test_result.stdout[-5000:] if test_result.stdout else None,
+            output_summary=test_result.stdout[-5000:] if test_result.stdout else "",
             error=test_result.stderr[-1000:] if not success and test_result.stderr else None,
         )
         _output_result(result, ctx)
@@ -774,9 +774,8 @@ def task_complete(ctx: click.Context, task_id: str) -> None:
         if complete_result.success:
             step_result = CommitResult(
                 success=True,
-                worktree_path=str(workspace_path) if workspace_path.exists() else "",
                 commit_sha="",
-                commit_message=f"Squashed {task_id}",
+                message=f"Squashed {task_id}",
             )
             _output_result(step_result, ctx)
             console.print("[green]Task completed and squashed[/green]")
