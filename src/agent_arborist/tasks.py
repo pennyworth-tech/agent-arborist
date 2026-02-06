@@ -295,14 +295,14 @@ def get_conflicting_files(revset: str = "@", cwd: Path | None = None) -> list[st
 # =============================================================================
 
 def create_change(
-    parent: str = "main",
+    parent: str,
     description: str = "",
     cwd: Path | None = None,
 ) -> str:
     """Create a new change from parent.
 
     Args:
-        parent: Parent revset (change ID, bookmark, or "main")
+        parent: Parent revset (change ID or bookmark). Never use 'main'.
         description: Change description
         cwd: Working directory
 
@@ -432,7 +432,7 @@ def find_change_by_description(
 def create_task_change(
     spec_id: str,
     task_id: str,
-    parent_change: str | None = None,
+    parent_change: str,
     task_path: list[str] | None = None,
     cwd: Path | None = None,
 ) -> str:
@@ -441,7 +441,7 @@ def create_task_change(
     Args:
         spec_id: Specification identifier
         task_id: Task identifier (e.g., "T1") - used if task_path not provided
-        parent_change: Parent change ID (or "main" if None)
+        parent_change: Parent change ID or bookmark. Never use 'main'.
         task_path: Full hierarchical path (e.g., ["T1", "T2", "T6"])
         cwd: Working directory
 
@@ -452,13 +452,14 @@ def create_task_change(
         {spec_id}:{task_path}
         Example: "003-terraform-hello-world:T1:T2:T6"
     """
-    parent = parent_change or "main"
+    if not parent_change:
+        raise ValueError("parent_change is required - never use main as default")
 
     # Use task_path if provided, otherwise create single-element path
     path = task_path if task_path else [task_id]
     description = build_task_description(spec_id, path)
 
-    return create_change(parent=parent, description=description, cwd=cwd)
+    return create_change(parent=parent_change, description=description, cwd=cwd)
 
 
 def describe_change(
