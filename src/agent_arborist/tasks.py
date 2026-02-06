@@ -411,8 +411,10 @@ def find_change_by_description(
     ensure_workspace_fresh(cwd)
 
     desc = build_task_description(spec_id, task_path)
-    # Use starts-with match to handle status suffixes
-    revset = f'description(glob:"{desc}*") & mutable()'
+    # Match description with optional status suffix, but NOT child tasks
+    # e.g., "spec:T001:T005*" matches "spec:T001:T005 [RUNNING]"
+    # but exclude "spec:T001:T005:T006" (child task)
+    revset = f'description(glob:"{desc}*") & ~description(glob:"{desc}:*") & mutable()'
 
     result = run_jj(
         "log", "-r", revset,
