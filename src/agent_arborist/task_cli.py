@@ -453,6 +453,24 @@ def task_setup_spec(ctx: click.Context) -> None:
                 console.print(f"  - {err}")
             raise SystemExit(1)
 
+        # Validate all changes exist by re-querying each one
+        task_paths = _compute_task_paths(task_tree)
+        missing = []
+        for task_id in task_tree.tasks:
+            task_path = task_paths[task_id]
+            change_id = find_change_by_description(spec_id, task_path)
+            if not change_id:
+                missing.append(f"{task_id} ({':'.join(task_path)})")
+
+        if missing:
+            console.print(f"[red]Validation failed:[/red] {len(missing)} changes not found after setup")
+            for m in missing[:10]:  # Show first 10
+                console.print(f"  - {m}")
+            if len(missing) > 10:
+                console.print(f"  ... and {len(missing) - 10} more")
+            raise SystemExit(1)
+
+        console.print(f"[green]Validated:[/green] All {len(task_tree.tasks)} changes exist")
         console.print("[green]Setup complete[/green]")
 
     except Exception as e:
