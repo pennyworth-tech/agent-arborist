@@ -205,12 +205,20 @@ class SubDagBuilder:
             ))
             prev_step = f"c-{task_id}"
 
+        # Add finalize step after all tasks complete
+        steps.append(SubDagStep(
+            name="finalize",
+            command="arborist spec finalize",
+            depends=[prev_step],
+        ))
+
         # Environment variables
-        # Note: ARBORIST_SOURCE_REV is set dynamically at dag run time
+        # ARBORIST_SOURCE_REV is passed through from parent process
         spec_id = self.config.spec_id or self.config.name
         env = [
             f"ARBORIST_SPEC_ID={spec_id}",
             f"ARBORIST_CONTAINER_MODE={self.config.container_mode.value}",
+            "ARBORIST_SOURCE_REV=${ARBORIST_SOURCE_REV}",
         ]
 
         return SubDag(
