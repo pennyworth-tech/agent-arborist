@@ -209,6 +209,16 @@ class CustomStepResult(StepResultBase):
     duration_seconds: float = 0.0
 
 
+@dataclass
+class FinalizeResult(StepResultBase):
+    """Result from finalizing a spec (exporting jj changes to git branch)."""
+
+    spec_id: str = ""
+    source_branch: str = ""
+    bookmark_created: bool = False
+    git_exported: bool = False
+
+
 # Type alias for any step result
 StepResult = (
     PreSyncResult

@@ -378,6 +378,20 @@ def get_parent_task_path(task_path: list[str]) -> list[str] | None:
     return task_path[:-1]
 
 
+def ensure_workspace_fresh(cwd: Path | None = None) -> None:
+    """Update stale workspace if needed.
+
+    In jj, when one workspace makes changes, other workspaces become "stale"
+    and can't see the new changes until they're updated. This function
+    ensures the current workspace is up-to-date.
+
+    Args:
+        cwd: Working directory (must be inside a jj repo)
+    """
+    # Run update-stale - it's a no-op if workspace isn't stale
+    run_jj("workspace", "update-stale", cwd=cwd, check=False)
+
+
 def find_change_by_description(
     spec_id: str,
     task_path: list[str],
@@ -393,6 +407,9 @@ def find_change_by_description(
     Returns:
         Change ID or None if not found
     """
+    # Ensure workspace is fresh before querying (handles stale working copies)
+    ensure_workspace_fresh(cwd)
+
     desc = build_task_description(spec_id, task_path)
     # Use starts-with match to handle status suffixes
     revset = f'description(glob:"{desc}*") & mutable()'

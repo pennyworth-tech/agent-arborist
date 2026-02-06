@@ -1474,6 +1474,120 @@ def spec_merge_container_up(ctx: click.Context) -> None:
         raise SystemExit(1)
 
 
+@spec.command("finalize")
+@click.pass_context
+def spec_finalize(ctx: click.Context) -> None:
+    """Finalize a spec by exporting jj changes to git branch.
+
+    This command:
+    1. Moves the source branch bookmark to the current jj state
+    2. Exports jj changes to git (jj git export)
+
+    This ensures all work done in jj ends up on a git branch.
+
+    Uses env vars: ARBORIST_SPEC_ID, ARBORIST_SOURCE_REV
+    """
+    import os
+
+    from agent_arborist.step_results import FinalizeResult
+    from agent_arborist.home import get_git_root
+    from agent_arborist.tasks import run_jj
+
+    spec_id = os.environ.get("ARBORIST_SPEC_ID", "")
+    source_rev = os.environ.get("ARBORIST_SOURCE_REV", "")
+
+    if ctx.obj.get("echo_for_testing"):
+        echo_command(
+            "spec finalize",
+            spec_id=spec_id,
+            source_rev=source_rev,
+        )
+        return
+
+    if not source_rev:
+        console.print("[red]Error:[/red] No source revision (set ARBORIST_SOURCE_REV)")
+        raise SystemExit(1)
+
+    try:
+        git_root = get_git_root()
+    except Exception as e:
+        console.print(f"[red]Error:[/red] Could not find git root: {e}")
+        raise SystemExit(1)
+
+    if not ctx.obj.get("quiet"):
+        console.print(f"[cyan]Finalizing spec:[/cyan] {spec_id}")
+        console.print(f"[dim]Source branch:[/dim] {source_rev}")
+
+    bookmark_created = False
+    git_exported = False
+
+    try:
+        # Move the bookmark to current state (@ in jj)
+        # Use bookmark set to move existing bookmark, or create if doesn't exist
+        result = run_jj(
+            "bookmark", "set", source_rev, "-r", "@",
+            cwd=git_root,
+            check=False,
+        )
+
+        if result.returncode == 0:
+            bookmark_created = True
+            if not ctx.obj.get("quiet"):
+                console.print(f"[green]OK:[/green] Bookmark '{source_rev}' updated to current state")
+        else:
+            # Try creating if set failed (bookmark doesn't exist)
+            result = run_jj(
+                "bookmark", "create", source_rev, "-r", "@",
+                cwd=git_root,
+                check=False,
+            )
+            if result.returncode == 0:
+                bookmark_created = True
+                if not ctx.obj.get("quiet"):
+                    console.print(f"[green]OK:[/green] Bookmark '{source_rev}' created")
+            else:
+                console.print(f"[yellow]Warning:[/yellow] Could not update bookmark: {result.stderr}")
+
+        # Export to git
+        result = run_jj(
+            "git", "export",
+            cwd=git_root,
+            check=False,
+        )
+
+        if result.returncode == 0:
+            git_exported = True
+            if not ctx.obj.get("quiet"):
+                console.print("[green]OK:[/green] Exported jj changes to git")
+        else:
+            console.print(f"[yellow]Warning:[/yellow] Git export issue: {result.stderr}")
+
+        step_result = FinalizeResult(
+            success=bookmark_created and git_exported,
+            spec_id=spec_id,
+            source_branch=source_rev,
+            bookmark_created=bookmark_created,
+            git_exported=git_exported,
+        )
+        output_result(step_result, ctx)
+
+        if bookmark_created and git_exported:
+            console.print(f"[green]Finalized:[/green] Changes are on git branch '{source_rev}'")
+        else:
+            console.print("[yellow]Partial success:[/yellow] Check warnings above")
+
+    except Exception as e:
+        step_result = FinalizeResult(
+            success=False,
+            error=str(e),
+            spec_id=spec_id,
+            source_branch=source_rev,
+        )
+        output_result(step_result, ctx)
+        console.print(f"[red]Error:[/red] {e}")
+        raise SystemExit(1)
+
+
 @spec.command("dag-build")
 @click.argument("directory", required=False, type=click.Path(exists=True))
 @click.option(
