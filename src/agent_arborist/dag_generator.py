@@ -282,7 +282,6 @@ class DagGenerator:
         spec_dir: Path,
         dag_name: str,
         timeout: int = 120,
-        manifest_path: str | None = None,
     ) -> GenerationResult:
         """Generate a DAGU DAG from task spec directory using AI.
 
@@ -294,7 +293,6 @@ class DagGenerator:
             spec_dir: Directory containing task specification files
             dag_name: Name for the DAG
             timeout: Timeout for AI inference
-            manifest_path: Path to manifest JSON (for env var)
         """
         # Step 1: AI analyzes and outputs simple task structure
         prompt = TASK_ANALYSIS_PROMPT.format(spec_dir=spec_dir.resolve())
@@ -568,6 +566,9 @@ def build_simple_dag(
         is_root=True,
     )
 
+    # Compute task paths for hierarchical descriptions
+    task_paths = builder._compute_task_paths(tree)
+
     # Build subdags for each task
     subdags: list[SubDag] = []
     for task_id in sorted(tree.tasks.keys()):
@@ -575,10 +576,12 @@ def build_simple_dag(
         if not task:
             continue
 
+        task_path = task_paths.get(task_id, [task_id])
+
         if tree.is_leaf(task_id):
-            subdag = builder._build_leaf_subdag(task_id)
+            subdag = builder._build_leaf_subdag(task_id, task_path)
         else:
-            subdag = builder._build_parent_subdag(task_id, tree)
+            subdag = builder._build_parent_subdag(task_id, tree, task_path)
 
         subdags.append(subdag)
 

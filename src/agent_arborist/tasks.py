@@ -317,33 +317,127 @@ def create_change(
     return get_change_id(cwd=cwd)
 
 
+# =============================================================================
+# Hierarchical Task Description Helpers
+# =============================================================================
+
+def build_task_description(spec_id: str, task_path: list[str]) -> str:
+    """Build hierarchical task description.
+
+    Args:
+        spec_id: Specification identifier (e.g., "003-terraform-hello-world")
+        task_path: List of task IDs forming the path (e.g., ["T1", "T2", "T6"])
+
+    Returns:
+        Hierarchical description: "003-terraform-hello-world:T1:T2:T6"
+    """
+    return f"{spec_id}:{':'.join(task_path)}"
+
+
+def parse_task_description(description: str) -> tuple[str, list[str]] | None:
+    """Parse hierarchical task description.
+
+    Args:
+        description: Full description (may include status markers)
+
+    Returns:
+        Tuple of (spec_id, task_path) or None if not a valid task description
+
+    Examples:
+        "003-terraform:T1:T2:T6" -> ("003-terraform", ["T1", "T2", "T6"])
+        "003-terraform:T1:T2:T6 [DONE]" -> ("003-terraform", ["T1", "T2", "T6"])
+    """
+    # Strip status markers like [DONE], [RUNNING], etc.
+    clean_desc = description.split("[")[0].strip()
+
+    parts = clean_desc.split(":")
+    if len(parts) < 2:
+        return None
+
+    spec_id = parts[0]
+    task_path = parts[1:]
+
+    # Validate task path has at least one task
+    if not task_path or not all(p for p in task_path):
+        return None
+
+    return spec_id, task_path
+
+
+def get_parent_task_path(task_path: list[str]) -> list[str] | None:
+    """Get parent's task path by dropping the last segment.
+
+    Args:
+        task_path: Current task's path (e.g., ["T1", "T2", "T6"])
+
+    Returns:
+        Parent's path (e.g., ["T1", "T2"]) or None if this is a root task
+    """
+    if len(task_path) <= 1:
+        return None
+    return task_path[:-1]
+
+
+def find_change_by_description(
+    spec_id: str,
+    task_path: list[str],
+    cwd: Path | None = None,
+) -> str | None:
+    """Find a change ID by its hierarchical description.
+
+    Args:
+        spec_id: Specification identifier
+        task_path: Task path (e.g., ["T1", "T2", "T6"])
+        cwd: Working directory
+
+    Returns:
+        Change ID or None if not found
+    """
+    desc = build_task_description(spec_id, task_path)
+    # Use starts-with match to handle status suffixes
+    revset = f'description(glob:"{desc}*") & mutable()'
+
+    result = run_jj(
+        "log", "-r", revset,
+        "--no-graph", "-T", "change_id",
+        "--limit", "1",
+        cwd=cwd,
+        check=False,
+    )
+
+    if result.returncode == 0 and result.stdout.strip():
+        return result.stdout.strip().split()[0]
+    return None
+
+
 def create_task_change(
     spec_id: str,
     task_id: str,
     parent_change: str | None = None,
-    depends_on: list[str] | None = None,
+    task_path: list[str] | None = None,
     cwd: Path | None = None,
 ) -> str:
     """Create a new change for a task.
 
     Args:
         spec_id: Specification identifier
-        task_id: Task identifier (e.g., "T001")
+        task_id: Task identifier (e.g., "T1") - used if task_path not provided
         parent_change: Parent change ID (or "main" if None)
-        depends_on: List of peer task IDs this depends on (for description)
+        task_path: Full hierarchical path (e.g., ["T1", "T2", "T6"])
         cwd: Working directory
 
     Returns:
         New change ID
 
-    Description format:
-        spec:<spec_id>:<task_id> [deps:T001,T002]
+    Description format (hierarchical):
+        {spec_id}:{task_path}
+        Example: "003-terraform-hello-world:T1:T2:T6"
     """
     parent = parent_change or "main"
 
-    # Build description with optional dependencies
-    deps_str = f" [deps:{','.join(depends_on)}]" if depends_on else ""
-    description = f"spec:{spec_id}:{task_id}{deps_str}"
+    # Use task_path if provided, otherwise create single-element path
+    path = task_path if task_path else [task_id]
+    description = build_task_description(spec_id, path)
 
     return create_change(parent=parent, description=description, cwd=cwd)
 
@@ -846,8 +940,8 @@ def find_tasks_by_spec(spec_id: str, cwd: Path | None = None) -> list[TaskChange
     Returns:
         List of TaskChange objects
     """
-    # Query for all changes with spec description pattern
-    revset = f'description("spec:{spec_id}:") & mutable()'
+    # Query for all changes with spec description pattern (new format: spec_id:T1:T2:...)
+    revset = f'description(glob:"{spec_id}:*") & mutable()'
 
     # Template to get structured output
     template = 'change_id ++ "|" ++ description ++ "\\n"'
@@ -871,12 +965,14 @@ def find_tasks_by_spec(spec_id: str, cwd: Path | None = None) -> list[TaskChange
         change_id = change_id.strip()
         desc = desc.strip()
 
-        # Parse task ID from description: "spec:SPEC:TASK [optional status]"
-        parts = desc.split(":")
-        if len(parts) < 3:
+        # Parse using hierarchical format
+        parsed = parse_task_description(desc)
+        if not parsed:
             continue
 
-        task_id = parts[2].split()[0].split("[")[0]
+        _, task_path = parsed
+        # Use last element as task_id for backwards compat
+        task_id = task_path[-1] if task_path else ""
 
         # Determine status from description
         status: ChangeStatus = "pending"
@@ -893,7 +989,7 @@ def find_tasks_by_spec(spec_id: str, cwd: Path | None = None) -> list[TaskChange
             change_id=change_id,
             task_id=task_id,
             spec_id=spec_id,
-            parent_change=None,  # Would need additional query
+            parent_change=None,  # Can derive from jj graph if needed
             status=status,
             has_conflict=has_conflicts(change_id, cwd),
         ))

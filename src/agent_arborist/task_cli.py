@@ -9,6 +9,7 @@ import subprocess
 from pathlib import Path
 
 import click
+import yaml
 from rich.console import Console
 
 from agent_arborist.step_results import (
@@ -21,6 +22,7 @@ from agent_arborist.step_results import (
 from agent_arborist.tasks import (
     run_jj,
     is_jj_repo,
+    is_colocated,
     get_change_id,
     create_task_change,
     complete_task,
@@ -36,15 +38,12 @@ from agent_arborist.tasks import (
     JJResult,
     TaskChange,
     detect_test_command,
+    build_task_description,
+    find_change_by_description,
+    get_parent_task_path,
 )
-from agent_arborist.manifest import (
-    load_manifest,
-    load_manifest_from_env,
-    save_manifest,
-    find_manifest_path,
-    ChangeManifest,
-    create_all_changes_from_manifest,
-)
+from agent_arborist.task_state import TaskTree, TaskNode, build_task_tree_from_yaml
+from agent_arborist.home import get_git_root
 
 console = Console()
 
@@ -57,22 +56,217 @@ def _get_spec_id(ctx: click.Context) -> str | None:
     return spec_id
 
 
-def _get_manifest(ctx: click.Context, spec_id: str | None = None) -> ChangeManifest:
-    """Get manifest from env or discover from spec_id."""
-    # Try env var first (for DAG execution)
-    manifest_path_str = os.environ.get("ARBORIST_MANIFEST")
+def _get_task_path() -> list[str] | None:
+    """Get task path from ARBORIST_TASK_PATH environment variable.
 
-    if manifest_path_str:
-        return load_manifest(Path(manifest_path_str))
+    Returns:
+        List of task IDs (e.g., ["T1", "T2", "T6"]) or None if not set
+    """
+    path_str = os.environ.get("ARBORIST_TASK_PATH")
+    if path_str:
+        return path_str.split(":")
+    return None
 
-    # Try spec_id discovery
-    spec_id = spec_id or _get_spec_id(ctx)
-    if spec_id:
-        manifest_path = find_manifest_path(spec_id)
-        if manifest_path:
-            return load_manifest(manifest_path)
 
-    raise ValueError("No manifest available. Set ARBORIST_MANIFEST or ARBORIST_SPEC_ID.")
+def _get_source_rev() -> str | None:
+    """Get source revision from ARBORIST_SOURCE_REV environment variable."""
+    return os.environ.get("ARBORIST_SOURCE_REV")
+
+
+def _find_dag_yaml_path(spec_id: str) -> Path | None:
+    """Find DAG YAML file for a spec.
+
+    Search order:
+    1. {git_root}/.arborist/dagu/dags/{spec_id}.yaml
+    """
+    try:
+        git_root = get_git_root()
+    except Exception:
+        return None
+
+    dag_path = git_root / ".arborist" / "dagu" / "dags" / f"{spec_id}.yaml"
+    if dag_path.exists():
+        return dag_path
+    return None
+
+
+def _find_change_for_task(spec_id: str, task_path: list[str]) -> str | None:
+    """Find the jj change ID for a task by its hierarchical description.
+
+    Args:
+        spec_id: Specification ID
+        task_path: Hierarchical task path (e.g., ["T1", "T2", "T6"])
+
+    Returns:
+        Change ID or None if not found
+    """
+    return find_change_by_description(spec_id, task_path)
+
+
+def _compute_task_paths(task_tree: TaskTree) -> dict[str, list[str]]:
+    """Compute hierarchical paths for all tasks in the tree.
+
+    Args:
+        task_tree: TaskTree with all tasks
+
+    Returns:
+        Dict mapping task_id to its full path (e.g., {"T6": ["T1", "T2", "T6"]})
+    """
+    paths: dict[str, list[str]] = {}
+
+    def compute_path(task_id: str) -> list[str]:
+        if task_id in paths:
+            return paths[task_id]
+
+        task = task_tree.get_task(task_id)
+        if not task or not task.parent_id:
+            # Root task - path is just the task ID
+            paths[task_id] = [task_id]
+        else:
+            # Child task - path is parent's path + this task
+            parent_path = compute_path(task.parent_id)
+            paths[task_id] = parent_path + [task_id]
+
+        return paths[task_id]
+
+    # Compute paths for all tasks
+    for task_id in task_tree.tasks:
+        compute_path(task_id)
+
+    return paths
+
+
+def _topological_sort(task_tree: TaskTree) -> list[str]:
+    """Sort tasks in topological order (parents before children).
+
+    Args:
+        task_tree: TaskTree with all tasks
+
+    Returns:
+        List of task IDs in topological order
+    """
+    # Build children map
+    children_of: dict[str, list[str]] = {tid: [] for tid in task_tree.tasks}
+    for task_id, task in task_tree.tasks.items():
+        if task.parent_id and task.parent_id in children_of:
+            children_of[task.parent_id].append(task_id)
+
+    # Find root tasks (no parent)
+    roots = [tid for tid, task in task_tree.tasks.items() if task.parent_id is None]
+
+    # BFS to get topological order
+    result = []
+    queue = list(roots)
+
+    while queue:
+        task_id = queue.pop(0)
+        result.append(task_id)
+        queue.extend(children_of.get(task_id, []))
+
+    return result
+
+
+def _create_changes_from_tree(
+    spec_id: str,
+    task_tree: TaskTree,
+    source_rev: str,
+) -> dict:
+    """Create jj changes for all tasks in the tree.
+
+    Creates changes in topological order with hierarchical descriptions.
+
+    Args:
+        spec_id: Specification ID
+        task_tree: TaskTree with all tasks
+        source_rev: Base revision (e.g., "main", branch name)
+
+    Returns:
+        Dict with:
+        - verified: list of task IDs whose changes already exist
+        - created: list of task IDs for newly created changes
+        - errors: list of error messages
+    """
+    result = {
+        "verified": [],
+        "created": [],
+        "errors": [],
+    }
+
+    # Compute task paths
+    task_paths = _compute_task_paths(task_tree)
+
+    # Track change IDs as we create/find them
+    change_ids: dict[str, str] = {}
+
+    # Process in topological order
+    task_order = _topological_sort(task_tree)
+
+    for task_id in task_order:
+        task_path = task_paths[task_id]
+
+        # Check if change already exists
+        existing = find_change_by_description(spec_id, task_path)
+        if existing:
+            change_ids[task_id] = existing
+            result["verified"].append(task_id)
+            continue
+
+        # Determine parent change
+        task = task_tree.get_task(task_id)
+        if task and task.parent_id:
+            # Child task - parent is the parent task's change
+            if task.parent_id not in change_ids:
+                result["errors"].append(
+                    f"{task_id}: Parent task {task.parent_id} not yet created"
+                )
+                continue
+            parent_change = change_ids[task.parent_id]
+        else:
+            # Root task - parent is the source revision
+            parent_change = source_rev
+
+        # Create the change
+        try:
+            new_change_id = create_task_change(
+                spec_id=spec_id,
+                task_id=task_id,
+                parent_change=parent_change,
+                task_path=task_path,
+            )
+            change_ids[task_id] = new_change_id
+            result["created"].append(task_id)
+        except Exception as e:
+            result["errors"].append(f"{task_id}: Failed to create - {e}")
+
+    return result
+
+
+def _get_task_info_from_env() -> tuple[str | None, list[str] | None, str | None]:
+    """Get task info from environment variables.
+
+    Returns:
+        Tuple of (spec_id, task_path, source_rev)
+    """
+    spec_id = os.environ.get("ARBORIST_SPEC_ID")
+    task_path = _get_task_path()
+    source_rev = _get_source_rev()
+    return spec_id, task_path, source_rev
+
+
+def _find_parent_change(spec_id: str, task_path: list[str]) -> str | None:
+    """Find the parent task's change ID.
+
+    Args:
+        spec_id: Specification ID
+        task_path: Current task's path
+
+    Returns:
+        Parent's change ID, or None if this is a root task
+    """
+    parent_path = get_parent_task_path(task_path)
+    if not parent_path:
+        return None
+    return find_change_by_description(spec_id, parent_path)
 
 
 def _output_result(result: StepResult, ctx: click.Context) -> None:
@@ -138,55 +332,38 @@ def task_status(ctx: click.Context, task_id: str | None, as_json: bool) -> None:
         console.print("[red]Error:[/red] Not in a jj repository")
         raise SystemExit(1)
 
+    if not spec_id:
+        console.print("[red]Error:[/red] No spec available")
+        console.print("Use --spec or set ARBORIST_SPEC_ID")
+        raise SystemExit(1)
+
+    # Find all tasks for this spec from jj
+    tasks = find_tasks_by_spec(spec_id)
+
     if task_id:
         # Show specific task
-        try:
-            manifest = _get_manifest(ctx, spec_id)
-            task_info = manifest.get_task(task_id)
+        task = next((t for t in tasks if t.task_id == task_id), None)
 
-            if not task_info:
-                console.print(f"[red]Error:[/red] Task {task_id} not found in manifest")
-                raise SystemExit(1)
-
-            # Get current status from repo by finding the task
-            task_status = "unknown"
-            if spec_id:
-                tasks = find_tasks_by_spec(spec_id)
-                for t in tasks:
-                    if t.task_id == task_id:
-                        task_status = t.status
-                        break
-
-            if as_json:
-                import json
-                print(json.dumps({
-                    "task_id": task_id,
-                    "change_id": task_info.change_id,
-                    "parent_change": task_info.parent_change,
-                    "status": task_status,
-                    "children": task_info.children,
-                }))
-            else:
-                console.print(f"[bold]Task:[/bold] {task_id}")
-                console.print(f"[dim]Change ID:[/dim] {task_info.change_id}")
-                console.print(f"[dim]Parent:[/dim] {task_info.parent_change}")
-                console.print(f"[dim]Status:[/dim] {task_status}")
-                if task_info.children:
-                    console.print(f"[dim]Children:[/dim] {', '.join(task_info.children)}")
-
-        except Exception as e:
-            console.print(f"[red]Error:[/red] {e}")
+        if not task:
+            console.print(f"[red]Error:[/red] Task {task_id} not found in jj")
             raise SystemExit(1)
 
+        if as_json:
+            import json
+            print(json.dumps({
+                "task_id": task_id,
+                "change_id": task.change_id,
+                "status": task.status,
+                "has_conflict": task.has_conflict,
+            }))
+        else:
+            console.print(f"[bold]Task:[/bold] {task_id}")
+            console.print(f"[dim]Change ID:[/dim] {task.change_id}")
+            console.print(f"[dim]Status:[/dim] {task.status}")
+            if task.has_conflict:
+                console.print("[red]Has conflicts[/red]")
     else:
         # Show all tasks in spec
-        if not spec_id:
-            console.print("[red]Error:[/red] No spec available")
-            console.print("Use --spec or set ARBORIST_SPEC_ID")
-            raise SystemExit(1)
-
-        tasks = find_tasks_by_spec(spec_id)
-
         if as_json:
             import json
             print(json.dumps([
@@ -223,13 +400,18 @@ def task_setup_spec(ctx: click.Context) -> None:
     This is typically run as the first step in a DAG.
     """
     spec_id = _get_spec_id(ctx)
+    source_rev = _get_source_rev()
 
     if ctx.obj and ctx.obj.get("echo_for_testing"):
         _echo_command("task setup-spec", spec_id=spec_id)
         return
 
     if not spec_id:
-        console.print("[red]Error:[/red] No spec available")
+        console.print("[red]Error:[/red] No spec available (set ARBORIST_SPEC_ID)")
+        raise SystemExit(1)
+
+    if not source_rev:
+        console.print("[red]Error:[/red] No source revision (set ARBORIST_SOURCE_REV)")
         raise SystemExit(1)
 
     try:
@@ -239,11 +421,26 @@ def task_setup_spec(ctx: click.Context) -> None:
             run_jj("git", "init", "--colocate")
             console.print("[green]jj initialized successfully[/green]")
 
-        manifest = _get_manifest(ctx, spec_id)
+        # Sync jj with git to pick up any recent git commits (e.g., DAG files)
+        if is_colocated():
+            console.print("[dim]Syncing jj with git...[/dim]")
+            run_jj("git", "import")
+
+        # Find and parse DAG YAML for task structure
+        dag_path = _find_dag_yaml_path(spec_id)
+        if not dag_path:
+            console.print(f"[red]Error:[/red] DAG YAML not found for {spec_id}")
+            raise SystemExit(1)
+
+        dag_yaml = dag_path.read_text()
+        task_tree = build_task_tree_from_yaml(spec_id, dag_yaml)
 
         console.print(f"[cyan]Setting up jj changes for spec:[/cyan] {spec_id}")
+        console.print(f"[dim]Source revision:[/dim] {source_rev}")
+        console.print(f"[dim]Tasks:[/dim] {len(task_tree.tasks)}")
 
-        result = create_all_changes_from_manifest(manifest)
+        # Create changes with hierarchical descriptions
+        result = _create_changes_from_tree(spec_id, task_tree, source_rev)
 
         if result["verified"]:
             console.print(f"[green]Verified:[/green] {len(result['verified'])} existing changes")
@@ -272,8 +469,12 @@ def task_pre_sync(ctx: click.Context, task_id: str) -> None:
     1. Creates a workspace for the task if needed
     2. Switches to the task's change
     3. Rebases onto parent to get latest changes
+
+    Uses env vars: ARBORIST_SPEC_ID, ARBORIST_TASK_PATH, ARBORIST_SOURCE_REV
     """
     spec_id = _get_spec_id(ctx)
+    task_path = _get_task_path()
+    source_rev = _get_source_rev()
 
     if ctx.obj and ctx.obj.get("echo_for_testing"):
         _echo_command("task pre-sync", spec_id=spec_id, task_id=task_id)
@@ -281,19 +482,26 @@ def task_pre_sync(ctx: click.Context, task_id: str) -> None:
 
     try:
         if not spec_id:
-            console.print("[red]Error:[/red] No spec available")
+            console.print("[red]Error:[/red] No spec available (set ARBORIST_SPEC_ID)")
             raise SystemExit(1)
 
-        manifest = _get_manifest(ctx, spec_id)
-        task_info = manifest.get_task(task_id)
-
-        if not task_info:
-            console.print(f"[red]Error:[/red] Task {task_id} not found in manifest")
+        if not task_path:
+            console.print("[red]Error:[/red] No task path available (set ARBORIST_TASK_PATH)")
             raise SystemExit(1)
+
+        # Find change ID by hierarchical description
+        change_id = find_change_by_description(spec_id, task_path)
+        if not change_id:
+            console.print(f"[red]Error:[/red] Task change not found for {spec_id}:{':'.join(task_path)}")
+            raise SystemExit(1)
+
+        # Find parent change (either parent task or source_rev)
+        parent_change = _find_parent_change(spec_id, task_path) or source_rev or "main"
 
         console.print(f"[cyan]Pre-sync for task:[/cyan] {task_id}")
-        console.print(f"[dim]Change ID:[/dim] {task_info.change_id}")
-        console.print(f"[dim]Parent:[/dim] {task_info.parent_change}")
+        console.print(f"[dim]Task path:[/dim] {':'.join(task_path)}")
+        console.print(f"[dim]Change ID:[/dim] {change_id}")
+        console.print(f"[dim]Parent:[/dim] {parent_change}")
 
         # Get workspace path
         workspace_path = get_workspace_path(spec_id, task_id)
@@ -302,8 +510,8 @@ def task_pre_sync(ctx: click.Context, task_id: str) -> None:
         # Setup workspace (creates if needed, switches to change, rebases)
         setup_result = setup_task_workspace(
             task_id=task_id,
-            change_id=task_info.change_id,
-            parent_change=task_info.parent_change,
+            change_id=change_id,
+            parent_change=parent_change,
             workspace_path=workspace_path,
         )
 
@@ -312,23 +520,25 @@ def task_pre_sync(ctx: click.Context, task_id: str) -> None:
             raise SystemExit(1)
 
         # Update description to mark as running
+        desc = build_task_description(spec_id, task_path)
         describe_change(
-            task_info.change_id,
-            description=f"spec:{spec_id}:{task_id}:running",
+            description=f"{desc} [RUNNING]",
+            revset=change_id,
             cwd=workspace_path,
         )
 
         result = PreSyncResult(
             success=True,
             worktree_path=str(workspace_path),
-            branch=task_info.change_id,  # Use change_id as "branch" for compatibility
+            branch=change_id,  # Use change_id as "branch" for compatibility
         )
         _output_result(result, ctx)
 
-        # Set environment for subsequent steps
         console.print(f"[green]Pre-sync complete[/green]")
         console.print(f"[dim]Workspace:[/dim] {workspace_path}")
 
+    except SystemExit:
+        raise
     except Exception as e:
         result = PreSyncResult(
             success=False,
@@ -347,10 +557,12 @@ def task_run(ctx: click.Context, task_id: str, timeout: int) -> None:
     """Execute the AI runner for a task.
 
     Runs the configured AI runner (e.g., Claude Code) in the task's workspace.
+    Uses env vars: ARBORIST_SPEC_ID, ARBORIST_TASK_PATH
     """
     from agent_arborist.runner import get_runner, get_default_runner, get_default_model
 
     spec_id = _get_spec_id(ctx)
+    task_path = _get_task_path()
 
     if ctx.obj and ctx.obj.get("echo_for_testing"):
         _echo_command("task run", spec_id=spec_id, task_id=task_id, timeout=str(timeout))
@@ -358,14 +570,7 @@ def task_run(ctx: click.Context, task_id: str, timeout: int) -> None:
 
     try:
         if not spec_id:
-            console.print("[red]Error:[/red] No spec available")
-            raise SystemExit(1)
-
-        manifest = _get_manifest(ctx, spec_id)
-        task_info = manifest.get_task(task_id)
-
-        if not task_info:
-            console.print(f"[red]Error:[/red] Task {task_id} not found in manifest")
+            console.print("[red]Error:[/red] No spec available (set ARBORIST_SPEC_ID)")
             raise SystemExit(1)
 
         # Get workspace path
@@ -373,10 +578,12 @@ def task_run(ctx: click.Context, task_id: str, timeout: int) -> None:
 
         if not workspace_path.exists():
             console.print(f"[red]Error:[/red] Workspace not found: {workspace_path}")
-            console.print("Run 'arborist jj pre-sync' first")
+            console.print("Run 'arborist task pre-sync' first")
             raise SystemExit(1)
 
         console.print(f"[cyan]Running task:[/cyan] {task_id}")
+        if task_path:
+            console.print(f"[dim]Task path:[/dim] {':'.join(task_path)}")
         console.print(f"[dim]Workspace:[/dim] {workspace_path}")
 
         # Get runner configuration
@@ -413,6 +620,8 @@ def task_run(ctx: click.Context, task_id: str, timeout: int) -> None:
             console.print(f"[red]Task execution failed:[/red] {run_result.error}")
             raise SystemExit(1)
 
+    except SystemExit:
+        raise
     except Exception as e:
         result = RunResult(
             success=False,
@@ -431,6 +640,7 @@ def task_run_test(ctx: click.Context, task_id: str, cmd: str | None) -> None:
     """Run tests in the task's workspace.
 
     Detects and runs the appropriate test command for the project.
+    Uses env vars: ARBORIST_SPEC_ID
     """
     spec_id = _get_spec_id(ctx)
 
@@ -440,14 +650,7 @@ def task_run_test(ctx: click.Context, task_id: str, cmd: str | None) -> None:
 
     try:
         if not spec_id:
-            console.print("[red]Error:[/red] No spec available")
-            raise SystemExit(1)
-
-        manifest = _get_manifest(ctx, spec_id)
-        task_info = manifest.get_task(task_id)
-
-        if not task_info:
-            console.print(f"[red]Error:[/red] Task {task_id} not found in manifest")
+            console.print("[red]Error:[/red] No spec available (set ARBORIST_SPEC_ID)")
             raise SystemExit(1)
 
         # Get workspace path
@@ -523,8 +726,12 @@ def task_complete(ctx: click.Context, task_id: str) -> None:
     1. Marks the task as done
     2. Squashes the task's changes into its parent
     3. The task change becomes empty (but keeps its description)
+
+    Uses env vars: ARBORIST_SPEC_ID, ARBORIST_TASK_PATH, ARBORIST_SOURCE_REV
     """
     spec_id = _get_spec_id(ctx)
+    task_path = _get_task_path()
+    source_rev = _get_source_rev()
 
     if ctx.obj and ctx.obj.get("echo_for_testing"):
         _echo_command("task complete", spec_id=spec_id, task_id=task_id)
@@ -532,36 +739,43 @@ def task_complete(ctx: click.Context, task_id: str) -> None:
 
     try:
         if not spec_id:
-            console.print("[red]Error:[/red] No spec available")
+            console.print("[red]Error:[/red] No spec available (set ARBORIST_SPEC_ID)")
             raise SystemExit(1)
 
-        manifest = _get_manifest(ctx, spec_id)
-        task_info = manifest.get_task(task_id)
-
-        if not task_info:
-            console.print(f"[red]Error:[/red] Task {task_id} not found in manifest")
+        if not task_path:
+            console.print("[red]Error:[/red] No task path available (set ARBORIST_TASK_PATH)")
             raise SystemExit(1)
+
+        # Find change ID by hierarchical description
+        change_id = find_change_by_description(spec_id, task_path)
+        if not change_id:
+            console.print(f"[red]Error:[/red] Task change not found for {spec_id}:{':'.join(task_path)}")
+            raise SystemExit(1)
+
+        # Find parent change (either parent task or source_rev)
+        parent_change = _find_parent_change(spec_id, task_path) or source_rev or "main"
 
         console.print(f"[cyan]Completing task:[/cyan] {task_id}")
-        console.print(f"[dim]Squashing into parent:[/dim] {task_info.parent_change}")
+        console.print(f"[dim]Task path:[/dim] {':'.join(task_path)}")
+        console.print(f"[dim]Squashing into parent:[/dim] {parent_change}")
 
         # Get workspace path (may not exist for completion from merge container)
         workspace_path = get_workspace_path(spec_id, task_id)
         cwd = workspace_path if workspace_path.exists() else None
 
         # Complete the task (squash into parent)
-        result = complete_task(
+        complete_result = complete_task(
             task_id=task_id,
-            change_id=task_info.change_id,
-            parent_change=task_info.parent_change,
+            change_id=change_id,
+            parent_change=parent_change,
             cwd=cwd,
         )
 
-        if result.success:
+        if complete_result.success:
             step_result = CommitResult(
                 success=True,
                 worktree_path=str(workspace_path) if workspace_path.exists() else "",
-                commit_sha=result.new_parent_id or "",
+                commit_sha="",
                 commit_message=f"Squashed {task_id}",
             )
             _output_result(step_result, ctx)
@@ -569,20 +783,20 @@ def task_complete(ctx: click.Context, task_id: str) -> None:
         else:
             step_result = CommitResult(
                 success=False,
-                error=result.error or "Unknown error",
+                error=complete_result.error or "Unknown error",
             )
             _output_result(step_result, ctx)
-            console.print(f"[red]Failed to complete task:[/red] {result.error}")
+            console.print(f"[red]Failed to complete task:[/red] {complete_result.error}")
             raise SystemExit(1)
 
     except SystemExit:
         raise
     except Exception as e:
-        result = CommitResult(
+        step_result = CommitResult(
             success=False,
             error=str(e),
         )
-        _output_result(result, ctx)
+        _output_result(step_result, ctx)
         console.print(f"[red]Error:[/red] {e}")
         raise SystemExit(1)
 
@@ -595,38 +809,47 @@ def task_sync_parent(ctx: click.Context, task_id: str) -> None:
 
     This rebases remaining children onto the updated parent.
     Called after each child task completes in a parent subdag.
+
+    Uses env vars: ARBORIST_SPEC_ID, ARBORIST_TASK_PATH
     """
     spec_id = _get_spec_id(ctx)
+    task_path = _get_task_path()
 
     if ctx.obj and ctx.obj.get("echo_for_testing"):
         _echo_command("task sync-parent", spec_id=spec_id, task_id=task_id)
         return
 
     try:
-        manifest = _get_manifest(ctx, spec_id)
-        task_info = manifest.get_task(task_id)
+        if not spec_id:
+            console.print("[red]Error:[/red] No spec available (set ARBORIST_SPEC_ID)")
+            raise SystemExit(1)
 
-        if not task_info:
-            console.print(f"[red]Error:[/red] Task {task_id} not found in manifest")
+        if not task_path:
+            console.print("[red]Error:[/red] No task path available (set ARBORIST_TASK_PATH)")
+            raise SystemExit(1)
+
+        # Find change ID by hierarchical description
+        change_id = find_change_by_description(spec_id, task_path)
+        if not change_id:
+            console.print(f"[red]Error:[/red] Task change not found for {spec_id}:{':'.join(task_path)}")
             raise SystemExit(1)
 
         console.print(f"[cyan]Syncing parent after children:[/cyan] {task_id}")
+        console.print(f"[dim]Task path:[/dim] {':'.join(task_path)}")
 
         # Sync: rebase remaining children onto parent
-        result = sync_parent(
-            parent_change=task_info.change_id,
-            spec_id=spec_id or manifest.spec_id,
+        sync_result = sync_parent(
+            parent_change=change_id,
+            spec_id=spec_id,
         )
 
-        if result.get("rebased"):
-            console.print(f"[green]Rebased children:[/green] {result['rebased']}")
+        if sync_result.get("children_rebased"):
+            console.print(f"[green]Rebased children:[/green] {sync_result['children_rebased']}")
         else:
             console.print("[dim]No children to rebase[/dim]")
 
-        if result.get("errors"):
-            for err in result["errors"]:
-                console.print(f"[red]Error:[/red] {err}")
-            raise SystemExit(1)
+        if sync_result.get("conflicts_found"):
+            console.print("[yellow]Conflicts detected in parent[/yellow]")
 
         console.print("[green]Sync complete[/green]")
 

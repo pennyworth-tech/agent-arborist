@@ -32,22 +32,12 @@ from agent_arborist.home import (
 )
 from agent_arborist.task_spec import parse_task_spec
 from agent_arborist.dag_builder import (
-    DagConfig,
-    SubDagBuilder,
     build_dag_yaml,
     DagBundle,
     SubDag,
     SubDagStep,
 )
 from agent_arborist.dag_generator import DagGenerator
-from agent_arborist.manifest import (
-    generate_manifest,
-    save_manifest,
-    load_manifest,
-    load_manifest_from_env,
-    find_manifest_path,
-    ChangeManifest,
-)
 from agent_arborist.container_runner import ContainerMode
 from agent_arborist.container_context import (
     wrap_subprocess_command,
@@ -80,6 +70,44 @@ from agent_arborist.step_results import (
 from agent_arborist.task_cli import register_task_commands
 
 console = Console()
+
+
+def get_current_branch() -> str:
+    """Get the current git branch name.
+
+    Works in both pure git repos and jj colocated repos.
+    Falls back to "main" if branch cannot be determined.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "branch", "--show-current"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        branch = result.stdout.strip()
+        if branch:
+            return branch
+    except Exception:
+        pass
+
+    # Fallback: try jj bookmark
+    try:
+        result = subprocess.run(
+            ["jj", "log", "-r", "@-", "--no-graph", "-T", "bookmarks"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        # bookmarks could be space-separated, take the first one that's not empty
+        bookmarks = result.stdout.strip().split()
+        for bm in bookmarks:
+            if bm and not bm.endswith("@origin"):
+                return bm
+    except Exception:
+        pass
+
+    return "main"
 
 
 def echo_command(cmd: str, **kwargs: str | None) -> None:
@@ -1329,76 +1357,24 @@ def spec_whoami() -> None:
 @spec.command("branch-create-all")
 @click.pass_context
 def spec_branch_create_all(ctx: click.Context) -> None:
-    """Create all branches from manifest.
+    """[DEPRECATED] Create all branches from manifest.
 
-    Auto-detects spec from git branch, or use --spec to specify.
-    Can also use ARBORIST_MANIFEST env var when running from a DAG step.
+    This command is deprecated. Use 'arborist dag run' instead, which
+    automatically creates jj changes via the setup-changes step.
 
-    Creates the base branch and all task branches in topological order.
+    The jj workflow uses change descriptions to encode task hierarchy:
+      spec_id:T1        (root task)
+      spec_id:T1:T2     (child of T1)
+      spec_id:T1:T2:T6  (child of T2)
     """
-    import os
-
-    # Try to get manifest path from multiple sources
-    manifest_path_str = os.environ.get("ARBORIST_MANIFEST")
-
-    if manifest_path_str:
-        manifest_path = Path(manifest_path_str)
-    else:
-        # Try to discover from spec_id
-        spec_id_from_env = os.environ.get("ARBORIST_SPEC_ID")
-        spec_id = spec_id_from_env or ctx.obj.get("spec_id")
-
-        if not spec_id:
-            console.print("[red]Error:[/red] No spec available")
-            console.print("Either:")
-            console.print("  - Run from a spec branch (e.g., 002-my-feature)")
-            console.print("  - Use --spec option (e.g., --spec 002-my-feature)")
-            console.print("  - Set ARBORIST_MANIFEST or ARBORIST_SPEC_ID environment variable")
-            raise SystemExit(1)
-
-        discovered = find_manifest_path(spec_id)
-        if discovered:
-            manifest_path = discovered
-        else:
-            console.print(f"[red]Error:[/red] Manifest file not found for spec: {spec_id}")
-            console.print("Run 'arborist spec dag-build' first to generate the manifest")
-            raise SystemExit(1)
-
-    try:
-        manifest = load_manifest(manifest_path)
-    except FileNotFoundError:
-        console.print(f"[red]Error:[/red] Manifest not found: {manifest_path}")
-        console.print("Run 'arborist spec dag-build' first to generate the manifest")
-        raise SystemExit(1)
-    except Exception as e:
-        console.print(f"[red]Error loading manifest:[/red] {e}")
-        raise SystemExit(1)
-
-    if ctx.obj.get("echo_for_testing"):
-        echo_command(
-            "spec branch-create-all",
-            spec_id=manifest.spec_id,
-            source=manifest.source_branch,
-            base=manifest.base_branch,
-            tasks=str(len(manifest.tasks)),
-        )
-        return
-
-    if not ctx.obj.get("quiet"):
-        console.print(f"[cyan]Creating branches from manifest...[/cyan]")
-        console.print(f"[dim]Source: {manifest.source_branch}[/dim]")
-        console.print(f"[dim]Base: {manifest.base_branch}[/dim]")
-        console.print(f"[dim]Tasks: {len(manifest.tasks)}[/dim]")
-
-    result = create_all_branches_from_manifest(manifest)
-
-    if result.success:
-        console.print(f"[green]OK:[/green] {result.message}")
-    else:
-        console.print(f"[red]Error:[/red] {result.message}")
-        if result.error:
-            console.print(f"[dim]{result.error}[/dim]")
-        raise SystemExit(1)
+    console.print("[yellow]DEPRECATED:[/yellow] This command is no longer needed.")
+    console.print("")
+    console.print("The jj workflow creates changes automatically during DAG execution.")
+    console.print("Use [cyan]arborist dag run <spec-id>[/cyan] to run your DAG.")
+    console.print("")
+    console.print("Changes are created in the 'setup-changes' step with hierarchical")
+    console.print("descriptions like: [dim]spec_id:T1:T2:T6[/dim]")
+    raise SystemExit(1)
 
 
 @spec.command("merge-container-up")
@@ -1549,12 +1525,6 @@ def spec_merge_container_up(ctx: click.Context) -> None:
     help="Container execution mode: auto (detect .devcontainer), enabled (require), disabled (never)",
 )
 @click.option(
-    "--vcs",
-    type=click.Choice(["git", "jj"]),
-    default="jj",
-    help="Version control system: jj (Jujutsu changes, default) or git (worktrees)",
-)
-@click.option(
     "--echo-only",
     is_flag=True,
     hidden=True,
@@ -1572,7 +1542,6 @@ def spec_dag_build(
     no_ai: bool,
     timeout: int,
     container_mode: str,
-    vcs: str,
     echo_only: bool,
 ) -> None:
     """Build a DAGU DAG from a task spec directory using AI inference.
@@ -1671,47 +1640,30 @@ def spec_dag_build(
         except Exception:
             arborist_config = None
 
-        dag_name_safe = dag_name.replace("-", "_")
-
-        if vcs == "jj":
-            # Build task tree from spec for jj dag builder
-            from agent_arborist.task_state import TaskTree, TaskNode
-            tree = TaskTree(spec_id=dag_name)
-            for task in task_spec.tasks:
-                tree.tasks[task.id] = TaskNode(
-                    task_id=task.id,
-                    description=task.description,
-                )
-            for task_id, deps in task_spec.dependencies.items():
-                if deps and task_id in tree.tasks:
-                    parent_id = deps[0]
-                    if parent_id in tree.tasks:
-                        tree.tasks[task_id].parent_id = parent_id
-                        if task_id not in tree.tasks[parent_id].children:
-                            tree.tasks[parent_id].children.append(task_id)
-            tree.root_tasks = [tid for tid, task in tree.tasks.items() if task.parent_id is None]
-
-            dag_yaml = build_dag_yaml(
-                task_tree=tree,
-                dag_name=dag_name,
-                description=task_spec.project or "",
-                container_mode=container_mode_enum,
-                repo_path=repo_path,
+        # Build task tree from spec for jj dag builder
+        from agent_arborist.task_state import TaskTree, TaskNode
+        tree = TaskTree(spec_id=dag_name)
+        for task in task_spec.tasks:
+            tree.tasks[task.id] = TaskNode(
+                task_id=task.id,
+                description=task.description,
             )
-        else:
-            config = DagConfig(
-                name=dag_name_safe,
-                description=task_spec.project,
-                spec_id=dag_name,
-                container_mode=container_mode_enum,
-                repo_path=repo_path,
-                runner=runner,
-                model=model,
-                arborist_config=arborist_config,
-                arborist_home=Path(arborist_home) if arborist_home else None,
-            )
-            builder = SubDagBuilder(config)
-            dag_yaml = builder.build_yaml(task_spec, task_tree)
+        for task_id, deps in task_spec.dependencies.items():
+            if deps and task_id in tree.tasks:
+                parent_id = deps[0]
+                if parent_id in tree.tasks:
+                    tree.tasks[task_id].parent_id = parent_id
+                    if task_id not in tree.tasks[parent_id].children:
+                        tree.tasks[parent_id].children.append(task_id)
+        tree.root_tasks = [tid for tid, task in tree.tasks.items() if task.parent_id is None]
+
+        dag_yaml = build_dag_yaml(
+            task_tree=tree,
+            dag_name=dag_name,
+            description=task_spec.project or "",
+            container_mode=container_mode_enum,
+            repo_path=repo_path,
+        )
     else:
         # AI inference mode
         runner_type = runner or get_default_runner()
@@ -1727,16 +1679,8 @@ def spec_dag_build(
             console.print("Install the runner or use --no-ai for deterministic parsing")
             raise SystemExit(1)
 
-        # Compute manifest path for the generator
-        dagu_home = ctx.obj.get("dagu_home")
-        if output:
-            manifest_path_for_gen = str(Path(output).with_suffix(".json").resolve())
-        elif dagu_home:
-            manifest_path_for_gen = str((Path(dagu_home) / "dags" / f"{dag_name}.json").resolve())
-        else:
-            manifest_path_for_gen = f"{dag_name}.json"
-
         # Determine container mode
+        dagu_home = ctx.obj.get("dagu_home")
         container_mode_enum = ContainerMode(container_mode)
 
         # Get repo path for devcontainer detection
@@ -1763,7 +1707,7 @@ def spec_dag_build(
             arborist_config=arborist_config,
             arborist_home=Path(arborist_home) if arborist_home else None,
         )
-        result = generator.generate(spec_dir, dag_name, timeout=timeout, manifest_path=manifest_path_for_gen)
+        result = generator.generate(spec_dir, dag_name, timeout=timeout)
 
         if not result.success:
             console.print(f"[red]Error generating DAG:[/red] {result.error}")
@@ -1775,18 +1719,18 @@ def spec_dag_build(
         if not ctx.obj.get("quiet"):
             console.print("[green]OK:[/green] DAG generated successfully")
 
-        # If jj mode, rebuild the DAG with jj commands using the AI-generated task tree
-        if vcs == "jj":
-            if not ctx.obj.get("quiet"):
-                console.print("[cyan]Converting to jj workflow...[/cyan]")
-            task_tree = build_task_tree_from_yaml(dag_name, dag_yaml)
-            dag_yaml = build_dag_yaml(
-                task_tree=task_tree,
-                dag_name=dag_name,
-                description=result.yaml_content.split("\n")[1].replace("description: ", "") if "description:" in result.yaml_content else "",
-                container_mode=container_mode_enum,
-                repo_path=repo_path,
-            )
+        # Rebuild the DAG with jj commands using the AI-generated task tree
+        if not ctx.obj.get("quiet"):
+            console.print("[cyan]Converting to jj workflow...[/cyan]")
+
+        task_tree = build_task_tree_from_yaml(dag_name, dag_yaml)
+        dag_yaml = build_dag_yaml(
+            task_tree=task_tree,
+            dag_name=dag_name,
+            description=result.yaml_content.split("\n")[1].replace("description: ", "") if "description:" in result.yaml_content else "",
+            container_mode=container_mode_enum,
+            repo_path=repo_path,
+        )
 
     if dry_run:
         console.print(dag_yaml)
@@ -1805,52 +1749,6 @@ def spec_dag_build(
 
     # Ensure parent directory exists
     output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Generate and save manifest
-    if vcs == "jj":
-        # For jj, generate a placeholder manifest (changes created at runtime by setup-spec)
-        if not ctx.obj.get("quiet"):
-            console.print("[cyan]Generating jj manifest (changes created at runtime)...[/cyan]")
-
-        task_tree = build_task_tree_from_yaml(dag_name, dag_yaml)
-        manifest = generate_manifest(
-            spec_id=dag_name,
-            task_tree=task_tree,
-            create_changes=False,  # Placeholder - changes created at runtime
-        )
-
-        manifest_path = output_path.with_suffix(".json")
-        save_manifest(manifest, manifest_path)
-
-        if not ctx.obj.get("quiet"):
-            console.print(f"[green]Manifest written to:[/green] {manifest_path}")
-            console.print(f"[dim]  Spec ID: {manifest.spec_id}[/dim]")
-            console.print(f"[dim]  Tasks: {len(manifest.tasks)}[/dim]")
-            console.print("[dim]  Note: jj changes will be created when DAG runs[/dim]")
-    else:
-        # Git worktree manifest
-        if not ctx.obj.get("quiet"):
-            console.print("[cyan]Generating branch manifest...[/cyan]")
-
-        # Get current branch for base naming
-        source_branch = get_current_branch()
-
-        # Build task tree from generated YAML (not from spec file)
-        # This ensures manifest matches what AI generated
-        task_tree = build_task_tree_from_yaml(dag_name, dag_yaml)
-
-        # Generate manifest
-        manifest = generate_manifest(dag_name, task_tree, source_branch)
-
-        # Save manifest alongside DAG
-        manifest_path = output_path.with_suffix(".json")
-        save_manifest(manifest, manifest_path)
-
-        if not ctx.obj.get("quiet"):
-            console.print(f"[green]Manifest written to:[/green] {manifest_path}")
-            console.print(f"[dim]  Source branch: {manifest.source_branch}[/dim]")
-            console.print(f"[dim]  Base branch: {manifest.base_branch}[/dim]")
-            console.print(f"[dim]  Tasks: {len(manifest.tasks)}[/dim]")
 
     # If echo_only, inject --echo-for-testing into all arborist commands (in all documents)
     if echo_only:
@@ -2107,9 +2005,6 @@ def dag_run(
         console.print(f"[red]Error:[/red] DAG file not found: {dag_path}")
         raise SystemExit(1)
 
-    # Find manifest file (companion .json)
-    manifest_path = dag_path.with_suffix(".json")
-
     # Check dagu is installed
     dagu_path = shutil.which("dagu")
     if not dagu_path:
@@ -2117,11 +2012,11 @@ def dag_run(
         console.print("Install dagu: https://dagu.readthedocs.io/")
         raise SystemExit(1)
 
-    # Build environment with ARBORIST_MANIFEST
+    # Build environment
+    # ARBORIST_SOURCE_REV is set dynamically here (not baked into DAG)
     env = os.environ.copy()
     env[DAGU_HOME_ENV_VAR] = str(dagu_home)
-    if manifest_path.exists():
-        env["ARBORIST_MANIFEST"] = str(manifest_path)
+    env["ARBORIST_SOURCE_REV"] = get_current_branch()
 
     # Build dagu command
     dagu_cmd = "dry" if dry_run else "start"
@@ -2142,8 +2037,6 @@ def dag_run(
         action = "Dry running" if dry_run else "Starting"
         console.print(f"[cyan]{action} DAG {resolved_dag_name}...[/cyan]")
         console.print(f"[dim]DAG file: {dag_path}[/dim]")
-        if manifest_path.exists():
-            console.print(f"[dim]Manifest: {manifest_path}[/dim]")
 
     try:
         result = subprocess.run(
@@ -2738,11 +2631,6 @@ def dag_restart(
     if not dag_path.exists():
         console.print(f"[red]Error:[/red] DAG file not found: {dag_path}")
         raise SystemExit(1)
-
-    # Set ARBORIST_MANIFEST if exists
-    manifest_path = dag_path.with_suffix(".json")
-    if manifest_path.exists():
-        env["ARBORIST_MANIFEST"] = str(manifest_path)
 
     # Select appropriate Dagu command based on status
     if dag_status == dagu_runs.DaguStatus.RUNNING:

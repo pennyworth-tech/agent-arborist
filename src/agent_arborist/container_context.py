@@ -116,10 +116,19 @@ def wrap_subprocess_command(
 
         # With container:
         wrap_subprocess_command(["claude", "-p", "prompt"], worktree, AUTO)
-        # Returns: ["devcontainer", "exec", "--workspace-folder", "/path", "claude", "-p", "prompt"]
+        # Returns: ["devcontainer", "exec", "--workspace-folder", "/path",
+        #           "--remote-env", "ARBORIST_SPEC_ID=...", ..., "claude", "-p", "prompt"]
     """
     if not should_use_container(worktree, container_mode):
         return cmd
+
+    # Build --remote-env flags for ARBORIST_* env vars
+    # This passes arborist context into the container without clobbering
+    # any existing .env file or devcontainer.json remoteEnv settings
+    remote_env_args: list[str] = []
+    for key, value in os.environ.items():
+        if key.startswith("ARBORIST_"):
+            remote_env_args.extend(["--remote-env", f"{key}={value}"])
 
     # Wrap with devcontainer exec
     return [
@@ -127,6 +136,7 @@ def wrap_subprocess_command(
         "exec",
         "--workspace-folder",
         str(worktree.resolve()),
+        *remote_env_args,
         *cmd
     ]
 

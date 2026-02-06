@@ -148,21 +148,22 @@ class TestCreateChange:
             )
             assert result == "taskchange"
             mock_create.assert_called_once()
-            # Check description format
+            # Check description format - now uses hierarchical format spec_id:task_path
             call_args = mock_create.call_args
-            assert "spec:002-feature:T001" in call_args.kwargs["description"]
+            assert "002-feature:T001" in call_args.kwargs["description"]
 
-    def test_create_task_change_with_deps(self):
-        """Creates task change with peer dependencies."""
+    def test_create_task_change_with_task_path(self):
+        """Creates task change with hierarchical task path."""
         with patch("agent_arborist.tasks.create_change", return_value="taskchange") as mock_create:
             create_task_change(
                 spec_id="002-feature",
                 task_id="T004",
                 parent_change="t001change",
-                depends_on=["T002", "T003"],
+                task_path=["T001", "T004"],  # T004 is child of T001
             )
             call_args = mock_create.call_args
-            assert "[deps:T002,T003]" in call_args.kwargs["description"]
+            # Should use full hierarchical path
+            assert "002-feature:T001:T004" in call_args.kwargs["description"]
 
 
 class TestDescribeChange:
