@@ -26,6 +26,7 @@ from agent_arborist.tasks import (
     get_change_id,
     create_task_change,
     complete_task,
+    mark_task_done,
     sync_parent,
     get_workspace_path,
     create_workspace,
@@ -752,18 +753,33 @@ def task_complete(ctx: click.Context, task_id: str) -> None:
             console.print(f"[red]Error:[/red] Task change not found for {spec_id}:{':'.join(task_path)}")
             raise SystemExit(1)
 
-        # Find parent change (either parent task or source_rev)
-        parent_change = _find_parent_change(spec_id, task_path) or source_rev or "main"
-
-        console.print(f"[cyan]Completing task:[/cyan] {task_id}")
-        console.print(f"[dim]Task path:[/dim] {':'.join(task_path)}")
-        console.print(f"[dim]Squashing into parent:[/dim] {parent_change}")
+        # Find parent change (parent task only, NOT source_rev)
+        parent_change = _find_parent_change(spec_id, task_path)
 
         # Get workspace path (may not exist for completion from merge container)
         workspace_path = get_workspace_path(spec_id, task_id)
         cwd = workspace_path if workspace_path.exists() else None
 
-        # Complete the task (squash into parent)
+        if not parent_change:
+            # Root task - don't squash into immutable source_rev
+            # Just mark as done, finalize will handle moving to target branch
+            console.print(f"[cyan]Completing root task:[/cyan] {task_id}")
+            console.print(f"[dim]Task path:[/dim] {':'.join(task_path)}")
+            mark_task_done(task_id, change_id, cwd)
+            step_result = CommitResult(
+                success=True,
+                commit_sha="",
+                message=f"Marked {task_id} done (root task)",
+            )
+            _output_result(step_result, ctx)
+            console.print("[green]Root task marked complete (no squash)[/green]")
+            return
+
+        # Child task - squash into parent
+        console.print(f"[cyan]Completing task:[/cyan] {task_id}")
+        console.print(f"[dim]Task path:[/dim] {':'.join(task_path)}")
+        console.print(f"[dim]Squashing into parent:[/dim] {parent_change}")
+
         complete_result = complete_task(
             task_id=task_id,
             change_id=change_id,
