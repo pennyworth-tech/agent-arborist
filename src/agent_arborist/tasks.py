@@ -538,15 +538,61 @@ def abandon_change(change_id: str, cwd: Path | None = None) -> JJResult:
 # Squash & Rebase Operations
 # =============================================================================
 
+def _extract_task_id_from_description(desc: str) -> str:
+    """Extract the last task ID from a description.
+
+    Description format: "spec-id:T001:T005:T006 [STATUS]"
+    Returns: "T006"
+    """
+    if not desc:
+        return ""
+    # Get first line (the task path)
+    first_line = desc.split("\n")[0].strip()
+    # Remove any status markers like [DONE] [RUNNING]
+    first_line = first_line.split("[")[0].strip()
+    # Extract last component (the task ID)
+    parts = first_line.split(":")
+    if parts:
+        return parts[-1]
+    return ""
+
+
+def _extract_message_from_description(desc: str) -> str:
+    """Extract the commit message from a description (everything after first line).
+
+    Description format:
+        spec-id:T001:T005:T006
+
+        This is the commit message
+        describing what was done
+
+    Returns: "This is the commit message\ndescribing what was done"
+    """
+    if not desc:
+        return ""
+    lines = desc.split("\n")
+    if len(lines) <= 1:
+        return ""
+    # Skip first line (task path) and any empty lines after it
+    message_lines = lines[1:]
+    # Strip leading empty lines
+    while message_lines and not message_lines[0].strip():
+        message_lines.pop(0)
+    return "\n".join(message_lines).strip()
+
+
 def squash_into_parent(
     child_change: str,
     parent_change: str,
     cwd: Path | None = None,
 ) -> JJResult:
-    """Squash a child change into its parent.
+    """Squash a child change into its parent, accumulating commit messages.
 
     This is the primary merge operation in jj - it moves all changes
     from the child into the parent atomically.
+
+    Commit messages are accumulated: the child's message is appended
+    to the parent's description, prefixed with the child's task ID.
 
     Args:
         child_change: Change ID to squash from
@@ -556,8 +602,24 @@ def squash_into_parent(
     Returns:
         JJResult with operation status
     """
+    # Get descriptions from both changes
+    parent_desc = get_description(parent_change, cwd)
+    child_desc = get_description(child_change, cwd)
+
+    # Extract child's task ID and message
+    child_task_id = _extract_task_id_from_description(child_desc)
+    child_message = _extract_message_from_description(child_desc)
+
+    # Build combined description - accumulate child's message into parent
+    if child_message.strip():
+        combined_desc = f"{parent_desc}\n\n[{child_task_id}] {child_message.strip()}"
+    else:
+        combined_desc = parent_desc
+
+    # Squash with combined message (avoids editor)
     result = run_jj(
         "squash", "--from", child_change, "--into", parent_change,
+        "-m", combined_desc,
         cwd=cwd,
         check=False,
     )

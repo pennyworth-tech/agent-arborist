@@ -217,7 +217,7 @@ class SubDagBuilder:
         spec_id = self.config.spec_id or self.config.name
         env = [
             f"ARBORIST_SPEC_ID={spec_id}",
-            f"ARBORIST_CONTAINER_MODE={self.config.container_mode.value}",
+            "ARBORIST_CONTAINER_MODE=${ARBORIST_CONTAINER_MODE}",
             "ARBORIST_SOURCE_REV=${ARBORIST_SOURCE_REV}",
         ]
 
@@ -357,7 +357,8 @@ class SubDagBuilder:
             f"ARBORIST_SPEC_ID={spec_id}",
             f"ARBORIST_TASK_ID={task_id}",
             f"ARBORIST_TASK_PATH={task_path_str}",
-            f"ARBORIST_CONTAINER_MODE={self.config.container_mode.value}",
+            "ARBORIST_CONTAINER_MODE=${ARBORIST_CONTAINER_MODE}",
+            "ARBORIST_SOURCE_REV=${ARBORIST_SOURCE_REV}",
         ]
 
         return SubDag(name=task_id, steps=steps, env=env_vars)
@@ -453,6 +454,7 @@ class SubDagBuilder:
             f"ARBORIST_SPEC_ID={spec_id}",
             f"ARBORIST_TASK_ID={task_id}",
             f"ARBORIST_TASK_PATH={task_path_str}",
+            "ARBORIST_SOURCE_REV=${ARBORIST_SOURCE_REV}",
         ]
 
         return SubDag(name=task_id, steps=steps, env=env_vars)
