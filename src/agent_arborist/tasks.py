@@ -888,6 +888,26 @@ def complete_task(
     return squash_into_parent(change_id, parent_change, cwd)
 
 
+def mark_task_done(
+    task_id: str,
+    change_id: str,
+    cwd: Path | None = None,
+) -> None:
+    """Mark task as done without squashing.
+
+    Used for root tasks that cannot squash into immutable source_rev.
+
+    Args:
+        task_id: Task identifier
+        change_id: Task's change ID
+        cwd: Working directory
+    """
+    current_desc = get_description(change_id, cwd)
+    if "[DONE]" not in current_desc:
+        done_desc = current_desc.replace(f":{task_id}", f":{task_id} [DONE]")
+        describe_change(done_desc, change_id, cwd)
+
+
 def sync_parent(
     parent_change: str,
     spec_id: str,
