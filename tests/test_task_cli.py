@@ -53,18 +53,13 @@ class TestJJStatus:
     def test_status_single_task(self):
         """Shows single task details."""
         runner = CliRunner()
-        mock_manifest = MagicMock()
-        mock_manifest.get_task.return_value = MagicMock(
-            change_id="abc123",
-            parent_change="main",
-            children=["T002"],
-        )
-        mock_tasks = [MagicMock(task_id="T001", change_id="abc123", status="running")]
+        mock_tasks = [
+            MagicMock(task_id="T001", change_id="abc123", status="running", has_conflict=False)
+        ]
 
         with patch("agent_arborist.task_cli.is_jj_repo", return_value=True):
-            with patch("agent_arborist.task_cli._get_manifest", return_value=mock_manifest):
-                with patch("agent_arborist.task_cli.find_tasks_by_spec", return_value=mock_tasks):
-                    result = runner.invoke(task, ["status", "T001"], obj={"spec_id": "002-feature"})
+            with patch("agent_arborist.task_cli.find_tasks_by_spec", return_value=mock_tasks):
+                result = runner.invoke(task, ["status", "T001"], obj={"spec_id": "002-feature"})
 
         assert result.exit_code == 0
         assert "T001" in result.output
@@ -95,19 +90,33 @@ class TestJJSetupSpec:
         assert result.exit_code == 1
         assert "No spec available" in result.output
 
+    def test_setup_spec_no_source_rev(self):
+        """Errors when no source revision available."""
+        runner = CliRunner()
+        result = runner.invoke(task, ["setup-spec"], obj={"spec_id": "002-feature"})
+        assert result.exit_code == 1
+        assert "No source revision" in result.output
+
     def test_setup_spec_success(self):
         """Creates changes successfully."""
         runner = CliRunner()
-        mock_manifest = MagicMock()
-        mock_result = {"verified": ["a", "b"], "created": ["c"], "errors": []}
+        import os
+        mock_dag_yaml = "name: test\nsteps:\n  - name: T1"
+        mock_task_tree = MagicMock()
+        mock_task_tree.tasks = {"T1": MagicMock(parent_id=None, children=[])}
+        mock_result = {"verified": ["T1"], "created": [], "errors": []}
 
-        with patch("agent_arborist.task_cli._get_manifest", return_value=mock_manifest):
-            with patch("agent_arborist.task_cli.create_all_changes_from_manifest", return_value=mock_result):
-                result = runner.invoke(task, ["setup-spec"], obj={"spec_id": "002-feature"})
+        with patch.dict(os.environ, {"ARBORIST_SOURCE_REV": "main"}):
+            with patch("agent_arborist.task_cli.is_jj_repo", return_value=True):
+                with patch("agent_arborist.task_cli.is_colocated", return_value=False):
+                    with patch("agent_arborist.task_cli._find_dag_yaml_path") as mock_find:
+                        mock_find.return_value = MagicMock(read_text=MagicMock(return_value=mock_dag_yaml))
+                        with patch("agent_arborist.task_cli.build_task_tree_from_yaml", return_value=mock_task_tree):
+                            with patch("agent_arborist.task_cli._create_changes_from_tree", return_value=mock_result):
+                                result = runner.invoke(task, ["setup-spec"], obj={"spec_id": "002-feature"})
 
         assert result.exit_code == 0
         assert "Verified:" in result.output
-        assert "Created:" in result.output
 
     def test_setup_spec_echo_mode(self):
         """Echoes command in test mode."""
@@ -132,22 +141,28 @@ class TestJJPreSync:
         runner = CliRunner()
         result = runner.invoke(task, ["pre-sync", "T001"], obj={})
         assert result.exit_code == 1
+        assert "No spec available" in result.output
+
+    def test_pre_sync_no_task_path(self):
+        """Errors when no task path available."""
+        runner = CliRunner()
+        result = runner.invoke(task, ["pre-sync", "T001"], obj={"spec_id": "002-feature"})
+        assert result.exit_code == 1
+        assert "No task path available" in result.output
 
     def test_pre_sync_success(self):
         """Syncs task successfully."""
+        import os
         runner = CliRunner()
-        mock_manifest = MagicMock()
-        mock_manifest.get_task.return_value = MagicMock(
-            change_id="abc123",
-            parent_change="main",
-        )
         mock_setup_result = MagicMock(success=True)
 
-        with patch("agent_arborist.task_cli._get_manifest", return_value=mock_manifest):
-            with patch("agent_arborist.task_cli.get_workspace_path", return_value=Path("/tmp/ws")):
-                with patch("agent_arborist.task_cli.setup_task_workspace", return_value=mock_setup_result):
-                    with patch("agent_arborist.task_cli.describe_change"):
-                        result = runner.invoke(task, ["pre-sync", "T001"], obj={"spec_id": "002-feature"})
+        with patch.dict(os.environ, {"ARBORIST_TASK_PATH": "T1:T001", "ARBORIST_SOURCE_REV": "main"}):
+            with patch("agent_arborist.task_cli.find_change_by_description", return_value="abc123"):
+                with patch("agent_arborist.task_cli._find_parent_change", return_value="parent123"):
+                    with patch("agent_arborist.task_cli.get_workspace_path", return_value=Path("/tmp/ws")):
+                        with patch("agent_arborist.task_cli.setup_task_workspace", return_value=mock_setup_result):
+                            with patch("agent_arborist.task_cli.describe_change"):
+                                result = runner.invoke(task, ["pre-sync", "T001"], obj={"spec_id": "002-feature"})
 
         assert result.exit_code == 0
         assert "Pre-sync complete" in result.output

@@ -166,15 +166,15 @@ class TestSpecBranchCommands:
         runner = CliRunner()
         result = runner.invoke(main, ["spec", "branch-create-all", "--help"])
         assert result.exit_code == 0
-        assert "manifest" in result.output.lower()
+        assert "DEPRECATED" in result.output
 
-    def test_spec_branch_create_all_requires_spec_or_manifest(self):
-        """branch-create-all requires spec or ARBORIST_MANIFEST."""
+    def test_spec_branch_create_all_deprecated(self):
+        """branch-create-all shows deprecation message."""
         runner = CliRunner()
         result = runner.invoke(main, ["spec", "branch-create-all"])
         assert result.exit_code != 0
-        # Now shows helpful message about how to specify spec
-        assert "No spec available" in result.output or "ARBORIST_MANIFEST" in result.output
+        assert "DEPRECATED" in result.output
+        assert "jj workflow" in result.output
 
     def test_spec_branch_cleanup_all_help(self):
         runner = CliRunner()

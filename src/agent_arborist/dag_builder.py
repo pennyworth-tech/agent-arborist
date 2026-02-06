@@ -79,6 +79,7 @@ class DagConfig:
     name: str
     description: str = ""
     spec_id: str = ""
+    # Note: source_rev is set dynamically at dag run time via ARBORIST_SOURCE_REV
     container_mode: ContainerMode = ContainerMode.AUTO
     repo_path: Path | None = None  # For devcontainer detection
     runner: str | None = None  # AI runner to use
@@ -205,6 +206,7 @@ class SubDagBuilder:
             prev_step = f"c-{task_id}"
 
         # Environment variables
+        # Note: ARBORIST_SOURCE_REV is set dynamically at dag run time
         spec_id = self.config.spec_id or self.config.name
         env = [
             f"ARBORIST_SPEC_ID={spec_id}",
@@ -220,9 +222,40 @@ class SubDagBuilder:
             is_root=True,
         )
 
+    def _compute_task_paths(self, task_tree: TaskTree) -> dict[str, list[str]]:
+        """Compute hierarchical paths for all tasks.
+
+        Returns:
+            Dict mapping task_id to its full path (e.g., {"T6": ["T1", "T2", "T6"]})
+        """
+        paths: dict[str, list[str]] = {}
+
+        def compute_path(task_id: str) -> list[str]:
+            if task_id in paths:
+                return paths[task_id]
+
+            task = task_tree.get_task(task_id)
+            if not task or not task.parent_id:
+                # Root task
+                paths[task_id] = [task_id]
+            else:
+                # Child task - parent path + this task
+                parent_path = compute_path(task.parent_id)
+                paths[task_id] = parent_path + [task_id]
+
+            return paths[task_id]
+
+        for task_id in task_tree.tasks:
+            compute_path(task_id)
+
+        return paths
+
     def _build_all_subdags(self, task_tree: TaskTree) -> list[SubDag]:
         """Build subdags for all tasks."""
         subdags: list[SubDag] = []
+
+        # Compute hierarchical paths for all tasks
+        task_paths = self._compute_task_paths(task_tree)
 
         task_ids = sorted(task_tree.tasks.keys())
 
@@ -231,16 +264,18 @@ class SubDagBuilder:
             if not task:
                 continue
 
+            task_path = task_paths.get(task_id, [task_id])
+
             if task_tree.is_leaf(task_id):
-                subdag = self._build_leaf_subdag(task_id)
+                subdag = self._build_leaf_subdag(task_id, task_path)
             else:
-                subdag = self._build_parent_subdag(task_id, task_tree)
+                subdag = self._build_parent_subdag(task_id, task_tree, task_path)
 
             subdags.append(subdag)
 
         return subdags
 
-    def _build_leaf_subdag(self, task_id: str) -> SubDag:
+    def _build_leaf_subdag(self, task_id: str, task_path: list[str]) -> SubDag:
         """Build a leaf subdag for jj workflow.
 
         Leaf subdags have:
@@ -310,16 +345,18 @@ class SubDagBuilder:
 
         # Environment
         spec_id = self.config.spec_id or self.config.name
+        task_path_str = ":".join(task_path)  # e.g., "T1:T2:T6"
         env_vars = [
             f"ARBORIST_SPEC_ID={spec_id}",
             f"ARBORIST_TASK_ID={task_id}",
+            f"ARBORIST_TASK_PATH={task_path_str}",
             f"ARBORIST_CONTAINER_MODE={self.config.container_mode.value}",
             "ARBORIST_VCS=jj",
         ]
 
         return SubDag(name=task_id, steps=steps, env=env_vars)
 
-    def _build_parent_subdag(self, task_id: str, task_tree: TaskTree) -> SubDag:
+    def _build_parent_subdag(self, task_id: str, task_tree: TaskTree, task_path: list[str]) -> SubDag:
         """Build a parent subdag that calls child subdags.
 
         Parent subdags have:
@@ -405,9 +442,11 @@ class SubDagBuilder:
 
         # Environment
         spec_id = self.config.spec_id or self.config.name
+        task_path_str = ":".join(task_path)  # e.g., "T1:T2"
         env_vars = [
             f"ARBORIST_SPEC_ID={spec_id}",
             f"ARBORIST_TASK_ID={task_id}",
+            f"ARBORIST_TASK_PATH={task_path_str}",
             "ARBORIST_VCS=jj",
         ]
 
@@ -510,6 +549,10 @@ def _build_dag_yaml_from_tree(
 
     Returns:
         Multi-document YAML string
+
+    Note:
+        ARBORIST_SOURCE_REV is set dynamically at dag run time,
+        not baked into the DAG YAML.
     """
     config = DagConfig(
         name=dag_name.replace("-", "_"),
@@ -632,6 +675,10 @@ def build_dag_yaml(
 
     Returns:
         Multi-document YAML string
+
+    Note:
+        ARBORIST_SOURCE_REV is set dynamically at dag run time,
+        not baked into the DAG YAML.
     """
     # If tasks are provided, convert to TaskTree
     if tasks is not None:
