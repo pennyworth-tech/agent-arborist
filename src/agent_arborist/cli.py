@@ -72,11 +72,13 @@ from agent_arborist.task_cli import register_task_commands
 console = Console()
 
 
-def get_current_branch() -> str:
+def get_current_branch() -> str | None:
     """Get the current git branch name.
 
     Works in both pure git repos and jj colocated repos.
-    Falls back to "main" if branch cannot be determined.
+    Returns None if not on a branch (detached HEAD, main, etc).
+
+    IMPORTANT: Never returns 'main' - operations should run from feature branches.
     """
     try:
         result = subprocess.run(
@@ -86,7 +88,7 @@ def get_current_branch() -> str:
             check=True,
         )
         branch = result.stdout.strip()
-        if branch:
+        if branch and branch != "main" and branch != "master":
             return branch
     except Exception:
         pass
@@ -102,12 +104,12 @@ def get_current_branch() -> str:
         # bookmarks could be space-separated, take the first one that's not empty
         bookmarks = result.stdout.strip().split()
         for bm in bookmarks:
-            if bm and not bm.endswith("@origin"):
+            if bm and not bm.endswith("@origin") and bm != "main" and bm != "master":
                 return bm
     except Exception:
         pass
 
-    return "main"
+    return None
 
 
 def echo_command(cmd: str, **kwargs: str | None) -> None:
@@ -1279,7 +1281,7 @@ def hooks_run(
     # Build step context
     worktree_path = None
     branch_name = "unknown"
-    parent_branch = "main"
+    parent_branch = os.environ.get("ARBORIST_SOURCE_REV", "unknown")
 
     if task_id:
         # Try to get worktree info for the task
@@ -2128,9 +2130,16 @@ def dag_run(
 
     # Build environment
     # ARBORIST_SOURCE_REV is set dynamically here (not baked into DAG)
+    # MUST be on a feature branch, never main
+    source_rev = get_current_branch()
+    if not source_rev:
+        console.print("[red]Error:[/red] Must run DAG from a feature branch, not main/master")
+        console.print("[dim]Checkout your spec branch first: git checkout <branch-name>[/dim]")
+        raise SystemExit(1)
+
     env = os.environ.copy()
     env[DAGU_HOME_ENV_VAR] = str(dagu_home)
-    env["ARBORIST_SOURCE_REV"] = get_current_branch()
+    env["ARBORIST_SOURCE_REV"] = source_rev
 
     # Build dagu command
     dagu_cmd = "dry" if dry_run else "start"

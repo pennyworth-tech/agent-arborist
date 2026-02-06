@@ -515,7 +515,12 @@ def task_pre_sync(ctx: click.Context, task_id: str) -> None:
             raise SystemExit(1)
 
         # Find parent change (either parent task or source_rev)
-        parent_change = _find_parent_change(spec_id, task_path) or source_rev or "main"
+        # Never fall back to "main" - source_rev must be set by DAG run
+        parent_change = _find_parent_change(spec_id, task_path) or source_rev
+        if not parent_change:
+            console.print("[red]Error:[/red] No parent change found and ARBORIST_SOURCE_REV not set")
+            console.print("[dim]Run DAG from a feature branch, not main[/dim]")
+            raise SystemExit(1)
 
         console.print(f"[cyan]Pre-sync for task:[/cyan] {task_id}")
         console.print(f"[dim]Task path:[/dim] {':'.join(task_path)}")
