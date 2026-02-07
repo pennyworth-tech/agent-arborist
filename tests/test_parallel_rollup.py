@@ -1,16 +1,10 @@
 """
-Test for parallel task execution and proper rollup of changes.
+Test for parallel task execution and merge-based rollup.
 
-This test validates that:
-1. Multiple parallel root tasks can write files
-2. Each task's changes are properly captured by jj
-3. All changes roll up into a single commit on the feature branch
-
-The bug this tests for:
-- Tasks write files to workspaces
-- But jj doesn't "see" the changes because no jj command runs after file writes
-- When complete step tries to squash, the change appears empty or the change ID is invalid
-- The rollup fails with "Command returned non-zero exit status 1"
+This test validates the merge-based approach where:
+1. Parallel children each do their work independently
+2. Parent creates a merge commit from all children: `jj new child1 child2 child3`
+3. Conflicts resolved once in the merge, not via rebasing
 
 Run with:
     pytest tests/test_parallel_rollup.py -v -s --tb=short
@@ -19,7 +13,6 @@ To keep the test environment:
     TEST_KEEP_ENV=1 pytest tests/test_parallel_rollup.py -v -s
 """
 
-import json
 import os
 import shutil
 import subprocess
@@ -31,13 +24,9 @@ from agent_arborist.tasks import (
     run_jj,
     create_change,
     get_change_id,
-    get_description,
     describe_change,
-    init_colocated,
-    has_conflicts,
     mark_task_done,
     create_merge_commit,
-    JJResult,
 )
 
 
@@ -65,10 +54,7 @@ KEEP_ENV = os.environ.get("TEST_KEEP_ENV", "0") == "1"
 
 @pytest.fixture
 def jj_repo(tmp_path):
-    """Create a colocated jj+git repo for testing.
-
-    Uses tmp_path for isolation unless TEST_KEEP_ENV is set.
-    """
+    """Create a colocated jj+git repo for testing."""
     if KEEP_ENV:
         repo_path = TEST_DIR
         if repo_path.exists():
@@ -98,13 +84,11 @@ def jj_repo(tmp_path):
         # Configure jj user
         subprocess.run(
             ["jj", "config", "set", "--repo", "user.name", "Test User"],
-            capture_output=True,
-            check=True,
+            capture_output=True, check=True,
         )
         subprocess.run(
             ["jj", "config", "set", "--repo", "user.email", "test@test.com"],
-            capture_output=True,
-            check=True,
+            capture_output=True, check=True,
         )
 
         yield repo_path
@@ -115,116 +99,9 @@ def jj_repo(tmp_path):
             shutil.rmtree(repo_path, ignore_errors=True)
 
 
-@pytest.fixture
-def spec_with_parallel_tasks(jj_repo):
-    """Create a spec with parallel root tasks.
-
-    Structure:
-    - source_rev (main branch)
-      └── TIP (mutable accumulator)
-          ├── T001 (writes file1.txt)
-          ├── T002 (writes file2.txt)
-          └── T003 (writes file3.txt)
-
-    All T00x tasks run in parallel and should roll up into TIP.
-    """
-    spec_id = "test-parallel"
-
-    os.chdir(jj_repo)
-
-    # Create feature branch for the spec
-    subprocess.run(["git", "checkout", "-b", spec_id], capture_output=True, check=True)
-    subprocess.run(["jj", "git", "import"], capture_output=True, check=True)
-
-    # Get the source revision (current branch commit)
-    source_rev = get_change_id("@", jj_repo)
-
-    # Create TIP change (mutable accumulator for root tasks)
-    tip_change = create_change(
-        parent=source_rev,
-        description=f"{spec_id}:TIP",
-        cwd=jj_repo,
-    )
-
-    # Create parallel root task changes
-    task_changes = {}
-    for task_id in ["T001", "T002", "T003"]:
-        change_id = create_change(
-            parent=source_rev,  # All root tasks branch from source
-            description=f"{spec_id}:{task_id}",
-            cwd=jj_repo,
-        )
-        task_changes[task_id] = change_id
-
-    return {
-        "spec_id": spec_id,
-        "source_rev": source_rev,
-        "tip_change": tip_change,
-        "task_changes": task_changes,
-        "repo_path": jj_repo,
-    }
-
-
 # =============================================================================
 # Helper Functions
 # =============================================================================
-
-def simulate_task_execution(task_id: str, change_id: str, repo_path: Path):
-    """Simulate a task writing files without any jj interaction.
-
-    This mimics what happens when Claude runs:
-    1. Task is given a workspace with files
-    2. Task writes/modifies files
-    3. Task exits without running any jj commands
-
-    The bug: jj doesn't know about these file changes unless
-    we explicitly snapshot the working copy.
-    """
-    os.chdir(repo_path)
-
-    # Switch to the task's change
-    run_jj("edit", change_id, cwd=repo_path)
-
-    # Write a file (simulating Claude's work)
-    task_file = repo_path / f"{task_id.lower()}_output.txt"
-    task_file.write_text(f"Output from {task_id}\nGenerated content here.\n")
-
-    # DON'T run any jj commands after writing - this is the bug scenario
-
-
-def simulate_task_execution_with_snapshot(task_id: str, change_id: str, repo_path: Path):
-    """Simulate a task that properly snapshots its changes.
-
-    This is the FIXED version that should work:
-    1. Task writes files
-    2. Before completion, snapshot the working copy
-    """
-    os.chdir(repo_path)
-
-    # Switch to the task's change
-    run_jj("edit", change_id, cwd=repo_path)
-
-    # Write a file
-    task_file = repo_path / f"{task_id.lower()}_output.txt"
-    task_file.write_text(f"Output from {task_id}\nGenerated content here.\n")
-
-    # SNAPSHOT: Run jj status to capture working copy changes
-    # This is the key fix - any jj command triggers a snapshot
-    run_jj("status", cwd=repo_path)
-
-
-def get_file_count_in_change(change_id: str, cwd: Path) -> int:
-    """Count files modified in a change."""
-    result = run_jj(
-        "diff", "-r", change_id, "--stat",
-        cwd=cwd,
-    )
-    if not result.stdout.strip():
-        return 0
-    # Count lines that look like file changes
-    lines = result.stdout.strip().split("\n")
-    return len([l for l in lines if "|" in l])
-
 
 def verify_change_has_content(change_id: str, cwd: Path) -> bool:
     """Verify a change has actual file modifications."""
@@ -237,151 +114,76 @@ def verify_change_has_content(change_id: str, cwd: Path) -> bool:
 
 
 # =============================================================================
-# Tests
+# Tests: Merge-Based Rollup
 # =============================================================================
 
-class TestParallelRollupBug:
-    """Tests that reproduce and verify the parallel rollup bug."""
+class TestMergeBasedRollup:
+    """Tests for the merge-based rollup approach.
 
-    def test_task_changes_not_captured_without_snapshot(self, spec_with_parallel_tasks):
-        """DEMONSTRATES BUG: File changes not captured without jj snapshot.
-
-        This test shows the bug behavior:
-        1. Tasks write files
-        2. No jj snapshot happens
-        3. Changes appear empty in jj
-        """
-        spec = spec_with_parallel_tasks
-        repo_path = spec["repo_path"]
-
-        os.chdir(repo_path)
-
-        # Simulate T001 writing files WITHOUT snapshot
-        simulate_task_execution("T001", spec["task_changes"]["T001"], repo_path)
-
-        # Check: The change should appear empty because jj didn't snapshot
-        # After edit, we're at T001's change
-        current_change = get_change_id("@", repo_path)
-
-        # The file exists on disk
-        assert (repo_path / "t001_output.txt").exists(), "File should exist on disk"
-
-        # But jj might not see it as part of the change yet
-        # (This depends on timing - jj may or may not have snapshotted)
-        # Force a check by looking at the change's diff
-        has_content = verify_change_has_content(current_change, repo_path)
-
-        # Note: This assertion documents the expected buggy behavior
-        # In a properly working system, this should be True
-        # But if the snapshot is missing, it could be False
-        print(f"Change {current_change} has content: {has_content}")
-
-    def test_rollup_fails_with_missing_change(self, spec_with_parallel_tasks):
-        """DEMONSTRATES BUG: Rollup fails when change ID is invalid.
-
-        This simulates the actual error we saw:
-        - complete_task tries to look up a change by ID
-        - The change doesn't exist (was squashed, abandoned, or never valid)
-        - jj log returns non-zero exit status
-
-        Note: jj treats "zzzz..." as a valid (but empty) change ID prefix.
-        To trigger the actual failure, we need an invalid revset like a text ID.
-        The real bug manifests when a change ID becomes stale (e.g., after
-        the change was abandoned or squashed away without its workspace knowing).
-        """
-        spec = spec_with_parallel_tasks
-        repo_path = spec["repo_path"]
-
-        os.chdir(repo_path)
-
-        # Use an invalid revset expression that jj will reject
-        # This mimics what happens when a change ID becomes stale
-        fake_change_id = "stale_change_that_was_abandoned"
-
-        # Try to get description of non-existent change
-        # This should fail - mimicking the bug
-        result = run_jj(
-            "log", "-r", fake_change_id,
-            "--no-graph", "-T", "description",
-            cwd=repo_path,
-            check=False,
-        )
-
-        # This is the error we're seeing
-        assert result.returncode != 0, "Should fail for non-existent change"
-        assert "doesn't exist" in result.stderr or result.returncode == 1
-
-    @pytest.mark.skip(reason="Uses deprecated complete_task - needs update for merge-based approach")
-    def test_complete_task_fails_with_empty_change(self, spec_with_parallel_tasks):
-        """DEPRECATED: This test uses the old squash-based complete_task.
-
-        The merge-based approach doesn't use complete_task anymore.
-        See create_merge_commit and mark_task_done for new approach.
-        """
-        pass
-
-
-class TestParallelRollupFixed:
-    """Tests that verify the FIX for parallel rollup."""
-
-    def test_task_changes_captured_with_snapshot(self, spec_with_parallel_tasks):
-        """VERIFIES FIX: File changes captured when snapshot is triggered.
-
-        This test shows the fixed behavior:
-        1. Tasks write files
-        2. jj snapshot happens (via status, log, etc.)
-        3. Changes are properly captured
-        """
-        spec = spec_with_parallel_tasks
-        repo_path = spec["repo_path"]
-
-        os.chdir(repo_path)
-
-        # Simulate T001 writing files WITH snapshot
-        simulate_task_execution_with_snapshot("T001", spec["task_changes"]["T001"], repo_path)
-
-        # The change should now have content
-        current_change = get_change_id("@", repo_path)
-
-        # File exists
-        assert (repo_path / "t001_output.txt").exists(), "File should exist"
-
-        # AND jj sees it
-        has_content = verify_change_has_content(current_change, repo_path)
-        assert has_content, "Change should have content after snapshot"
-
-    @pytest.mark.skip(reason="Uses deprecated complete_task - needs update for merge-based approach")
-    def test_parallel_tasks_rollup_to_single_commit(self, spec_with_parallel_tasks):
-        """DEPRECATED: Uses the old squash-based complete_task."""
-        pass
-
-    @pytest.mark.skip(reason="Uses deprecated complete_task - needs update for merge-based approach")
-    def test_rollup_preserves_commit_messages(self, spec_with_parallel_tasks):
-        """DEPRECATED: Uses the old squash-based complete_task."""
-        pass
-
-    @pytest.mark.skip(reason="Uses deprecated complete_task - needs update for merge-based approach")
-    def test_export_to_git_single_commit(self, spec_with_parallel_tasks):
-        """DEPRECATED: Uses the old squash-based complete_task."""
-        pass
-
-
-@pytest.mark.skip(reason="Uses deprecated complete_task - needs update for merge-based approach")
-class TestCompleteTaskSnapshotsFix:
-    """DEPRECATED: Tests that verify complete_task properly snapshots before squashing.
-
-    These tests use the old squash-based complete_task approach.
-    The merge-based approach uses mark_task_done and create_merge_commit instead.
+    Instead of squashing children into parents, we:
+    1. Children mark themselves [DONE]
+    2. Parent creates merge: `jj new child1 child2 -m "parent"`
     """
 
-    def test_complete_task_captures_unsnapshotted_files(self, spec_with_parallel_tasks):
-        """DEPRECATED: Uses the old squash-based complete_task."""
-        pass
+    def test_parallel_children_merge_into_parent(self, jj_repo):
+        """
+        Example: Merge-based rollup of parallel children.
 
-    def test_parallel_tasks_complete_without_explicit_snapshot(self, spec_with_parallel_tasks):
-        """DEPRECATED: Uses the old squash-based complete_task."""
-        pass
+        Structure:
+            source_rev (main)
+                ├── T001 (writes file1.txt) [DONE]
+                ├── T002 (writes file2.txt) [DONE]
+                └── ROOT merge (jj new T001 T002)
 
+        Flow:
+        1. Create child changes from source
+        2. Each child writes a file and marks [DONE]
+        3. Parent creates merge commit from all children
+        4. Merge has all children's files
+        """
+        spec_id = "test-merge"
+        os.chdir(jj_repo)
+
+        # Get source revision
+        source_rev = get_change_id("@", jj_repo)
+
+        # Create two parallel child changes
+        t001 = create_change(parent=source_rev, description=f"{spec_id}:T001", cwd=jj_repo)
+        t002 = create_change(parent=source_rev, description=f"{spec_id}:T002", cwd=jj_repo)
+
+        # T001 does its work
+        run_jj("edit", t001, cwd=jj_repo)
+        (jj_repo / "file1.txt").write_text("Content from T001\n")
+        run_jj("status", cwd=jj_repo)  # Snapshot
+        mark_task_done("T001", t001, jj_repo)
+
+        # T002 does its work
+        run_jj("edit", t002, cwd=jj_repo)
+        (jj_repo / "file2.txt").write_text("Content from T002\n")
+        run_jj("status", cwd=jj_repo)  # Snapshot
+        mark_task_done("T002", t002, jj_repo)
+
+        # Parent creates merge from both children
+        merge_change_id = create_merge_commit(
+            parent_changes=[t001, t002],
+            description=f"{spec_id}:ROOT",
+            cwd=jj_repo,
+        )
+
+        assert merge_change_id, "Merge should return a change ID"
+
+        # Verify merge has content from both children
+        run_jj("edit", merge_change_id, cwd=jj_repo)
+
+        assert (jj_repo / "file1.txt").exists(), "Merge should have file1.txt from T001"
+        assert (jj_repo / "file2.txt").exists(), "Merge should have file2.txt from T002"
+        assert (jj_repo / "file1.txt").read_text() == "Content from T001\n"
+        assert (jj_repo / "file2.txt").read_text() == "Content from T002\n"
+
+
+# =============================================================================
+# Tests: Workspace Snapshot Behavior
+# =============================================================================
 
 class TestWorkspaceSnapshotBehavior:
     """Tests to understand jj workspace snapshot behavior."""
@@ -393,11 +195,10 @@ class TestWorkspaceSnapshotBehavior:
         # Write a file without any jj interaction
         (jj_repo / "new_file.txt").write_text("Hello world\n")
 
-        # At this point, jj might not know about the file
         # Run status to trigger snapshot
         result = run_jj("status", cwd=jj_repo)
 
-        # Now jj should see the file as a working copy change
+        # Now jj should see the file
         assert "new_file.txt" in result.stdout
 
     def test_jj_log_triggers_snapshot(self, jj_repo):
@@ -421,14 +222,10 @@ class TestWorkspaceSnapshotBehavior:
         # Create two workspaces
         ws1_path = jj_repo / "ws1"
         ws2_path = jj_repo / "ws2"
-
         ws1_path.mkdir()
         ws2_path.mkdir()
 
-        # Create workspace 1
         run_jj("workspace", "add", str(ws1_path), cwd=jj_repo)
-
-        # Create workspace 2
         run_jj("workspace", "add", str(ws2_path), cwd=jj_repo)
 
         # Write different files in each workspace
@@ -449,10 +246,6 @@ class TestWorkspaceSnapshotBehavior:
         assert "ws2_file.txt" in ws2_diff.stdout
         assert "ws1_file.txt" not in ws2_diff.stdout
 
-
-# =============================================================================
-# Standalone runner
-# =============================================================================
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "-s", "--tb=short"])
