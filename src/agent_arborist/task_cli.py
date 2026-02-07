@@ -24,6 +24,7 @@ from agent_arborist.tasks import (
     is_jj_repo,
     is_colocated,
     get_change_id,
+    get_description,
     create_change,
     create_task_change,
     complete_task,
@@ -43,6 +44,11 @@ from agent_arborist.tasks import (
     build_task_description,
     find_change_by_description,
     get_parent_task_path,
+    # Merge-based rollup functions
+    create_merge_commit,
+    find_completed_children,
+    find_parent_base,
+    find_root_task_changes,
 )
 from agent_arborist.task_state import TaskTree, TaskNode, build_task_tree_from_yaml
 from agent_arborist.home import get_git_root
@@ -173,9 +179,12 @@ def _create_changes_from_tree(
     task_tree: TaskTree,
     source_rev: str,
 ) -> dict:
-    """Create jj changes for all tasks in the tree.
+    """Create jj changes for leaf tasks only.
 
-    Creates changes in topological order with hierarchical descriptions.
+    In the merge-based approach:
+    - Leaf tasks (no children) get changes created here, based on source_rev
+    - Parent tasks get their changes via create-merge during DAG execution
+    - ROOT is created by create-merge when all root tasks complete
 
     Args:
         spec_id: Specification ID
@@ -186,66 +195,50 @@ def _create_changes_from_tree(
         Dict with:
         - verified: list of task IDs whose changes already exist
         - created: list of task IDs for newly created changes
+        - skipped: list of task IDs skipped (parent tasks)
         - errors: list of error messages
     """
     result = {
         "verified": [],
         "created": [],
+        "skipped": [],
         "errors": [],
     }
 
     # Compute task paths
     task_paths = _compute_task_paths(task_tree)
 
-    # Track change IDs as we create/find them
-    change_ids: dict[str, str] = {}
-
     # Process in topological order
     task_order = _topological_sort(task_tree)
 
-    # Create TIP change - mutable accumulator for root tasks to roll up into
-    tip_desc = f"{spec_id}:TIP"
-    existing_tip = find_change_by_description(spec_id, ["TIP"])
-    if existing_tip:
-        tip_change = existing_tip
-        result["verified"].append("TIP")
-    else:
-        tip_change = create_change(parent=source_rev, description=tip_desc)
-        result["created"].append("TIP")
-
     for task_id in task_order:
+        task = task_tree.get_task(task_id)
+        if not task:
+            result["errors"].append(f"{task_id}: Task not found in tree")
+            continue
+
+        # Skip parent tasks - they get merge commits during execution
+        if task.children:
+            result["skipped"].append(task_id)
+            continue
+
         task_path = task_paths[task_id]
 
         # Check if change already exists
         existing = find_change_by_description(spec_id, task_path)
         if existing:
-            change_ids[task_id] = existing
             result["verified"].append(task_id)
             continue
 
-        # Determine parent change
-        task = task_tree.get_task(task_id)
-        if task and task.parent_id:
-            # Child task - parent is the parent task's change
-            if task.parent_id not in change_ids:
-                result["errors"].append(
-                    f"{task_id}: Parent task {task.parent_id} not yet created"
-                )
-                continue
-            parent_change = change_ids[task.parent_id]
-        else:
-            # Root task - parent is TIP (mutable accumulator)
-            parent_change = tip_change
-
-        # Create the change
+        # All leaf tasks are based on source_rev
+        # They work in parallel and get merged by their parent (or ROOT)
         try:
-            new_change_id = create_task_change(
+            create_task_change(
                 spec_id=spec_id,
                 task_id=task_id,
-                parent_change=parent_change,
+                parent_change=source_rev,
                 task_path=task_path,
             )
-            change_ids[task_id] = new_change_id
             result["created"].append(task_id)
         except Exception as e:
             result["errors"].append(f"{task_id}: Failed to create - {e}")
@@ -451,37 +444,44 @@ def task_setup_spec(ctx: click.Context) -> None:
         console.print(f"[dim]Source revision:[/dim] {source_rev}")
         console.print(f"[dim]Tasks:[/dim] {len(task_tree.tasks)}")
 
-        # Create changes with hierarchical descriptions
+        # Create changes for leaf tasks only (merge-based approach)
         result = _create_changes_from_tree(spec_id, task_tree, source_rev)
 
         if result["verified"]:
-            console.print(f"[green]Verified:[/green] {len(result['verified'])} existing changes")
+            console.print(f"[green]Verified:[/green] {len(result['verified'])} existing leaf changes")
         if result["created"]:
-            console.print(f"[green]Created:[/green] {len(result['created'])} new changes")
+            console.print(f"[green]Created:[/green] {len(result['created'])} new leaf changes")
+        if result["skipped"]:
+            console.print(f"[dim]Skipped:[/dim] {len(result['skipped'])} parent tasks (created via merge)")
         if result["errors"]:
             console.print(f"[red]Errors:[/red] {len(result['errors'])}")
             for err in result["errors"]:
                 console.print(f"  - {err}")
             raise SystemExit(1)
 
-        # Validate all changes exist by re-querying each one
+        # Validate all LEAF changes exist by re-querying each one
         task_paths = _compute_task_paths(task_tree)
         missing = []
         for task_id in task_tree.tasks:
+            task = task_tree.get_task(task_id)
+            # Only validate leaf tasks - parents are created via merge
+            if task and task.children:
+                continue
             task_path = task_paths[task_id]
             change_id = find_change_by_description(spec_id, task_path)
             if not change_id:
                 missing.append(f"{task_id} ({':'.join(task_path)})")
 
         if missing:
-            console.print(f"[red]Validation failed:[/red] {len(missing)} changes not found after setup")
+            console.print(f"[red]Validation failed:[/red] {len(missing)} leaf changes not found after setup")
             for m in missing[:10]:  # Show first 10
                 console.print(f"  - {m}")
             if len(missing) > 10:
                 console.print(f"  ... and {len(missing) - 10} more")
             raise SystemExit(1)
 
-        console.print(f"[green]Validated:[/green] All {len(task_tree.tasks)} changes exist")
+        leaf_count = len(result["verified"]) + len(result["created"])
+        console.print(f"[green]Validated:[/green] All {leaf_count} leaf changes exist")
         console.print("[green]Setup complete[/green]")
 
     except Exception as e:
@@ -493,12 +493,16 @@ def task_setup_spec(ctx: click.Context) -> None:
 @click.argument("task_id")
 @click.pass_context
 def task_pre_sync(ctx: click.Context, task_id: str) -> None:
-    """Prepare task for execution by creating/switching workspace and rebasing.
+    """Prepare leaf task for execution by creating/switching workspace and rebasing.
+
+    In the merge-based approach:
+    - Leaf tasks always rebase onto source_rev (parent tasks don't exist yet)
+    - Parent tasks don't use pre-sync - they use create-merge after children complete
 
     This command:
     1. Creates a workspace for the task if needed
     2. Switches to the task's change
-    3. Rebases onto parent to get latest changes
+    3. Rebases onto source_rev
 
     Uses env vars: ARBORIST_SPEC_ID, ARBORIST_TASK_PATH, ARBORIST_SOURCE_REV
     """
@@ -519,24 +523,25 @@ def task_pre_sync(ctx: click.Context, task_id: str) -> None:
             console.print("[red]Error:[/red] No task path available (set ARBORIST_TASK_PATH)")
             raise SystemExit(1)
 
+        if not source_rev:
+            console.print("[red]Error:[/red] No source revision (set ARBORIST_SOURCE_REV)")
+            console.print("[dim]Run DAG from a feature branch, not main[/dim]")
+            raise SystemExit(1)
+
         # Find change ID by hierarchical description
         change_id = find_change_by_description(spec_id, task_path)
         if not change_id:
             console.print(f"[red]Error:[/red] Task change not found for {spec_id}:{':'.join(task_path)}")
             raise SystemExit(1)
 
-        # Find parent change (either parent task or source_rev)
-        # Never fall back to "main" - source_rev must be set by DAG run
-        parent_change = _find_parent_change(spec_id, task_path) or source_rev
-        if not parent_change:
-            console.print("[red]Error:[/red] No parent change found and ARBORIST_SOURCE_REV not set")
-            console.print("[dim]Run DAG from a feature branch, not main[/dim]")
-            raise SystemExit(1)
+        # In merge-based approach, leaf tasks always rebase onto source_rev
+        # Parent tasks are created via create-merge after children complete
+        rebase_target = source_rev
 
         console.print(f"[cyan]Pre-sync for task:[/cyan] {task_id}")
         console.print(f"[dim]Task path:[/dim] {':'.join(task_path)}")
         console.print(f"[dim]Change ID:[/dim] {change_id}")
-        console.print(f"[dim]Parent:[/dim] {parent_change}")
+        console.print(f"[dim]Rebase target:[/dim] {rebase_target}")
 
         # Get workspace path
         workspace_path = get_workspace_path(spec_id, task_id)
@@ -549,7 +554,7 @@ def task_pre_sync(ctx: click.Context, task_id: str) -> None:
         setup_result = setup_task_workspace(
             task_id=task_id,
             change_id=change_id,
-            parent_change=parent_change,
+            parent_change=rebase_target,
             workspace_path=workspace_path,
             cwd=git_root,
         )
@@ -755,18 +760,15 @@ def task_run_test(ctx: click.Context, task_id: str, cmd: str | None) -> None:
 @click.argument("task_id")
 @click.pass_context
 def task_complete(ctx: click.Context, task_id: str) -> None:
-    """Complete a task by squashing into parent.
+    """Mark a task as complete.
 
-    This command:
-    1. Marks the task as done
-    2. Squashes the task's changes into its parent
-    3. The task change becomes empty (but keeps its description)
+    This command marks the task as [DONE] in its description.
+    For the merge-based approach, actual rollup happens via create-merge.
 
-    Uses env vars: ARBORIST_SPEC_ID, ARBORIST_TASK_PATH, ARBORIST_SOURCE_REV
+    Uses env vars: ARBORIST_SPEC_ID, ARBORIST_TASK_PATH
     """
     spec_id = _get_spec_id(ctx)
     task_path = _get_task_path()
-    source_rev = _get_source_rev()
 
     if ctx.obj and ctx.obj.get("echo_for_testing"):
         _echo_command("task complete", spec_id=spec_id, task_id=task_id)
@@ -776,6 +778,19 @@ def task_complete(ctx: click.Context, task_id: str) -> None:
         if not spec_id:
             console.print("[red]Error:[/red] No spec available (set ARBORIST_SPEC_ID)")
             raise SystemExit(1)
+
+        # Handle ROOT completion specially
+        if task_id == "ROOT":
+            console.print(f"[cyan]Completing ROOT:[/cyan] {spec_id}")
+            # ROOT doesn't need marking - finalize handles bookmark/export
+            step_result = CommitResult(
+                success=True,
+                commit_sha="",
+                message="ROOT completed",
+            )
+            _output_result(step_result, ctx)
+            console.print("[green]ROOT completed[/green]")
+            return
 
         if not task_path:
             console.print("[red]Error:[/red] No task path available (set ARBORIST_TASK_PATH)")
@@ -787,50 +802,37 @@ def task_complete(ctx: click.Context, task_id: str) -> None:
             console.print(f"[red]Error:[/red] Task change not found for {spec_id}:{':'.join(task_path)}")
             raise SystemExit(1)
 
-        # Find parent change (parent task only, NOT source_rev)
-        parent_change = _find_parent_change(spec_id, task_path)
+        console.print(f"[cyan]Completing task:[/cyan] {task_id}")
+        console.print(f"[dim]Task path:[/dim] {':'.join(task_path)}")
+        console.print(f"[dim]Change ID:[/dim] {change_id}")
 
-        # Get workspace path (may not exist for completion from merge container)
+        # Get workspace path for describe operation
         workspace_path = get_workspace_path(spec_id, task_id)
         cwd = workspace_path if workspace_path.exists() else None
 
-        if not parent_change:
-            # Root task - find TIP to roll up into
-            parent_change = find_change_by_description(spec_id, ["TIP"])
-            if not parent_change:
-                console.print("[red]Error:[/red] TIP change not found - run setup-spec first")
-                raise SystemExit(1)
-            console.print(f"[cyan]Completing root task:[/cyan] {task_id}")
-            console.print(f"[dim]Task path:[/dim] {':'.join(task_path)}")
-            console.print(f"[dim]Rolling up into TIP:[/dim] {parent_change}")
-        else:
-            console.print(f"[cyan]Completing task:[/cyan] {task_id}")
-            console.print(f"[dim]Task path:[/dim] {':'.join(task_path)}")
-            console.print(f"[dim]Squashing into parent:[/dim] {parent_change}")
-
-        # Squash into parent (works for both root and child tasks)
-        complete_result = complete_task(
-            task_id=task_id,
+        # Mark task as done by updating description
+        mark_result = mark_task_done(
             change_id=change_id,
-            parent_change=parent_change,
+            spec_id=spec_id,
+            task_path=task_path,
             cwd=cwd,
         )
 
-        if complete_result.success:
+        if mark_result.success:
             step_result = CommitResult(
                 success=True,
                 commit_sha="",
-                message=f"Squashed {task_id}",
+                message=f"Marked {task_id} as done",
             )
             _output_result(step_result, ctx)
-            console.print("[green]Task completed and squashed[/green]")
+            console.print("[green]Task marked as complete[/green]")
         else:
             step_result = CommitResult(
                 success=False,
-                error=complete_result.error or "Unknown error",
+                error=mark_result.error or "Unknown error",
             )
             _output_result(step_result, ctx)
-            console.print(f"[red]Failed to complete task:[/red] {complete_result.error}")
+            console.print(f"[red]Failed to complete task:[/red] {mark_result.error}")
             raise SystemExit(1)
 
     except SystemExit:
@@ -841,6 +843,136 @@ def task_complete(ctx: click.Context, task_id: str) -> None:
             error=str(e),
         )
         _output_result(step_result, ctx)
+        console.print(f"[red]Error:[/red] {e}")
+        raise SystemExit(1)
+
+
+@task.command("create-merge")
+@click.argument("task_id")
+@click.pass_context
+def task_create_merge(ctx: click.Context, task_id: str) -> None:
+    """Create a merge commit for a parent task or ROOT.
+
+    For parent tasks: Creates a merge commit with all completed children as parents.
+    For ROOT: Creates a merge commit with all completed root tasks as parents.
+
+    This is the key step in the merge-based rollup approach:
+    - Each parent task becomes a merge commit combining its children
+    - The merge commit's working copy is where the parent does its own work
+    - ROOT is a special case that merges all root tasks for final export
+
+    Uses env vars: ARBORIST_SPEC_ID, ARBORIST_TASK_PATH, ARBORIST_SOURCE_REV
+    """
+    spec_id = _get_spec_id(ctx)
+    task_path = _get_task_path()
+    source_rev = _get_source_rev()
+
+    if ctx.obj and ctx.obj.get("echo_for_testing"):
+        _echo_command("task create-merge", spec_id=spec_id, task_id=task_id)
+        return
+
+    try:
+        if not spec_id:
+            console.print("[red]Error:[/red] No spec available (set ARBORIST_SPEC_ID)")
+            raise SystemExit(1)
+
+        # Get git root for operations
+        git_root = get_git_root()
+
+        if task_id == "ROOT":
+            # ROOT merge: combine all completed root tasks
+            console.print(f"[cyan]Creating ROOT merge for spec:[/cyan] {spec_id}")
+
+            # Find all root task changes
+            root_changes = find_root_task_changes(spec_id, cwd=git_root)
+
+            if not root_changes:
+                console.print("[red]Error:[/red] No completed root tasks found")
+                raise SystemExit(1)
+
+            console.print(f"[dim]Root tasks to merge:[/dim] {len(root_changes)}")
+            for change_id in root_changes:
+                desc = get_description(change_id, cwd=git_root)
+                console.print(f"  - {change_id[:12]}: {desc}")
+
+            # Create the ROOT merge commit
+            root_desc = f"{spec_id}:ROOT"
+            merge_change = create_merge_commit(
+                parent_changes=root_changes,
+                description=root_desc,
+                cwd=git_root,
+            )
+
+            console.print(f"[green]ROOT merge created:[/green] {merge_change}")
+
+            # Create/setup workspace for ROOT
+            workspace_path = get_workspace_path(spec_id, "ROOT")
+            setup_result = setup_task_workspace(
+                task_id="ROOT",
+                change_id=merge_change,
+                parent_change=root_changes[0],  # Just need any parent for workspace
+                workspace_path=workspace_path,
+                cwd=git_root,
+            )
+
+            if not setup_result.success:
+                console.print(f"[red]Error setting up ROOT workspace:[/red] {setup_result.error}")
+                raise SystemExit(1)
+
+            console.print(f"[dim]Workspace:[/dim] {workspace_path}")
+
+        else:
+            # Parent task merge: combine all completed children
+            if not task_path:
+                console.print("[red]Error:[/red] No task path available (set ARBORIST_TASK_PATH)")
+                raise SystemExit(1)
+
+            console.print(f"[cyan]Creating merge for parent task:[/cyan] {task_id}")
+            console.print(f"[dim]Task path:[/dim] {':'.join(task_path)}")
+
+            # Find all completed child changes
+            child_changes = find_completed_children(spec_id, task_path, cwd=git_root)
+
+            if not child_changes:
+                console.print("[red]Error:[/red] No completed children found")
+                raise SystemExit(1)
+
+            console.print(f"[dim]Children to merge:[/dim] {len(child_changes)}")
+            for change_id in child_changes:
+                desc = get_description(change_id, cwd=git_root)
+                console.print(f"  - {change_id[:12]}: {desc}")
+
+            # Create the merge commit for this parent
+            parent_desc = build_task_description(spec_id, task_path)
+            merge_change = create_merge_commit(
+                parent_changes=child_changes,
+                description=f"{parent_desc} [MERGE]",
+                cwd=git_root,
+            )
+
+            console.print(f"[green]Merge created:[/green] {merge_change}")
+
+            # Setup workspace for parent's own work
+            workspace_path = get_workspace_path(spec_id, task_id)
+            setup_result = setup_task_workspace(
+                task_id=task_id,
+                change_id=merge_change,
+                parent_change=child_changes[0],  # Just need any child for workspace
+                workspace_path=workspace_path,
+                cwd=git_root,
+            )
+
+            if not setup_result.success:
+                console.print(f"[red]Error setting up workspace:[/red] {setup_result.error}")
+                raise SystemExit(1)
+
+            console.print(f"[dim]Workspace:[/dim] {workspace_path}")
+
+        console.print("[green]Merge commit created successfully[/green]")
+
+    except SystemExit:
+        raise
+    except Exception as e:
         console.print(f"[red]Error:[/red] {e}")
         raise SystemExit(1)
 

@@ -1524,18 +1524,18 @@ def spec_finalize(ctx: click.Context) -> None:
     git_exported = False
 
     try:
-        # Find TIP change (accumulated work from all root tasks)
-        tip_change = find_change_by_description(spec_id, ["TIP"], cwd=git_root)
-        target_rev = tip_change if tip_change else "@"
+        # Find ROOT change (merge of all root tasks)
+        root_change = find_change_by_description(spec_id, ["ROOT"], cwd=git_root)
+        target_rev = root_change if root_change else "@"
 
-        if tip_change:
+        if root_change:
             if not ctx.obj.get("quiet"):
-                console.print(f"[dim]Found TIP:[/dim] {tip_change}")
+                console.print(f"[dim]Found ROOT:[/dim] {root_change}")
         else:
             if not ctx.obj.get("quiet"):
-                console.print("[yellow]Warning:[/yellow] TIP not found, using @")
+                console.print("[yellow]Warning:[/yellow] ROOT not found, using @")
 
-        # Move the bookmark to TIP (or @ as fallback)
+        # Move the bookmark to ROOT (or @ as fallback)
         result = run_jj(
             "bookmark", "set", source_rev, "-r", target_rev,
             cwd=git_root,

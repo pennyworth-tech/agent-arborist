@@ -101,10 +101,12 @@ class TestJJSetupSpec:
         """Creates changes successfully."""
         runner = CliRunner()
         import os
+        from agent_arborist.task_state import TaskTree, TaskNode
+
         mock_dag_yaml = "name: test\nsteps:\n  - name: T1"
-        mock_task_tree = MagicMock()
-        mock_task_tree.tasks = {"T1": MagicMock(parent_id=None, children=[])}
-        mock_result = {"verified": ["T1"], "created": [], "errors": []}
+        mock_task_tree = TaskTree(spec_id="002-feature")
+        mock_task_tree.tasks["T1"] = TaskNode(task_id="T1", description="Test", parent_id=None, children=[])
+        mock_result = {"verified": ["T1"], "created": [], "skipped": [], "errors": []}
 
         with patch.dict(os.environ, {"ARBORIST_SOURCE_REV": "main"}):
             with patch("agent_arborist.task_cli.is_jj_repo", return_value=True):
@@ -113,7 +115,8 @@ class TestJJSetupSpec:
                         mock_find.return_value = MagicMock(read_text=MagicMock(return_value=mock_dag_yaml))
                         with patch("agent_arborist.task_cli.build_task_tree_from_yaml", return_value=mock_task_tree):
                             with patch("agent_arborist.task_cli._create_changes_from_tree", return_value=mock_result):
-                                result = runner.invoke(task, ["setup-spec"], obj={"spec_id": "002-feature"})
+                                with patch("agent_arborist.task_cli.find_change_by_description", return_value="abc123"):
+                                    result = runner.invoke(task, ["setup-spec"], obj={"spec_id": "002-feature"})
 
         assert result.exit_code == 0
         assert "Verified:" in result.output
@@ -134,7 +137,7 @@ class TestJJPreSync:
         runner = CliRunner()
         result = runner.invoke(task, ["pre-sync", "--help"])
         assert result.exit_code == 0
-        assert "Prepare task for execution" in result.output
+        assert "Prepare leaf task for execution" in result.output
 
     def test_pre_sync_no_spec(self):
         """Errors when no spec available."""
@@ -219,7 +222,7 @@ class TestJJComplete:
         runner = CliRunner()
         result = runner.invoke(task, ["complete", "--help"])
         assert result.exit_code == 0
-        assert "Complete a task" in result.output
+        assert "Mark a task as complete" in result.output
 
     def test_complete_echo_mode(self):
         """Echoes command in test mode."""
