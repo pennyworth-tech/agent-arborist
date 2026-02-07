@@ -931,8 +931,9 @@ def complete_task(
     """Mark task complete and squash into parent.
 
     This:
-    1. Updates description to mark as [DONE]
-    2. Squashes changes into parent
+    1. Snapshots working copy to capture any pending file changes
+    2. Updates description to mark as [DONE]
+    3. Squashes changes into parent
 
     Args:
         task_id: Task identifier
@@ -943,6 +944,12 @@ def complete_task(
     Returns:
         JJResult with operation status
     """
+    # CRITICAL: Snapshot working copy before completing
+    # This ensures any file changes written by the task are captured by jj.
+    # Without this, files written without any jj command may be invisible
+    # to the squash operation, causing rollup failures.
+    run_jj("status", cwd=cwd)
+
     # Get current description and mark as done
     current_desc = get_description(change_id, cwd)
     if "[DONE]" not in current_desc:
