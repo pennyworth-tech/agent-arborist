@@ -16,6 +16,7 @@ Key concepts:
 """
 
 import json
+import os
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -841,8 +842,29 @@ def find_root_task_changes(
 # Workspace Management (for parallel execution)
 # =============================================================================
 
+def get_workspace_base_dir() -> Path:
+    """Get base directory for workspaces.
+
+    Configurable via ARBORIST_WORKSPACE_DIR env var.
+    Default: ~/.arborist/workspaces
+
+    JJ workspaces must be created OUTSIDE the main repo to work correctly.
+    When created inside the repo, files don't materialize properly.
+
+    Returns:
+        Path to workspace base directory
+    """
+    env_dir = os.environ.get("ARBORIST_WORKSPACE_DIR")
+    if env_dir:
+        return Path(env_dir).expanduser()
+    return Path.home() / ".arborist" / "workspaces"
+
+
 def get_workspace_path(spec_id: str, task_id: str) -> Path:
     """Get workspace path for a task.
+
+    Uses ARBORIST_WORKSPACE_DIR if set, otherwise ~/.arborist/workspaces.
+    Includes repo name to avoid conflicts across repos.
 
     Args:
         spec_id: Specification ID
@@ -851,8 +873,9 @@ def get_workspace_path(spec_id: str, task_id: str) -> Path:
     Returns:
         Path to workspace directory
     """
-    arborist_home = get_arborist_home()
-    return arborist_home / "workspaces" / spec_id / task_id
+    base = get_workspace_base_dir()
+    repo_name = get_git_root().name  # Use repo directory name
+    return base / repo_name / spec_id / task_id
 
 
 def list_workspaces(cwd: Path | None = None) -> list[str]:

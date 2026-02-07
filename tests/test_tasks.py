@@ -202,12 +202,16 @@ class TestWorkspaceManagement:
     """Tests for workspace operations."""
 
     def test_get_workspace_path(self, tmp_path, monkeypatch):
-        """Returns correct workspace path."""
+        """Returns correct workspace path using ARBORIST_WORKSPACE_DIR."""
         from agent_arborist import tasks
-        monkeypatch.setattr(tasks, "get_arborist_home", lambda: tmp_path)
+
+        # Mock get_workspace_base_dir to return tmp_path
+        monkeypatch.setattr(tasks, "get_workspace_base_dir", lambda: tmp_path)
+        # Mock get_git_root to return a fake repo path
+        monkeypatch.setattr(tasks, "get_git_root", lambda: Path("/fake/repo"))
 
         path = get_workspace_path("002-feature", "T001")
-        expected = tmp_path / "workspaces" / "002-feature" / "T001"
+        expected = tmp_path / "repo" / "002-feature" / "T001"
         assert path == expected
 
     def test_list_workspaces(self):
