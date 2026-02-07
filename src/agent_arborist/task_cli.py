@@ -823,7 +823,6 @@ def task_create_merge(ctx: click.Context, task_id: str) -> None:
             setup_result = setup_task_workspace(
                 task_id="ROOT",
                 change_id=merge_change,
-                parent_change=root_changes[0],  # Just need any parent for workspace
                 workspace_path=workspace_path,
                 cwd=git_root,
             )
@@ -870,7 +869,6 @@ def task_create_merge(ctx: click.Context, task_id: str) -> None:
             setup_result = setup_task_workspace(
                 task_id=task_id,
                 change_id=merge_change,
-                parent_change=child_changes[0],  # Just need any child for workspace
                 workspace_path=workspace_path,
                 cwd=git_root,
             )
