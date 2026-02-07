@@ -209,14 +209,24 @@ class SubDagBuilder:
         else:
             setup_step = "setup-changes"
 
-        # Root tasks run in PARALLEL (all depend on setup, not each other)
-        # This is the key difference from the old sequential approach
+        # Root tasks: parallel by default, but honor depends_on for sequential deps
         root_task_ids = sorted(task_tree.root_tasks)
         for task_id in root_task_ids:
+            task = task_tree.get_task(task_id)
+
+            # Build depends list - always depends on setup
+            depends = [setup_step]
+
+            # If task has depends_on (sequential dependencies), add those too
+            if task and task.depends_on:
+                for dep_id in task.depends_on:
+                    if dep_id in root_task_ids:
+                        depends.append(f"c-{dep_id}")
+
             steps.append(SubDagStep(
                 name=f"c-{task_id}",
                 call=task_id,
-                depends=[setup_step],  # All depend on setup, not previous task
+                depends=depends,
             ))
 
         # Collect all root task call names for ROOT merge dependency
@@ -318,20 +328,23 @@ class SubDagBuilder:
 
             task_path = task_paths.get(task_id, [task_id])
 
+            # Get predecessor if this task has depends_on (last one wins)
+            predecessor = task.depends_on[-1] if task.depends_on else None
+
             if task_tree.is_leaf(task_id):
-                subdag = self._build_leaf_subdag(task_id, task_path)
+                subdag = self._build_leaf_subdag(task_id, task_path, predecessor)
             else:
-                subdag = self._build_parent_subdag(task_id, task_tree, task_path)
+                subdag = self._build_parent_subdag(task_id, task_tree, task_path, predecessor)
 
             subdags.append(subdag)
 
         return subdags
 
-    def _build_leaf_subdag(self, task_id: str, task_path: list[str]) -> SubDag:
+    def _build_leaf_subdag(self, task_id: str, task_path: list[str], predecessor: str | None = None) -> SubDag:
         """Build a leaf subdag for jj workflow.
 
         Leaf subdags produce a single commit with the task's work:
-        - pre-sync: Setup workspace, rebase onto parent's merge (or source_rev)
+        - pre-sync: Setup workspace (creates change from predecessor or source_rev)
         - container-up: Start container (if enabled)
         - run: Execute AI runner
         - run-test: Run tests
@@ -340,6 +353,11 @@ class SubDagBuilder:
         - cleanup: Remove workspace
 
         The leaf's commit becomes a parent of its parent task's merge commit.
+
+        Args:
+            task_id: Task identifier
+            task_path: Hierarchical path to this task
+            predecessor: If set, this task should be created from the predecessor's merge
         """
 
         def output_var(step: str) -> dict:
@@ -415,9 +433,14 @@ class SubDagBuilder:
             "ARBORIST_SOURCE_REV=${ARBORIST_SOURCE_REV}",
         ]
 
+        # If this task depends on a predecessor, add ARBORIST_PREDECESSOR
+        # This tells pre-sync to create the change from the predecessor's merge
+        if predecessor:
+            env_vars.append(f"ARBORIST_PREDECESSOR={predecessor}")
+
         return SubDag(name=task_id, steps=steps, env=env_vars)
 
-    def _build_parent_subdag(self, task_id: str, task_tree: TaskTree, task_path: list[str]) -> SubDag:
+    def _build_parent_subdag(self, task_id: str, task_tree: TaskTree, task_path: list[str], predecessor: str | None = None) -> SubDag:
         """Build a parent subdag that calls child subdags and creates a merge.
 
         Parent subdags produce a merge commit that combines all children's work
@@ -509,6 +532,11 @@ class SubDagBuilder:
             "ARBORIST_CONTAINER_MODE=${ARBORIST_CONTAINER_MODE}",
             "ARBORIST_SOURCE_REV=${ARBORIST_SOURCE_REV}",
         ]
+
+        # If this task depends on a predecessor, add ARBORIST_PREDECESSOR
+        # This tells pre-sync to create the change from the predecessor's merge
+        if predecessor:
+            env_vars.append(f"ARBORIST_PREDECESSOR={predecessor}")
 
         return SubDag(name=task_id, steps=steps, env=env_vars)
 

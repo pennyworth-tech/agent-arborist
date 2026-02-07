@@ -395,7 +395,13 @@ class TestBuildSimpleDag:
         assert "complete" in step_names
 
     def test_build_simple_dag_parallel_children(self):
-        """Test building DAG with parallel children."""
+        """Test building DAG with parallel children.
+
+        In the merge-based approach:
+        - Children run in PARALLEL (no sync steps between them)
+        - All children call their own subdags
+        - Parent creates merge commit after all children complete
+        """
         from agent_arborist.dag_generator import build_simple_dag
 
         tasks = [
@@ -414,10 +420,16 @@ class TestBuildSimpleDag:
         assert "T002" in calls
         assert "T003" in calls
 
-        # In jj model, children run sequentially with sync steps between them
-        # T002 depends on pre-sync, T003 depends on sync-after-T002
+        # In merge-based model, children run in PARALLEL after setup
+        # No sync steps between children - they all run independently
         call_t002 = next(s for s in t001["steps"] if s.get("call") == "T002")
         call_t003 = next(s for s in t001["steps"] if s.get("call") == "T003")
-        assert call_t002["depends"] == ["pre-sync"]
-        # T003 depends on sync step after T002
-        assert "sync-after-T002" in call_t003["depends"]
+
+        # Both children should NOT have any depends that includes the other
+        # (they run in parallel)
+        t002_deps = call_t002.get("depends", [])
+        t003_deps = call_t003.get("depends", [])
+
+        # Neither should depend on the other
+        assert "c-T002" not in t003_deps or not t003_deps
+        assert "c-T003" not in t002_deps or not t002_deps

@@ -51,13 +51,7 @@ from agent_arborist.tasks import (
     is_jj_repo,
     run_jj,
 )
-from agent_arborist.task_state import (
-    init_task_tree,
-    load_task_tree,
-    update_task_status,
-    get_task_status_summary,
-    build_task_tree_from_yaml,
-)
+from agent_arborist.task_state import build_task_tree_from_yaml
 from agent_arborist.step_results import (
     StepResult,
     PreSyncResult,
