@@ -1,16 +1,17 @@
 """DAG builder for DAGU task execution using Jujutsu (jj).
 
-This module generates DAGU YAML for parallel task execution:
+This module generates DAGU YAML for parallel task execution using
+merge-based rollup (not squash-based).
 
 Key features:
 - Uses jj workspaces for parallel execution
-- Atomic jj operations (no filesystem locks needed)
-- Deterministic squash operations
-- Simple DAG structure
+- Merge commits for parent tasks (one commit per task)
+- Recursive tree structure with ROOT as final merge
+- Each task produces exactly one commit
 
 The generated DAG has this structure:
-- Root DAG: setup-changes -> sequential root task calls
-- Parent subdags: pre-sync -> parallel children -> sync steps -> complete
+- Root DAG: setup-changes -> sequential root task calls -> ROOT merge -> finalize
+- Parent subdags: parallel children -> create-merge -> run -> run-test -> complete
 - Leaf subdags: pre-sync -> container-up -> run -> run-test -> complete
 """
 
@@ -175,10 +176,23 @@ class SubDagBuilder:
         return DagBundle(root=root, subdags=subdags)
 
     def _build_root_dag(self, task_tree: TaskTree) -> SubDag:
-        """Build the root DAG with setup and sequential task calls."""
+        """Build the root DAG with setup, task calls, ROOT merge, and finalize.
+
+        The ROOT task is special - it merges all root-level tasks and handles
+        final integration before exporting to git.
+
+        Structure:
+        1. setup-changes: Create leaf changes only
+        2. Sequential root task calls
+        3. create-merge ROOT: Merge all root tasks
+        4. run ROOT: Final integration work
+        5. run-test ROOT: Full test suite
+        6. finalize: Bookmark + git export
+        7. complete ROOT: Mark done
+        """
         steps: list[SubDagStep] = []
 
-        # First step: setup-changes (creates all changes)
+        # First step: setup-changes (creates leaf changes only)
         steps.append(SubDagStep(
             name="setup-changes",
             command="arborist task setup-spec",
@@ -191,32 +205,63 @@ class SubDagBuilder:
                 command="arborist spec merge-container-up",
                 depends=["setup-changes"],
             ))
-            prev_step = "merge-container-up"
+            setup_step = "merge-container-up"
         else:
-            prev_step = "setup-changes"
+            setup_step = "setup-changes"
 
-        # Get root tasks sorted by ID
+        # Root tasks run in PARALLEL (all depend on setup, not each other)
+        # This is the key difference from the old sequential approach
         root_task_ids = sorted(task_tree.root_tasks)
         for task_id in root_task_ids:
             steps.append(SubDagStep(
                 name=f"c-{task_id}",
                 call=task_id,
-                depends=[prev_step],
+                depends=[setup_step],  # All depend on setup, not previous task
             ))
-            prev_step = f"c-{task_id}"
 
-        # Add finalize step after all tasks complete
+        # Collect all root task call names for ROOT merge dependency
+        root_call_names = [f"c-{tid}" for tid in root_task_ids]
+
+        # ROOT merge: combine all root task merges
+        steps.append(SubDagStep(
+            name="create-merge",
+            command="arborist task create-merge ROOT",
+            depends=root_call_names if root_call_names else [prev_step],
+        ))
+
+        # ROOT's own work (final integration)
+        steps.append(SubDagStep(
+            name="run",
+            command="arborist task run ROOT",
+            depends=["create-merge"],
+        ))
+
+        # Full test suite
+        steps.append(SubDagStep(
+            name="run-test",
+            command="arborist task run-test ROOT",
+            depends=["run"],
+        ))
+
+        # Finalize: bookmark + git export
         steps.append(SubDagStep(
             name="finalize",
             command="arborist spec finalize",
-            depends=[prev_step],
+            depends=["run-test"],
+        ))
+
+        # Complete ROOT
+        steps.append(SubDagStep(
+            name="complete",
+            command="arborist task complete ROOT",
+            depends=["finalize"],
         ))
 
         # Environment variables
-        # ARBORIST_SOURCE_REV is passed through from parent process
         spec_id = self.config.spec_id or self.config.name
         env = [
             f"ARBORIST_SPEC_ID={spec_id}",
+            "ARBORIST_TASK_PATH=ROOT",
             "ARBORIST_CONTAINER_MODE=${ARBORIST_CONTAINER_MODE}",
             "ARBORIST_SOURCE_REV=${ARBORIST_SOURCE_REV}",
         ]
@@ -285,15 +330,16 @@ class SubDagBuilder:
     def _build_leaf_subdag(self, task_id: str, task_path: list[str]) -> SubDag:
         """Build a leaf subdag for jj workflow.
 
-        Leaf subdags have:
-        - pre-sync: Setup workspace and rebase onto parent
+        Leaf subdags produce a single commit with the task's work:
+        - pre-sync: Setup workspace, rebase onto parent's merge (or source_rev)
         - container-up: Start container (if enabled)
         - run: Execute AI runner
         - run-test: Run tests
-        - complete: Mark done and squash into parent
+        - complete: Mark [DONE] (no squash - commit stays as-is)
         - container-down: Stop container (if enabled)
+        - cleanup: Remove workspace
 
-        Note: No retry needed - jj squash is atomic.
+        The leaf's commit becomes a parent of its parent task's merge commit.
         """
 
         def output_var(step: str) -> dict:
@@ -303,7 +349,7 @@ class SubDagBuilder:
 
         steps: list[SubDagStep] = []
 
-        # Pre-sync (creates workspace if needed, rebases onto parent)
+        # Pre-sync (creates workspace, rebases onto parent's completed merge)
         steps.append(SubDagStep(
             name="pre-sync",
             command=build_arborist_command(task_id, "pre-sync"),
@@ -318,7 +364,7 @@ class SubDagBuilder:
                 depends=["pre-sync"],
             ))
 
-        # Run
+        # Run (AI does the task's work)
         steps.append(SubDagStep(
             name="run",
             command=build_arborist_command(task_id, "run"),
@@ -334,7 +380,7 @@ class SubDagBuilder:
             output=output_var("run-test"),
         ))
 
-        # Complete (squash into parent - no retry needed)
+        # Complete (just marks [DONE], no squash)
         steps.append(SubDagStep(
             name="complete",
             command=build_arborist_command(task_id, "complete"),
@@ -350,6 +396,14 @@ class SubDagBuilder:
                 depends=["complete"],
             ))
 
+        # Cleanup workspace
+        steps.append(SubDagStep(
+            name="cleanup",
+            command=build_arborist_command(task_id, "cleanup"),
+            depends=["container-down"] if self._use_containers else ["complete"],
+            output=output_var("cleanup"),
+        ))
+
         # Environment
         spec_id = self.config.spec_id or self.config.name
         task_path_str = ":".join(task_path)  # e.g., "T1:T2:T6"
@@ -364,18 +418,19 @@ class SubDagBuilder:
         return SubDag(name=task_id, steps=steps, env=env_vars)
 
     def _build_parent_subdag(self, task_id: str, task_tree: TaskTree, task_path: list[str]) -> SubDag:
-        """Build a parent subdag that calls child subdags.
+        """Build a parent subdag that calls child subdags and creates a merge.
 
-        Parent subdags have:
-        - pre-sync: Setup workspace
-        - Parallel child calls (all depend on pre-sync)
-        - sync-after-<child> steps to propagate changes
-        - run-test: Integration tests after all children
-        - complete: Final squash into parent
+        Parent subdags produce a merge commit that combines all children's work
+        plus the parent's own work:
 
-        The sync steps are the key innovation for jj:
-        - After each child completes, sync-parent rebases remaining children
-        - This propagates sibling work incrementally
+        1. Children run in parallel (no dependencies between them)
+        2. create-merge: After ALL children complete, create merge commit
+        3. run: Parent does its OWN work in the merge commit
+        4. run-test: Integration tests
+        5. complete: Mark [DONE]
+        6. cleanup: Remove workspace
+
+        The merge commit has all completed children as parents.
         """
 
         def output_var(step: str) -> dict:
@@ -385,13 +440,6 @@ class SubDagBuilder:
 
         steps: list[SubDagStep] = []
 
-        # Pre-sync
-        steps.append(SubDagStep(
-            name="pre-sync",
-            command=build_arborist_command(task_id, "pre-sync"),
-            output=output_var("pre-sync"),
-        ))
-
         # Get children sorted
         task = task_tree.get_task(task_id)
         if not task:
@@ -399,39 +447,43 @@ class SubDagBuilder:
 
         child_ids = sorted(task.children)
 
-        # For jj workflow, we run children sequentially with sync between each
-        # This ensures each child gets the previous child's work
-        prev_dep = "pre-sync"
-
-        for i, child_id in enumerate(child_ids):
-            # Call child
+        # Children run in PARALLEL (no dependencies between them)
+        child_call_names = []
+        for child_id in child_ids:
             call_name = f"c-{child_id}"
+            child_call_names.append(call_name)
             steps.append(SubDagStep(
                 name=call_name,
                 call=child_id,
-                depends=[prev_dep],
+                # No depends - children are independent
             ))
 
-            # Sync after child (rebases remaining children onto updated parent)
-            sync_name = f"sync-after-{child_id}"
-            steps.append(SubDagStep(
-                name=sync_name,
-                command=build_arborist_command(task_id, "sync-parent"),
-                depends=[call_name],
-                output=output_var(f"sync-{child_id}"),
-            ))
+        # Create merge: After ALL children complete
+        # This creates a merge commit with all children as parents
+        steps.append(SubDagStep(
+            name="create-merge",
+            command=build_arborist_command(task_id, "create-merge"),
+            depends=child_call_names,  # Wait for ALL children
+            output=output_var("create-merge"),
+        ))
 
-            prev_dep = sync_name
+        # Parent's OWN work (in the merge commit's working copy)
+        steps.append(SubDagStep(
+            name="run",
+            command=build_arborist_command(task_id, "run"),
+            depends=["create-merge"],
+            output=output_var("run"),
+        ))
 
-        # Run integration tests after all children
+        # Run integration tests
         steps.append(SubDagStep(
             name="run-test",
             command=build_arborist_command(task_id, "run-test"),
-            depends=[prev_dep],
+            depends=["run"],
             output=output_var("run-test"),
         ))
 
-        # Complete (squash into parent)
+        # Complete (just marks [DONE], no squash)
         steps.append(SubDagStep(
             name="complete",
             command=build_arborist_command(task_id, "complete"),
@@ -439,7 +491,7 @@ class SubDagBuilder:
             output=output_var("complete"),
         ))
 
-        # Cleanup
+        # Cleanup workspace
         steps.append(SubDagStep(
             name="cleanup",
             command=build_arborist_command(task_id, "cleanup"),
@@ -454,6 +506,7 @@ class SubDagBuilder:
             f"ARBORIST_SPEC_ID={spec_id}",
             f"ARBORIST_TASK_ID={task_id}",
             f"ARBORIST_TASK_PATH={task_path_str}",
+            "ARBORIST_CONTAINER_MODE=${ARBORIST_CONTAINER_MODE}",
             "ARBORIST_SOURCE_REV=${ARBORIST_SOURCE_REV}",
         ]
 

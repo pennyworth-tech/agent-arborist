@@ -289,11 +289,12 @@ class TestSubDagBuilder:
         leaf = bundle.subdags[0]  # T001 is a leaf
         step_names = [s.name for s in leaf.steps]
 
-        # Should have: pre-sync, run, run-test, complete
+        # Should have: pre-sync, run, run-test, complete, cleanup
         assert "pre-sync" in step_names
         assert "run" in step_names
         assert "run-test" in step_names
         assert "complete" in step_names
+        assert "cleanup" in step_names
 
         # No container steps
         assert "container-up" not in step_names
@@ -334,7 +335,7 @@ class TestSubDagBuilder:
         assert "run-test" in complete_step.depends
 
     def test_build_parent_subdag(self, builder, tree_with_children):
-        """Verifies parent subdag structure."""
+        """Verifies parent subdag structure with merge-based approach."""
         with patch("agent_arborist.dag_builder.should_use_container", return_value=False):
             bundle = builder.build_from_tree(tree_with_children)
 
@@ -342,37 +343,46 @@ class TestSubDagBuilder:
         parent = next(s for s in bundle.subdags if s.name == "T001")
         step_names = [s.name for s in parent.steps]
 
-        # Should have: pre-sync, c-T002, sync-after-T002, c-T003, sync-after-T003, run-test, complete, cleanup
-        assert "pre-sync" in step_names
+        # Merge-based: children run parallel, then create-merge, run, run-test, complete
         assert "c-T002" in step_names
-        assert "sync-after-T002" in step_names
         assert "c-T003" in step_names
-        assert "sync-after-T003" in step_names
+        assert "create-merge" in step_names
+        assert "run" in step_names
         assert "run-test" in step_names
         assert "complete" in step_names
-        assert "cleanup" in step_names
 
-    def test_build_parent_subdag_sequential_children(self, builder, tree_with_children):
-        """Verifies children are called sequentially with sync between."""
+        # No sync-after steps in merge-based approach
+        assert "sync-after-T002" not in step_names
+        assert "sync-after-T003" not in step_names
+        # No pre-sync for parent tasks (they use create-merge instead)
+        assert "pre-sync" not in step_names
+
+    def test_build_parent_subdag_parallel_children(self, builder, tree_with_children):
+        """Verifies children run in parallel, then merge."""
         with patch("agent_arborist.dag_builder.should_use_container", return_value=False):
             bundle = builder.build_from_tree(tree_with_children)
 
         parent = next(s for s in bundle.subdags if s.name == "T001")
 
-        # c-T002 depends on pre-sync
+        # Both children depend only on setup (no dependencies between them)
         c_t002 = next(s for s in parent.steps if s.name == "c-T002")
-        assert "pre-sync" in c_t002.depends
-
-        # sync-after-T002 depends on c-T002
-        sync_t002 = next(s for s in parent.steps if s.name == "sync-after-T002")
-        assert "c-T002" in sync_t002.depends
-
-        # c-T003 depends on sync-after-T002
         c_t003 = next(s for s in parent.steps if s.name == "c-T003")
-        assert "sync-after-T002" in c_t003.depends
+
+        # Children run independently (parallel)
+        assert "c-T003" not in c_t002.depends
+        assert "c-T002" not in c_t003.depends
+
+        # create-merge depends on ALL children completing
+        create_merge = next(s for s in parent.steps if s.name == "create-merge")
+        assert "c-T002" in create_merge.depends
+        assert "c-T003" in create_merge.depends
+
+        # run depends on create-merge
+        run_step = next(s for s in parent.steps if s.name == "run")
+        assert "create-merge" in run_step.depends
 
     def test_build_multiple_root_tasks(self):
-        """Verifies multiple root tasks are handled."""
+        """Verifies multiple root tasks run in parallel with ROOT merge."""
         tree = TaskTree(spec_id="002-feature")
         tree.tasks["T001"] = TaskNode(task_id="T001", description="First root", parent_id=None, children=[])
         tree.tasks["T002"] = TaskNode(task_id="T002", description="Second root", parent_id=None, children=[])
@@ -388,11 +398,25 @@ class TestSubDagBuilder:
         call_steps = [s for s in root.steps if s.call]
         assert len(call_steps) == 2
 
-        # Calls should be sequential
+        # Calls should be PARALLEL (no dependencies between root tasks)
         c_t001 = next(s for s in root.steps if s.name == "c-T001")
         c_t002 = next(s for s in root.steps if s.name == "c-T002")
         assert "setup-changes" in c_t001.depends
-        assert "c-T001" in c_t002.depends
+        assert "setup-changes" in c_t002.depends
+        # Neither depends on the other
+        assert "c-T001" not in c_t002.depends
+        assert "c-T002" not in c_t001.depends
+
+        # ROOT merge step combines all root tasks
+        step_names = [s.name for s in root.steps]
+        assert "create-merge" in step_names
+        create_merge = next(s for s in root.steps if s.name == "create-merge")
+        # create-merge depends on ALL root task calls
+        assert "c-T001" in create_merge.depends
+        assert "c-T002" in create_merge.depends
+
+        # finalize depends on ROOT's run-test
+        assert "finalize" in step_names
 
     def test_build_yaml(self, builder, simple_tree):
         """Builds YAML from task tree."""
@@ -555,7 +579,7 @@ class TestOutputVariables:
         assert run.output == {"name": "T001_RUN_RESULT", "key": "T001_RUN_RESULT"}
 
     def test_parent_output_variables(self):
-        """Verifies parent subdag generates output variables for sync steps."""
+        """Verifies parent subdag generates output variables for create-merge and run steps."""
         tree = TaskTree(spec_id="002-feature")
         tree.tasks["T001"] = TaskNode(task_id="T001", description="Parent", parent_id=None, children=["T002"])
         tree.tasks["T002"] = TaskNode(task_id="T002", description="Child", parent_id="T001", children=[])
@@ -569,8 +593,12 @@ class TestOutputVariables:
 
         parent = next(s for s in bundle.subdags if s.name == "T001")
 
-        sync = next(s for s in parent.steps if s.name == "sync-after-T002")
-        assert sync.output == {"name": "T001_SYNC_T002_RESULT", "key": "T001_SYNC_T002_RESULT"}
+        # Verify create-merge and run have output variables
+        create_merge = next(s for s in parent.steps if s.name == "create-merge")
+        assert create_merge.output == {"name": "T001_CREATE_MERGE_RESULT", "key": "T001_CREATE_MERGE_RESULT"}
+
+        run = next(s for s in parent.steps if s.name == "run")
+        assert run.output == {"name": "T001_RUN_RESULT", "key": "T001_RUN_RESULT"}
 
 
 class TestStepSerialization:

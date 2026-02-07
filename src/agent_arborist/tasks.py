@@ -710,6 +710,195 @@ def rebase_descendants(
 
 
 # =============================================================================
+# Merge Commit Operations (for merge-based rollup)
+# =============================================================================
+
+def create_merge_commit(
+    parent_changes: list[str],
+    description: str,
+    cwd: Path | None = None,
+) -> str:
+    """Create a merge commit with multiple parents.
+
+    This is the core operation for parent task completion in merge-based rollup.
+    The merge commit becomes the parent task's single commit.
+
+    Args:
+        parent_changes: List of change IDs to merge (children's changes)
+        description: Description for the merge commit
+        cwd: Working directory
+
+    Returns:
+        New change ID for the merge commit
+
+    Raises:
+        ValueError: If no parent changes provided
+
+    Example:
+        # T1 creates merge after children T2, T3 complete
+        merge_id = create_merge_commit(
+            [t2_change_id, t3_change_id],
+            "spec:T1",
+            cwd=workspace_path,
+        )
+        # Now working copy is the merge commit
+        # T1's own work goes here
+    """
+    if not parent_changes:
+        raise ValueError("Need at least one parent change to create merge")
+
+    # jj new <parent1> <parent2> ... -m "description"
+    args = ["new"] + parent_changes + ["-m", description]
+    run_jj(*args, cwd=cwd)
+
+    return get_change_id(cwd=cwd)
+
+
+def find_completed_children(
+    spec_id: str,
+    task_path: list[str],
+    cwd: Path | None = None,
+) -> list[str]:
+    """Find all completed child changes for a parent task.
+
+    Searches for changes with descriptions matching the pattern:
+    - Direct children: {spec_id}:{task_path}:{child_id}
+    - Marked as done: contains [DONE]
+    - Excludes grandchildren: {spec_id}:{task_path}:{child}:{grandchild}
+
+    Args:
+        spec_id: Specification ID
+        task_path: Parent's task path (e.g., ["T1"])
+        cwd: Working directory
+
+    Returns:
+        List of change IDs for completed children
+
+    Example:
+        # Find completed children of T1
+        children = find_completed_children("my-spec", ["T1"])
+        # Returns change IDs for T2, T3 if they are children of T1 and marked [DONE]
+    """
+    # Ensure workspace is fresh
+    ensure_workspace_fresh(cwd)
+
+    parent_desc = build_task_description(spec_id, task_path)
+
+    # Direct children that are done
+    # Match: spec:T1:T2 [DONE]
+    # Exclude: spec:T1:T2:T3 (grandchildren)
+    revset = (
+        f'description(glob:"{parent_desc}:*") & '
+        f'~description(glob:"{parent_desc}:*:*") & '
+        f'description("[DONE]") & '
+        f'mutable()'
+    )
+
+    result = run_jj(
+        "log", "-r", revset,
+        "--no-graph", "-T", 'change_id ++ "\\n"',
+        cwd=cwd,
+        check=False,
+    )
+
+    if result.returncode != 0:
+        return []
+
+    return [c.strip() for c in result.stdout.strip().split("\n") if c.strip()]
+
+
+def find_parent_base(
+    spec_id: str,
+    task_path: list[str],
+    source_rev: str,
+    cwd: Path | None = None,
+) -> str:
+    """Find the base to rebase onto before running a task.
+
+    Walks up the task tree looking for completed ancestors. If an ancestor
+    has completed (has a merge commit marked [DONE]), rebase onto that.
+    Otherwise, use source_rev.
+
+    This ensures that sequential phases work correctly - Phase 2's tasks
+    rebase onto Phase 1's completed merge.
+
+    Args:
+        spec_id: Specification ID
+        task_path: Current task's path (e.g., ["Phase2", "T3"])
+        source_rev: Fallback if no completed ancestor found
+        cwd: Working directory
+
+    Returns:
+        Change ID or revset to rebase onto
+
+    Example:
+        # T3 is in Phase2, Phase1 has completed
+        base = find_parent_base("my-spec", ["Phase2", "T3"], "feature-branch")
+        # Returns Phase1's merge if Phase1 is done, otherwise "feature-branch"
+    """
+    # Ensure workspace is fresh
+    ensure_workspace_fresh(cwd)
+
+    # Walk up the tree looking for completed ancestors
+    path = task_path.copy()
+
+    while len(path) > 1:
+        path = path[:-1]  # Parent's path
+        parent_change = find_change_by_description(spec_id, path, cwd)
+        if parent_change:
+            # Check if parent is complete (has merge)
+            desc = get_description(parent_change, cwd)
+            if "[DONE]" in desc:
+                return parent_change
+
+    # No completed ancestor, use source_rev
+    return source_rev
+
+
+def find_root_task_changes(
+    spec_id: str,
+    cwd: Path | None = None,
+) -> list[str]:
+    """Find all completed root task changes for ROOT merge.
+
+    Root tasks are top-level tasks (single-element path like "spec:T1").
+    Returns only those marked [DONE].
+
+    Args:
+        spec_id: Specification ID
+        cwd: Working directory
+
+    Returns:
+        List of change IDs for completed root tasks
+    """
+    # Ensure workspace is fresh
+    ensure_workspace_fresh(cwd)
+
+    # Root tasks have pattern spec:T* but NOT spec:T*:* (which are children)
+    # And they should be marked [DONE]
+    revset = (
+        f'description(glob:"{spec_id}:*") & '
+        f'~description(glob:"{spec_id}:*:*") & '
+        f'~description(glob:"{spec_id}:ROOT*") & '  # Exclude ROOT itself
+        f'~description(glob:"{spec_id}:TIP*") & '  # Exclude legacy TIP
+        f'description("[DONE]") & '
+        f'mutable()'
+    )
+
+    result = run_jj(
+        "log", "-r", revset,
+        "--no-graph", "-T", 'change_id ++ "\\n"',
+        cwd=cwd,
+        check=False,
+    )
+
+    if result.returncode != 0:
+        return []
+
+    return [c.strip() for c in result.stdout.strip().split("\n") if c.strip()]
+
+
+# =============================================================================
 # Workspace Management (for parallel execution)
 # =============================================================================
 

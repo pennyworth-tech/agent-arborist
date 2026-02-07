@@ -40,6 +40,11 @@ from agent_arborist.tasks import (
     restore_operation,
     init_colocated,
     JJNotInstalledError,
+    # Merge-based rollup functions
+    create_merge_commit,
+    find_completed_children,
+    find_parent_base,
+    find_root_task_changes,
 )
 
 
@@ -453,3 +458,115 @@ class TestFindPendingChildren:
             )
             children = find_pending_children("parent")
             assert len(children) == 0
+
+
+class TestMergeBasedRollup:
+    """Tests for merge-based rollup functions."""
+
+    def test_create_merge_commit_success(self):
+        """Creates merge commit with multiple parents."""
+        with patch("agent_arborist.tasks.run_jj") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            with patch("agent_arborist.tasks.get_change_id", return_value="mergechange"):
+                result = create_merge_commit(
+                    parent_changes=["child1", "child2"],
+                    description="spec:T1",
+                )
+                assert result == "mergechange"
+                # Verify jj new was called with both parents
+                mock_run.assert_called_once()
+                args = mock_run.call_args[0]
+                assert "new" in args
+                assert "child1" in args
+                assert "child2" in args
+
+    def test_create_merge_commit_empty_parents(self):
+        """Raises error when no parents provided."""
+        with pytest.raises(ValueError, match="Need at least one parent"):
+            create_merge_commit(parent_changes=[], description="test")
+
+    def test_create_merge_commit_single_parent(self):
+        """Works with single parent (degenerate merge)."""
+        with patch("agent_arborist.tasks.run_jj") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            with patch("agent_arborist.tasks.get_change_id", return_value="mergechange"):
+                result = create_merge_commit(
+                    parent_changes=["child1"],
+                    description="spec:T1",
+                )
+                assert result == "mergechange"
+
+    def test_find_completed_children(self):
+        """Finds completed children of a parent task."""
+        with patch("agent_arborist.tasks.ensure_workspace_fresh"):
+            with patch("agent_arborist.tasks.run_jj") as mock_run:
+                mock_run.return_value = MagicMock(
+                    returncode=0,
+                    stdout="child1change\nchild2change\n",
+                )
+                children = find_completed_children("my-spec", ["T1"])
+                assert len(children) == 2
+                assert "child1change" in children
+                assert "child2change" in children
+
+    def test_find_completed_children_empty(self):
+        """Returns empty list when no completed children."""
+        with patch("agent_arborist.tasks.ensure_workspace_fresh"):
+            with patch("agent_arborist.tasks.run_jj") as mock_run:
+                mock_run.return_value = MagicMock(
+                    returncode=0,
+                    stdout="",
+                )
+                children = find_completed_children("my-spec", ["T1"])
+                assert len(children) == 0
+
+    def test_find_parent_base_with_completed_ancestor(self):
+        """Returns completed ancestor's change."""
+        with patch("agent_arborist.tasks.ensure_workspace_fresh"):
+            with patch("agent_arborist.tasks.find_change_by_description") as mock_find:
+                mock_find.return_value = "parentchange"
+                with patch("agent_arborist.tasks.get_description") as mock_desc:
+                    mock_desc.return_value = "spec:Phase1 [DONE]"
+                    base = find_parent_base(
+                        "my-spec",
+                        ["Phase1", "T2"],
+                        "feature-branch",
+                    )
+                    assert base == "parentchange"
+
+    def test_find_parent_base_no_ancestor(self):
+        """Returns source_rev when no completed ancestor."""
+        with patch("agent_arborist.tasks.ensure_workspace_fresh"):
+            with patch("agent_arborist.tasks.find_change_by_description") as mock_find:
+                mock_find.return_value = None  # No parent found
+                base = find_parent_base(
+                    "my-spec",
+                    ["T1"],  # Root task, no parent
+                    "feature-branch",
+                )
+                assert base == "feature-branch"
+
+    def test_find_root_task_changes(self):
+        """Finds all completed root tasks."""
+        with patch("agent_arborist.tasks.ensure_workspace_fresh"):
+            with patch("agent_arborist.tasks.run_jj") as mock_run:
+                mock_run.return_value = MagicMock(
+                    returncode=0,
+                    stdout="t1change\nt2change\nt3change\n",
+                )
+                roots = find_root_task_changes("my-spec")
+                assert len(roots) == 3
+                assert "t1change" in roots
+                assert "t2change" in roots
+                assert "t3change" in roots
+
+    def test_find_root_task_changes_empty(self):
+        """Returns empty list when no completed root tasks."""
+        with patch("agent_arborist.tasks.ensure_workspace_fresh"):
+            with patch("agent_arborist.tasks.run_jj") as mock_run:
+                mock_run.return_value = MagicMock(
+                    returncode=0,
+                    stdout="",
+                )
+                roots = find_root_task_changes("my-spec")
+                assert len(roots) == 0
