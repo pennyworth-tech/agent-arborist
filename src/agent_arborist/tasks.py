@@ -581,67 +581,6 @@ def _extract_message_from_description(desc: str) -> str:
     return "\n".join(message_lines).strip()
 
 
-def squash_into_parent(
-    child_change: str,
-    parent_change: str,
-    cwd: Path | None = None,
-) -> JJResult:
-    """Squash a child change into its parent, accumulating commit messages.
-
-    This is the primary merge operation in jj - it moves all changes
-    from the child into the parent atomically.
-
-    Commit messages are accumulated: the child's message is appended
-    to the parent's description, prefixed with the child's task ID.
-
-    Args:
-        child_change: Change ID to squash from
-        parent_change: Change ID to squash into
-        cwd: Working directory
-
-    Returns:
-        JJResult with operation status
-    """
-    # Get descriptions from both changes
-    parent_desc = get_description(parent_change, cwd)
-    child_desc = get_description(child_change, cwd)
-
-    # Extract child's task ID and message
-    child_task_id = _extract_task_id_from_description(child_desc)
-    child_message = _extract_message_from_description(child_desc)
-
-    # Build combined description - accumulate child's message into parent
-    if child_message.strip():
-        combined_desc = f"{parent_desc}\n\n[{child_task_id}] {child_message.strip()}"
-    else:
-        combined_desc = parent_desc
-
-    # Squash with combined message (avoids editor)
-    result = run_jj(
-        "squash", "--from", child_change, "--into", parent_change,
-        "-m", combined_desc,
-        cwd=cwd,
-        check=False,
-    )
-
-    success = result.returncode == 0
-
-    # Check if parent now has conflicts
-    conflicts = has_conflicts(parent_change, cwd) if success else False
-
-    message = f"Squashed {child_change} into {parent_change}"
-    if conflicts:
-        message += " (conflicts detected)"
-
-    return JJResult(
-        success=success,
-        message=message if success else "Squash failed",
-        stdout=result.stdout,
-        stderr=result.stderr,
-        error=result.stderr if not success else None,
-    )
-
-
 def rebase_change(
     change: str,
     destination: str,
@@ -1042,7 +981,6 @@ def _copy_gitignored_files(source_root: Path, workspace_path: Path) -> None:
 def setup_task_workspace(
     task_id: str,
     change_id: str,
-    parent_change: str,
     workspace_path: Path,
     cwd: Path | None = None,
 ) -> JJResult:
@@ -1052,12 +990,13 @@ def setup_task_workspace(
     1. Creates workspace if needed
     2. Copies gitignored files (like .env) from git root
     3. Switches workspace to task's change
-    4. Rebases onto parent to get latest work
+
+    Note: No rebasing is done here. Changes are created from the correct
+    effective source (predecessor or source_rev) at pre-sync time.
 
     Args:
         task_id: Task identifier
         change_id: Task's change ID
-        parent_change: Parent's change ID
         workspace_path: Path for workspace
         cwd: Working directory (git root)
 
@@ -1091,63 +1030,15 @@ def setup_task_workspace(
             error=result.stderr,
         )
 
-    # Rebase onto parent to get any sibling work
-    rebase_result = rebase_change(change_id, parent_change, workspace_path)
-
-    # Check for conflicts after rebase
-    conflicts = has_conflicts(change_id, workspace_path)
-
-    message = f"Workspace ready at {workspace_path}"
-    if conflicts:
-        message += " (conflicts detected, may need resolution)"
-
     return JJResult(
         success=True,
-        message=message,
+        message=f"Workspace ready at {workspace_path}",
     )
 
 
 # =============================================================================
 # Task Lifecycle
 # =============================================================================
-
-def complete_task(
-    task_id: str,
-    change_id: str,
-    parent_change: str,
-    cwd: Path | None = None,
-) -> JJResult:
-    """Mark task complete and squash into parent.
-
-    This:
-    1. Snapshots working copy to capture any pending file changes
-    2. Updates description to mark as [DONE]
-    3. Squashes changes into parent
-
-    Args:
-        task_id: Task identifier
-        change_id: Task's change ID
-        parent_change: Parent's change ID
-        cwd: Working directory
-
-    Returns:
-        JJResult with operation status
-    """
-    # CRITICAL: Snapshot working copy before completing
-    # This ensures any file changes written by the task are captured by jj.
-    # Without this, files written without any jj command may be invisible
-    # to the squash operation, causing rollup failures.
-    run_jj("status", cwd=cwd)
-
-    # Get current description and mark as done
-    current_desc = get_description(change_id, cwd)
-    if "[DONE]" not in current_desc:
-        done_desc = current_desc.replace(f":{task_id}", f":{task_id} [DONE]")
-        describe_change(done_desc, change_id, cwd)
-
-    # Squash into parent
-    return squash_into_parent(change_id, parent_change, cwd)
-
 
 def mark_task_done(
     task_id: str,
@@ -1167,93 +1058,6 @@ def mark_task_done(
     if "[DONE]" not in current_desc:
         done_desc = current_desc.replace(f":{task_id}", f":{task_id} [DONE]")
         describe_change(done_desc, change_id, cwd)
-
-
-def sync_parent(
-    parent_change: str,
-    spec_id: str,
-    cwd: Path | None = None,
-) -> dict:
-    """Sync parent after child completion.
-
-    This:
-    1. Checks for conflicts in parent
-    2. Rebases pending children onto updated parent
-
-    Args:
-        parent_change: Parent's change ID
-        spec_id: Specification ID (for querying children)
-        cwd: Working directory
-
-    Returns:
-        Dict with sync status:
-        - conflicts_found: bool
-        - children_rebased: list[str]
-        - needs_resolution: bool
-    """
-    result = {
-        "conflicts_found": False,
-        "children_rebased": [],
-        "needs_resolution": False,
-    }
-
-    # Check for conflicts
-    if has_conflicts(parent_change, cwd):
-        result["conflicts_found"] = True
-        result["needs_resolution"] = True
-
-        # Mark for human review
-        current_desc = get_description(parent_change, cwd)
-        if "[NEEDS_RESOLUTION]" not in current_desc:
-            describe_change(
-                f"{current_desc} [NEEDS_RESOLUTION]",
-                parent_change,
-                cwd,
-            )
-
-    # Find and rebase pending children
-    pending = find_pending_children(parent_change, cwd)
-
-    for child_id in pending:
-        rebase_result = rebase_change(child_id, parent_change, cwd)
-        if rebase_result.success:
-            result["children_rebased"].append(child_id)
-
-    return result
-
-
-def find_pending_children(parent_change: str, cwd: Path | None = None) -> list[str]:
-    """Find pending children of a change.
-
-    Uses revset to find children that:
-    - Are direct children of parent
-    - Are mutable (not published)
-    - Don't have [DONE] in description
-
-    Args:
-        parent_change: Parent's change ID
-        cwd: Working directory
-
-    Returns:
-        List of pending child change IDs
-    """
-    revset = f"children({parent_change}) & mutable() & ~description('[DONE]')"
-
-    result = run_jj(
-        "log", "-r", revset,
-        "--no-graph", "-T", 'change_id ++ "\\n"',
-        cwd=cwd,
-        check=False,
-    )
-
-    if result.returncode != 0:
-        return []
-
-    return [
-        cid.strip()
-        for cid in result.stdout.strip().split("\n")
-        if cid.strip()
-    ]
 
 
 # =============================================================================

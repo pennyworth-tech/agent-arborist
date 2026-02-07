@@ -23,15 +23,12 @@ from agent_arborist.tasks import (
     create_task_change,
     describe_change,
     edit_change,
-    squash_into_parent,
     rebase_change,
     get_workspace_path,
     list_workspaces,
     workspace_exists,
     create_workspace,
-    complete_task,
-    sync_parent,
-    find_pending_children,
+    mark_task_done,
     find_tasks_by_spec,
     find_task_change,
     get_task_status,
@@ -190,26 +187,8 @@ class TestDescribeChange:
             assert result.error == "error"
 
 
-class TestSquashAndRebase:
-    """Tests for squash and rebase operations."""
-
-    def test_squash_into_parent_success(self):
-        """Successfully squashes child into parent."""
-        with patch("agent_arborist.tasks.run_jj") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-            with patch("agent_arborist.tasks.has_conflicts", return_value=False):
-                result = squash_into_parent("child", "parent")
-                assert result.success is True
-                assert "Squashed child into parent" in result.message
-
-    def test_squash_with_conflicts(self):
-        """Detects conflicts after squash."""
-        with patch("agent_arborist.tasks.run_jj") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-            with patch("agent_arborist.tasks.has_conflicts", return_value=True):
-                result = squash_into_parent("child", "parent")
-                assert result.success is True
-                assert "conflicts detected" in result.message
+class TestRebase:
+    """Tests for rebase operations."""
 
     def test_rebase_change_success(self):
         """Successfully rebases change."""
@@ -251,40 +230,6 @@ class TestWorkspaceManagement:
         """Returns False for non-existent workspace."""
         with patch("agent_arborist.tasks.list_workspaces", return_value=["default"]):
             assert workspace_exists("ws-T001") is False
-
-
-class TestTaskLifecycle:
-    """Tests for task lifecycle operations."""
-
-    def test_complete_task(self):
-        """Marks task complete and squashes."""
-        with patch("agent_arborist.tasks.get_description", return_value="spec:123:T001"):
-            with patch("agent_arborist.tasks.describe_change"):
-                with patch("agent_arborist.tasks.squash_into_parent") as mock_squash:
-                    mock_squash.return_value = JJResult(success=True, message="ok")
-                    result = complete_task("T001", "child", "parent")
-                    assert result.success is True
-                    mock_squash.assert_called_once()
-
-    def test_sync_parent_no_conflicts(self):
-        """Syncs parent without conflicts."""
-        with patch("agent_arborist.tasks.has_conflicts", return_value=False):
-            with patch("agent_arborist.tasks.find_pending_children", return_value=["child1"]):
-                with patch("agent_arborist.tasks.rebase_change") as mock_rebase:
-                    mock_rebase.return_value = JJResult(success=True, message="ok")
-                    result = sync_parent("parent", "spec123")
-                    assert result["conflicts_found"] is False
-                    assert "child1" in result["children_rebased"]
-
-    def test_sync_parent_with_conflicts(self):
-        """Syncs parent and detects conflicts."""
-        with patch("agent_arborist.tasks.has_conflicts", return_value=True):
-            with patch("agent_arborist.tasks.get_description", return_value="spec:123:T002"):
-                with patch("agent_arborist.tasks.describe_change"):
-                    with patch("agent_arborist.tasks.find_pending_children", return_value=[]):
-                        result = sync_parent("parent", "spec123")
-                        assert result["conflicts_found"] is True
-                        assert result["needs_resolution"] is True
 
 
 class TestQueryFunctions:
@@ -432,32 +377,6 @@ class TestChangeInfo:
             assert info.author == "test@test.com"
             assert info.is_empty is False
             assert info.has_conflict is False
-
-
-class TestFindPendingChildren:
-    """Tests for find_pending_children."""
-
-    def test_find_pending_children(self):
-        """Finds pending children of a change."""
-        with patch("agent_arborist.tasks.run_jj") as mock_run:
-            mock_run.return_value = MagicMock(
-                returncode=0,
-                stdout="child1\nchild2\n",
-            )
-            children = find_pending_children("parent")
-            assert len(children) == 2
-            assert "child1" in children
-            assert "child2" in children
-
-    def test_find_pending_children_empty(self):
-        """Returns empty list when no children."""
-        with patch("agent_arborist.tasks.run_jj") as mock_run:
-            mock_run.return_value = MagicMock(
-                returncode=0,
-                stdout="",
-            )
-            children = find_pending_children("parent")
-            assert len(children) == 0
 
 
 class TestMergeBasedRollup:

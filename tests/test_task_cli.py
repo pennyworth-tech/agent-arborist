@@ -81,7 +81,7 @@ class TestJJSetupSpec:
         runner = CliRunner()
         result = runner.invoke(task, ["setup-spec", "--help"])
         assert result.exit_code == 0
-        assert "Setup jj changes" in result.output
+        assert "Initialize jj and validate spec for lazy change creation" in result.output
 
     def test_setup_spec_no_spec(self):
         """Errors when no spec available."""
@@ -98,28 +98,24 @@ class TestJJSetupSpec:
         assert "No source revision" in result.output
 
     def test_setup_spec_success(self):
-        """Creates changes successfully."""
+        """Validates spec and initializes jj successfully (no change creation)."""
         runner = CliRunner()
         import os
-        from agent_arborist.task_state import TaskTree, TaskNode
 
         mock_dag_yaml = "name: test\nsteps:\n  - name: T1"
-        mock_task_tree = TaskTree(spec_id="002-feature")
-        mock_task_tree.tasks["T1"] = TaskNode(task_id="T1", description="Test", parent_id=None, children=[])
-        mock_result = {"verified": ["T1"], "created": [], "skipped": [], "errors": []}
 
         with patch.dict(os.environ, {"ARBORIST_SOURCE_REV": "main"}):
             with patch("agent_arborist.task_cli.is_jj_repo", return_value=True):
-                with patch("agent_arborist.task_cli.is_colocated", return_value=False):
+                with patch("agent_arborist.task_cli.is_colocated", return_value=True):  # Already colocated
                     with patch("agent_arborist.task_cli._find_dag_yaml_path") as mock_find:
                         mock_find.return_value = MagicMock(read_text=MagicMock(return_value=mock_dag_yaml))
-                        with patch("agent_arborist.task_cli.build_task_tree_from_yaml", return_value=mock_task_tree):
-                            with patch("agent_arborist.task_cli._create_changes_from_tree", return_value=mock_result):
-                                with patch("agent_arborist.task_cli.find_change_by_description", return_value="abc123"):
-                                    result = runner.invoke(task, ["setup-spec"], obj={"spec_id": "002-feature"})
+                        with patch("agent_arborist.task_cli.run_jj") as mock_run_jj:
+                            mock_run_jj.return_value = MagicMock(returncode=0, stdout="", stderr="")
+                            result = runner.invoke(task, ["setup-spec"], obj={"spec_id": "002-feature"})
 
         assert result.exit_code == 0
-        assert "Verified:" in result.output
+        # With lazy creation, setup-spec just validates - changes created at pre-sync
+        assert "lazily" in result.output.lower() or "setup complete" in result.output.lower()
 
     def test_setup_spec_echo_mode(self):
         """Echoes command in test mode."""
@@ -137,7 +133,7 @@ class TestJJPreSync:
         runner = CliRunner()
         result = runner.invoke(task, ["pre-sync", "--help"])
         assert result.exit_code == 0
-        assert "Prepare leaf task for execution" in result.output
+        assert "Prepare task for execution with lazy change creation" in result.output
 
     def test_pre_sync_no_spec(self):
         """Errors when no spec available."""
@@ -230,24 +226,6 @@ class TestJJComplete:
         result = runner.invoke(task, ["complete", "T001"], obj={"echo_for_testing": True, "spec_id": "002-feature"})
         assert result.exit_code == 0
         assert "ECHO: task complete" in result.output
-
-
-class TestJJSyncParent:
-    """Tests for jj sync-parent command."""
-
-    def test_sync_parent_help(self):
-        """Shows help text."""
-        runner = CliRunner()
-        result = runner.invoke(task, ["sync-parent", "--help"])
-        assert result.exit_code == 0
-        assert "Sync parent task" in result.output
-
-    def test_sync_parent_echo_mode(self):
-        """Echoes command in test mode."""
-        runner = CliRunner()
-        result = runner.invoke(task, ["sync-parent", "T001"], obj={"echo_for_testing": True, "spec_id": "002-feature"})
-        assert result.exit_code == 0
-        assert "ECHO: task sync-parent" in result.output
 
 
 class TestJJCleanup:

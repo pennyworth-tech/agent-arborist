@@ -27,9 +27,7 @@ from agent_arborist.tasks import (
     get_description,
     create_change,
     create_task_change,
-    complete_task,
     mark_task_done,
-    sync_parent,
     get_workspace_path,
     create_workspace,
     setup_task_workspace,
@@ -170,78 +168,6 @@ def _topological_sort(task_tree: TaskTree) -> list[str]:
         task_id = queue.pop(0)
         result.append(task_id)
         queue.extend(children_of.get(task_id, []))
-
-    return result
-
-
-def _create_changes_from_tree(
-    spec_id: str,
-    task_tree: TaskTree,
-    source_rev: str,
-) -> dict:
-    """Create jj changes for leaf tasks only.
-
-    In the merge-based approach:
-    - Leaf tasks (no children) get changes created here, based on source_rev
-    - Parent tasks get their changes via create-merge during DAG execution
-    - ROOT is created by create-merge when all root tasks complete
-
-    Args:
-        spec_id: Specification ID
-        task_tree: TaskTree with all tasks
-        source_rev: Base revision (e.g., "main", branch name)
-
-    Returns:
-        Dict with:
-        - verified: list of task IDs whose changes already exist
-        - created: list of task IDs for newly created changes
-        - skipped: list of task IDs skipped (parent tasks)
-        - errors: list of error messages
-    """
-    result = {
-        "verified": [],
-        "created": [],
-        "skipped": [],
-        "errors": [],
-    }
-
-    # Compute task paths
-    task_paths = _compute_task_paths(task_tree)
-
-    # Process in topological order
-    task_order = _topological_sort(task_tree)
-
-    for task_id in task_order:
-        task = task_tree.get_task(task_id)
-        if not task:
-            result["errors"].append(f"{task_id}: Task not found in tree")
-            continue
-
-        # Skip parent tasks - they get merge commits during execution
-        if task.children:
-            result["skipped"].append(task_id)
-            continue
-
-        task_path = task_paths[task_id]
-
-        # Check if change already exists
-        existing = find_change_by_description(spec_id, task_path)
-        if existing:
-            result["verified"].append(task_id)
-            continue
-
-        # All leaf tasks are based on source_rev
-        # They work in parallel and get merged by their parent (or ROOT)
-        try:
-            create_task_change(
-                spec_id=spec_id,
-                task_id=task_id,
-                parent_change=source_rev,
-                task_path=task_path,
-            )
-            result["created"].append(task_id)
-        except Exception as e:
-            result["errors"].append(f"{task_id}: Failed to create - {e}")
 
     return result
 
@@ -399,10 +325,16 @@ def task_status(ctx: click.Context, task_id: str | None, as_json: bool) -> None:
 @task.command("setup-spec")
 @click.pass_context
 def task_setup_spec(ctx: click.Context) -> None:
-    """Setup jj changes for all tasks in the spec.
+    """Initialize jj and validate spec for lazy change creation.
 
-    Creates all changes from the manifest if they don't exist.
-    This is typically run as the first step in a DAG.
+    With lazy creation, changes are created in pre-sync (not here).
+    This command only:
+    1. Initializes jj in colocated mode if needed
+    2. Syncs jj with git
+    3. Validates the DAG YAML exists (for early failure)
+
+    Lazy creation means each task's change is created at pre-sync time
+    from the correct effective source (predecessor or source_rev).
     """
     spec_id = _get_spec_id(ctx)
     source_rev = _get_source_rev()
@@ -431,7 +363,7 @@ def task_setup_spec(ctx: click.Context) -> None:
             console.print("[dim]Syncing jj with git...[/dim]")
             run_jj("git", "import")
 
-        # Find and parse DAG YAML for task structure
+        # Validate DAG YAML exists (for early failure)
         dag_path = _find_dag_yaml_path(spec_id)
         if not dag_path:
             console.print(f"[red]Error:[/red] DAG YAML not found for {spec_id}")
@@ -440,48 +372,11 @@ def task_setup_spec(ctx: click.Context) -> None:
         dag_yaml = dag_path.read_text()
         task_tree = build_task_tree_from_yaml(spec_id, dag_yaml)
 
-        console.print(f"[cyan]Setting up jj changes for spec:[/cyan] {spec_id}")
+        console.print(f"[cyan]Setup for spec:[/cyan] {spec_id}")
         console.print(f"[dim]Source revision:[/dim] {source_rev}")
         console.print(f"[dim]Tasks:[/dim] {len(task_tree.tasks)}")
-
-        # Create changes for leaf tasks only (merge-based approach)
-        result = _create_changes_from_tree(spec_id, task_tree, source_rev)
-
-        if result["verified"]:
-            console.print(f"[green]Verified:[/green] {len(result['verified'])} existing leaf changes")
-        if result["created"]:
-            console.print(f"[green]Created:[/green] {len(result['created'])} new leaf changes")
-        if result["skipped"]:
-            console.print(f"[dim]Skipped:[/dim] {len(result['skipped'])} parent tasks (created via merge)")
-        if result["errors"]:
-            console.print(f"[red]Errors:[/red] {len(result['errors'])}")
-            for err in result["errors"]:
-                console.print(f"  - {err}")
-            raise SystemExit(1)
-
-        # Validate all LEAF changes exist by re-querying each one
-        task_paths = _compute_task_paths(task_tree)
-        missing = []
-        for task_id in task_tree.tasks:
-            task = task_tree.get_task(task_id)
-            # Only validate leaf tasks - parents are created via merge
-            if task and task.children:
-                continue
-            task_path = task_paths[task_id]
-            change_id = find_change_by_description(spec_id, task_path)
-            if not change_id:
-                missing.append(f"{task_id} ({':'.join(task_path)})")
-
-        if missing:
-            console.print(f"[red]Validation failed:[/red] {len(missing)} leaf changes not found after setup")
-            for m in missing[:10]:  # Show first 10
-                console.print(f"  - {m}")
-            if len(missing) > 10:
-                console.print(f"  ... and {len(missing) - 10} more")
-            raise SystemExit(1)
-
-        leaf_count = len(result["verified"]) + len(result["created"])
-        console.print(f"[green]Validated:[/green] All {leaf_count} leaf changes exist")
+        console.print(f"[dim]Root tasks:[/dim] {len(task_tree.root_tasks)}")
+        console.print("[dim]Changes will be created lazily at pre-sync time[/dim]")
         console.print("[green]Setup complete[/green]")
 
     except Exception as e:
@@ -493,22 +388,28 @@ def task_setup_spec(ctx: click.Context) -> None:
 @click.argument("task_id")
 @click.pass_context
 def task_pre_sync(ctx: click.Context, task_id: str) -> None:
-    """Prepare leaf task for execution by creating/switching workspace and rebasing.
+    """Prepare task for execution with lazy change creation.
 
-    In the merge-based approach:
-    - Leaf tasks always rebase onto source_rev (parent tasks don't exist yet)
-    - Parent tasks don't use pre-sync - they use create-merge after children complete
+    This command implements lazy creation: changes are created at pre-sync time
+    from the correct effective source (predecessor or source_rev).
 
-    This command:
-    1. Creates a workspace for the task if needed
-    2. Switches to the task's change
-    3. Rebases onto source_rev
+    Effective source determination:
+    - If ARBORIST_PREDECESSOR is set, use the predecessor's [DONE] change
+    - Otherwise, use source_rev (the original feature branch)
 
-    Uses env vars: ARBORIST_SPEC_ID, ARBORIST_TASK_PATH, ARBORIST_SOURCE_REV
+    This ensures sequential phases (Phase2 depends on Phase1) are created
+    FROM Phase1's merge commit, not from source_rev.
+
+    Uses env vars:
+    - ARBORIST_SPEC_ID: Spec identifier
+    - ARBORIST_TASK_PATH: Hierarchical task path (e.g., "Phase2:T3")
+    - ARBORIST_SOURCE_REV: Original source revision
+    - ARBORIST_PREDECESSOR: (Optional) Predecessor task to create from
     """
     spec_id = _get_spec_id(ctx)
     task_path = _get_task_path()
     source_rev = _get_source_rev()
+    predecessor = os.environ.get("ARBORIST_PREDECESSOR")
 
     if ctx.obj and ctx.obj.get("echo_for_testing"):
         _echo_command("task pre-sync", spec_id=spec_id, task_id=task_id)
@@ -528,33 +429,47 @@ def task_pre_sync(ctx: click.Context, task_id: str) -> None:
             console.print("[dim]Run DAG from a feature branch, not main[/dim]")
             raise SystemExit(1)
 
-        # Find change ID by hierarchical description
-        change_id = find_change_by_description(spec_id, task_path)
-        if not change_id:
-            console.print(f"[red]Error:[/red] Task change not found for {spec_id}:{':'.join(task_path)}")
-            raise SystemExit(1)
-
-        # In merge-based approach, leaf tasks always rebase onto source_rev
-        # Parent tasks are created via create-merge after children complete
-        rebase_target = source_rev
-
         console.print(f"[cyan]Pre-sync for task:[/cyan] {task_id}")
         console.print(f"[dim]Task path:[/dim] {':'.join(task_path)}")
-        console.print(f"[dim]Change ID:[/dim] {change_id}")
-        console.print(f"[dim]Rebase target:[/dim] {rebase_target}")
+
+        git_root = get_git_root()
+
+        # Determine effective source - DAGU set ARBORIST_PREDECESSOR if we have deps
+        if predecessor:
+            # Query by deterministic description - predecessor is [DONE] (guaranteed by DAGU ordering)
+            effective_source = find_change_by_description(spec_id, [predecessor], git_root)
+            if not effective_source:
+                console.print(f"[red]Error:[/red] Predecessor change not found: {spec_id}:{predecessor}")
+                console.print("[dim]Expected predecessor to be [DONE] before this task runs[/dim]")
+                raise SystemExit(1)
+            console.print(f"[dim]Predecessor:[/dim] {predecessor} -> {effective_source[:12]}")
+        else:
+            effective_source = source_rev
+            console.print(f"[dim]Source rev:[/dim] {effective_source}")
+
+        # LAZY CREATION: Find or create the change from effective_source
+        change_id = find_change_by_description(spec_id, task_path, git_root)
+        if change_id:
+            console.print(f"[dim]Found existing change:[/dim] {change_id[:12]}")
+        else:
+            # Create the change from effective_source
+            change_id = create_task_change(
+                spec_id=spec_id,
+                task_id=task_id,
+                parent_change=effective_source,
+                task_path=task_path,
+                cwd=git_root,
+            )
+            console.print(f"[green]Created change from {effective_source[:12]}:[/green] {change_id[:12]}")
 
         # Get workspace path
         workspace_path = get_workspace_path(spec_id, task_id)
         console.print(f"[dim]Workspace:[/dim] {workspace_path}")
 
-        # Get git root for workspace setup
-        git_root = get_git_root()
-
-        # Setup workspace (creates if needed, switches to change, rebases)
+        # Setup workspace (creates if needed, switches to change - NO REBASE)
         setup_result = setup_task_workspace(
             task_id=task_id,
             change_id=change_id,
-            parent_change=rebase_target,
             workspace_path=workspace_path,
             cwd=git_root,
         )
@@ -967,65 +882,6 @@ def task_create_merge(ctx: click.Context, task_id: str) -> None:
             console.print(f"[dim]Workspace:[/dim] {workspace_path}")
 
         console.print("[green]Merge commit created successfully[/green]")
-
-    except SystemExit:
-        raise
-    except Exception as e:
-        console.print(f"[red]Error:[/red] {e}")
-        raise SystemExit(1)
-
-
-@task.command("sync-parent")
-@click.argument("task_id")
-@click.pass_context
-def task_sync_parent(ctx: click.Context, task_id: str) -> None:
-    """Sync parent task after a child completes.
-
-    This rebases remaining children onto the updated parent.
-    Called after each child task completes in a parent subdag.
-
-    Uses env vars: ARBORIST_SPEC_ID, ARBORIST_TASK_PATH
-    """
-    spec_id = _get_spec_id(ctx)
-    task_path = _get_task_path()
-
-    if ctx.obj and ctx.obj.get("echo_for_testing"):
-        _echo_command("task sync-parent", spec_id=spec_id, task_id=task_id)
-        return
-
-    try:
-        if not spec_id:
-            console.print("[red]Error:[/red] No spec available (set ARBORIST_SPEC_ID)")
-            raise SystemExit(1)
-
-        if not task_path:
-            console.print("[red]Error:[/red] No task path available (set ARBORIST_TASK_PATH)")
-            raise SystemExit(1)
-
-        # Find change ID by hierarchical description
-        change_id = find_change_by_description(spec_id, task_path)
-        if not change_id:
-            console.print(f"[red]Error:[/red] Task change not found for {spec_id}:{':'.join(task_path)}")
-            raise SystemExit(1)
-
-        console.print(f"[cyan]Syncing parent after children:[/cyan] {task_id}")
-        console.print(f"[dim]Task path:[/dim] {':'.join(task_path)}")
-
-        # Sync: rebase remaining children onto parent
-        sync_result = sync_parent(
-            parent_change=change_id,
-            spec_id=spec_id,
-        )
-
-        if sync_result.get("children_rebased"):
-            console.print(f"[green]Rebased children:[/green] {sync_result['children_rebased']}")
-        else:
-            console.print("[dim]No children to rebase[/dim]")
-
-        if sync_result.get("conflicts_found"):
-            console.print("[yellow]Conflicts detected in parent[/yellow]")
-
-        console.print("[green]Sync complete[/green]")
 
     except SystemExit:
         raise
