@@ -790,7 +790,7 @@ def find_completed_children(
     revset = (
         f'description(glob:"{parent_desc}:*") & '
         f'~description(glob:"{parent_desc}:*:*") & '
-        f'description("[DONE]") & '
+        f'description(substring:"[DONE]") & '
         f'mutable()'
     )
 
@@ -881,7 +881,7 @@ def find_root_task_changes(
         f'~description(glob:"{spec_id}:*:*") & '
         f'~description(glob:"{spec_id}:ROOT*") & '  # Exclude ROOT itself
         f'~description(glob:"{spec_id}:TIP*") & '  # Exclude legacy TIP
-        f'description("[DONE]") & '
+        f'description(substring:"[DONE]") & '
         f'mutable()'
     )
 

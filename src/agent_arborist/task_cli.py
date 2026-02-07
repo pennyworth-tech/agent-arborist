@@ -811,14 +811,12 @@ def task_complete(ctx: click.Context, task_id: str) -> None:
         cwd = workspace_path if workspace_path.exists() else None
 
         # Mark task as done by updating description
-        mark_result = mark_task_done(
-            change_id=change_id,
-            spec_id=spec_id,
-            task_path=task_path,
-            cwd=cwd,
-        )
-
-        if mark_result.success:
+        try:
+            mark_task_done(
+                task_id=task_id,
+                change_id=change_id,
+                cwd=cwd,
+            )
             step_result = CommitResult(
                 success=True,
                 commit_sha="",
@@ -826,13 +824,13 @@ def task_complete(ctx: click.Context, task_id: str) -> None:
             )
             _output_result(step_result, ctx)
             console.print("[green]Task marked as complete[/green]")
-        else:
+        except Exception as e:
             step_result = CommitResult(
                 success=False,
-                error=mark_result.error or "Unknown error",
+                error=str(e),
             )
             _output_result(step_result, ctx)
-            console.print(f"[red]Failed to complete task:[/red] {mark_result.error}")
+            console.print(f"[red]Failed to complete task:[/red] {e}")
             raise SystemExit(1)
 
     except SystemExit:
