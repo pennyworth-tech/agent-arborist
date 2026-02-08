@@ -369,20 +369,18 @@ def build_restart_context(
 
 
 def _get_worktree_path(spec_id: str, task_id: str, arborist_home: Path | None = None) -> Path:
-    """Get the worktree path for a task.
+    """Get the workspace path for a task.
 
     Args:
         spec_id: The spec ID
         task_id: The task ID
-        arborist_home: Optional arborist home path (uses ARBORIST_HOME env var if not provided)
+        arborist_home: Unused, kept for backwards compatibility
 
     Returns:
-        Path to the worktree directory
+        Path to the workspace directory
     """
-    if arborist_home is None:
-        arborist_home = Path(os.environ.get("ARBORIST_HOME", ".arborist"))
-
-    return arborist_home / "worktrees" / spec_id / task_id
+    from agent_arborist.tasks import get_workspace_path
+    return get_workspace_path(spec_id, task_id)
 
 
 def verify_step_integrity(

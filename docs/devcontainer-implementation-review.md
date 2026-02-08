@@ -472,13 +472,13 @@ run_cmd = f"arborist task run {task_id}"
 # Relies on ARBORIST_DEFAULT_RUNNER in container environment
 ```
 
-**Option 2: Config file per worktree**
+**Option 2: Config file per workspace**
 ```bash
-# .arborist/worktrees/T001/.arborist-config.json
+# ~/.arborist/workspaces/repo/spec/T001/.arborist-config.json
 {"runner": "opencode", "model": "openai/gpt-4o-mini"}
 
-# Commands read config from worktree
-arborist task run T001  # Reads config from T001's worktree
+# Commands read config from workspace
+arborist task run T001  # Reads config from T001's workspace
 ```
 
 **Option 3: Keep current approach but simplify**

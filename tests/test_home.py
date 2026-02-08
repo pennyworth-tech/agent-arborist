@@ -262,10 +262,11 @@ class TestGitignoreHandling:
 
         assert gitignore.exists()
         content = gitignore.read_text()
-        # Should have ignore rules for data/, prompts/, worktrees/
+        # Should have ignore rules for data/, prompts/, restart-contexts/
+        # Note: worktrees are stored outside the repo (in ~/.arborist/workspaces)
         assert f"{ARBORIST_DIR_NAME}/dagu/data/" in content
         assert f"{ARBORIST_DIR_NAME}/prompts/" in content
-        assert f"{ARBORIST_DIR_NAME}/worktrees/" in content
+        assert f"{ARBORIST_DIR_NAME}/restart-contexts/" in content
 
     def test_appends_to_existing_gitignore(self, git_repo):
         gitignore = git_repo / ".gitignore"

@@ -1,54 +1,57 @@
-# Git and Worktrees
+# Workspaces and Isolation
 
-Git worktrees isolate task execution.
+Arborist uses jj (Jujutsu) workspaces to isolate task execution.
 
-## Worktree Creation
+## Workspace Location
 
-Each task executes in its own worktree:
-
-```
-tree .arborist/worktrees/
-└── 001-my-feature/
-    ├── T001/    # Feature/001-my-feature/T001 branch
-    └── T002/    # Feature/001-my-feature/T002 branch
-```
-
-## Branch Naming
-
-From [`src/agent_arborist/git_tasks.py`](../../src/agent_arborist/git_tasks.py):
+Workspaces are stored outside the repository to avoid conflicts:
 
 ```
-feature/{spec_id}/{task_id}
+~/.arborist/workspaces/
+└── my-project/           # Repository name
+    └── 001-my-feature/   # Spec ID
+        ├── T001/         # Task workspace
+        └── T002/         # Task workspace
 ```
 
-Example: `feature/001-calculator/T001`
+Configure with `ARBORIST_WORKSPACE_DIR` environment variable.
 
-## Worktree Lifecycle
+## Workspace Naming
+
+Each task gets a dedicated jj workspace:
+
+```
+{spec_id}_a_{task_id}
+```
+
+Example: `001-calculator_a_T001`
+
+## Workspace Lifecycle
 
 ```mermaid
 graph TB
-    A[Create Branch] --> B[Create Worktree]
-    B --> C[Sync from Parent]
-    C --> D[Run AI Task]
-    D --> E[Commit Changes]
-    E --> F[Merge to Parent]
-    F --> G[Remove Worktree]
+    A[Create jj Workspace] --> B[Materialize Files]
+    B --> C[Run AI Task]
+    C --> D[Commit Changes]
+    D --> E[Merge to Parent]
+    E --> F[Remove Workspace]
 ```
 
 ## Commands
 
 ```bash
-# Create all branches
-arborist spec branch-create-all 001-feature
+# List workspaces
+jj workspace list
 
-# Manual operations
-git worktree add .arborist/worktrees/001-feature/T001 feature/001-feature/T001
-git worktree remove .arborist/worktrees/001-feature/T001
-git worktree list
+# Manual workspace operations
+jj workspace add ~/.arborist/workspaces/repo/spec/T001 --name spec_a_T001
+jj workspace forget spec_a_T001
 ```
 
-Isolation and Safety
-- Changes isolated to worktree
-- Failed tasks don't affect main
+## Isolation and Safety
+
+- Changes isolated to workspace
+- Failed tasks don't affect main branch
 - Easy rollback per task
-- Clean commit history
+- Atomic merge operations with jj
+- Parallel execution without conflicts

@@ -76,7 +76,8 @@ class TestGenerateGitignoreContent:
         content = generate_gitignore_content()
         assert f"{ARBORIST_DIR_NAME}/dagu/data/" in content
         assert f"{ARBORIST_DIR_NAME}/prompts/" in content
-        assert f"{ARBORIST_DIR_NAME}/worktrees/" in content
+        assert f"{ARBORIST_DIR_NAME}/restart-contexts/" in content
+        # Note: worktrees are stored outside the repo (in ~/.arborist/workspaces)
 
     def test_contains_header_by_default(self):
         content = generate_gitignore_content()

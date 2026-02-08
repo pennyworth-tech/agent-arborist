@@ -449,16 +449,16 @@ arborist dag status 001-calculator
 ls .arborist/dagu/data/dags/001-calculator/
 cat .arborist/dagu/data/dags/001-calculator/latest/stdout.log
 
-# 3. Inspect what the AI did in the worktree
-ls -la .arborist/worktrees/001-calculator/T003/
-cat .arborist/worktrees/001-calculator/T003/src/calculator.py
+# 3. Inspect what the AI did in the workspace
+# Workspaces are in ~/.arborist/workspaces/{repo}/{spec}/{task}/
+ls -la ~/.arborist/workspaces/my-project/001-calculator/T003/
+cat ~/.arborist/workspaces/my-project/001-calculator/T003/src/calculator.py
 
 # 4. Edit the generated code by hand if needed
-# Go to the worktree and fix the code manually
-cd .arborist/worktrees/001-calculator/T003/
-# Make changes, commit them
-git add src/calculator.py
-git commit -m "Fix: Fix bug in calculator"
+# Go to the workspace and fix the code manually
+cd ~/.arborist/workspaces/my-project/001-calculator/T003/
+# Make changes, commit them with jj
+jj describe -m "Fix: Fix bug in calculator"
 
 # 5. Retry the task
 arborist dag run 001-calculator  # This will pick up where it left off
@@ -476,8 +476,9 @@ rm -rf .arborist
 git checkout main
 git branch -D main_a main_a_T001 main_a_T002 main_a_T003 main_a_T004 main_a_T005
 
-# 3. Remove worktrees (Git tracks them separately)
-git worktree prune
+# 3. Remove workspaces and forget jj workspaces
+rm -rf ~/.arborist/workspaces/my-project/001-calculator
+jj workspace forget --all
 
 # 4. Verify clean state
 git status
@@ -568,9 +569,9 @@ git branch
 # The completed code is on the main_a branch
 git checkout main_a
 
-# Or view code from worktrees
-ls .arborist/worktrees/001-calculator/
-cat .arborist/worktrees/001-calculator/T003/src/calculator.py
+# Or view code from workspaces
+ls ~/.arborist/workspaces/my-project/001-calculator/
+cat ~/.arborist/workspaces/my-project/001-calculator/T003/src/calculator.py
 
 # To merge final result to main
 # (After all tasks complete successfully)

@@ -42,14 +42,14 @@ Arborist orchestrates AI agents to complete tasks:
 - **OpenCode** - Fast, efficient code generation
 - **Gemini** - Google's AI for diverse use cases
 
-### Git Worktree Isolation
-Each task runs in its own isolated environment:
+### Workspace Isolation
+Each task runs in its own isolated jj workspace:
 ```
-project/
-├── .arborist/worktrees/001-feature/
-│   ├── T001/  # Isolated workspace for task 1
-│   ├── T002/  # Isolated workspace for task 2
-│   └── T003/  # Isolated workspace for task 3
+~/.arborist/workspaces/{repo}/
+└── 001-feature/
+    ├── T001/  # Isolated workspace for task 1
+    ├── T002/  # Isolated workspace for task 2
+    └── T003/  # Isolated workspace for task 3
 ```
 
 ### DAG Orchestration

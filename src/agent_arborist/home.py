@@ -145,7 +145,7 @@ def _update_gitignore_for_arborist(git_root: Path) -> dict:
     """Update .gitignore with arborist ignore rules.
 
     This function adds rules to ignore specific subdirectories within .arborist/
-    that should not be tracked by git (like data/, prompts/, worktrees/).
+    that should not be tracked by git (like data/, prompts/, restart-contexts/).
 
     The config.json and dagu/dags/ are NOT ignored, so they will be tracked.
 

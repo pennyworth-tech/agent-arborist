@@ -101,13 +101,13 @@ The AI silently fails to `cd` to the worktree, and the merge never happens.
    - `_a` (base branch)
    - `_a_T1`, `_a_T2`, etc. (task branches)
 
-2. **pre-sync** (per task): Creates WORKTREE for task's branch
-   - `.arborist/worktrees/<spec>/T1/` on branch `_a_T1`
-   - `.arborist/worktrees/<spec>/T2/` on branch `_a_T2`
+2. **pre-sync** (per task): Creates WORKSPACE for task's branch
+   - `~/.arborist/workspaces/<repo>/<spec>/T1/` on branch `_a_T1`
+   - `~/.arborist/workspaces/<repo>/<spec>/T2/` on branch `_a_T2`
 
 3. **post-merge** (per task): Merges task branch into parent
-   - T1 → _a (base branch has NO worktree)
-   - T4 → T1 (parent T1 HAS a worktree)
+   - T1 → _a (base branch has NO workspace)
+   - T4 → T1 (parent T1 HAS a workspace)
 
 ### Parallel Execution Model
 
@@ -218,7 +218,7 @@ Rule:
 
 Example:
 ```
-cd .arborist/worktrees/<spec-id>/_merge/<hash>
+cd ~/.arborist/workspaces/<repo>/<spec-id>/_merge/<hash>
 ```
 
 This is valid inside the merge container because it mounts the repo root.
@@ -301,7 +301,7 @@ This keeps the DAG semantics the same, but makes retries cheap and focused.
 ### Files to Modify
 
 1. **`src/agent_arborist/cli.py`** - `task_post_merge` function (~line 2039-2228)
-   - Move temp merge worktrees under `.arborist/worktrees/<spec-id>/_merge/<parent-branch-hash>/`
+   - Move temp merge workspaces under `~/.arborist/workspaces/<repo>/<spec-id>/_merge/<parent-branch-hash>/`
    - Add branch-scoped lock acquisition (per `(spec_id, parent_branch)`)
    - In container mode, use repo-relative `cd` paths in the merge prompt
    - On lock contention, fail fast with a recognizable `LOCK_BUSY` error (to trigger DAGU retry)
