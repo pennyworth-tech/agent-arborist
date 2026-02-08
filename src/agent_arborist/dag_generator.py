@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from agent_arborist.runner import Runner, get_runner, RunnerType, DEFAULT_RUNNER
+from agent_arborist.runner import Runner, get_runner, RunnerType, DAG_DEFAULT_RUNNER, DAG_DEFAULT_MODEL
 from agent_arborist.container_runner import (
     ContainerMode,
     should_use_container,
@@ -265,13 +265,14 @@ class DagGenerator:
     def __init__(
         self,
         runner: Runner | None = None,
-        runner_type: RunnerType = DEFAULT_RUNNER,
+        runner_type: RunnerType = DAG_DEFAULT_RUNNER,
+        model: str = DAG_DEFAULT_MODEL,
         container_mode: ContainerMode = ContainerMode.AUTO,
         repo_path: Path | None = None,
         arborist_config: Any = None,
         arborist_home: Path | None = None,
     ):
-        self.runner = runner or get_runner(runner_type)
+        self.runner = runner or get_runner(runner_type, model)
         self.container_mode = container_mode
         self.repo_path = repo_path
         self.arborist_config = arborist_config
@@ -489,11 +490,12 @@ class DagGenerator:
 def generate_dag(
     spec_content: str,
     dag_name: str,
-    runner_type: RunnerType = DEFAULT_RUNNER,
+    runner_type: RunnerType = DAG_DEFAULT_RUNNER,
+    model: str = DAG_DEFAULT_MODEL,
     timeout: int = 120,
 ) -> GenerationResult:
     """Convenience function to generate a DAG using AI."""
-    generator = DagGenerator(runner_type=runner_type)
+    generator = DagGenerator(runner_type=runner_type, model=model)
     return generator.generate(spec_content, dag_name, timeout)
 
 
