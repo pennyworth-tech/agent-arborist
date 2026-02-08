@@ -47,6 +47,10 @@ from agent_arborist.tasks import (
     find_completed_children,
     find_parent_base,
     find_root_task_changes,
+    # Child task info for merge prompts
+    get_child_task_info,
+    get_conflicting_files,
+    ChildTaskInfo,
 )
 from agent_arborist.task_state import TaskTree, TaskNode, build_task_tree_from_yaml
 from agent_arborist.home import get_git_root
@@ -508,6 +512,152 @@ def task_pre_sync(ctx: click.Context, task_id: str) -> None:
         raise SystemExit(1)
 
 
+def _build_leaf_prompt(spec_id: str, task_id: str, task_path: list[str] | None) -> str:
+    """Build prompt for leaf task (no children, fresh implementation)."""
+    task_path_str = ":".join(task_path) if task_path else task_id
+    return f"""You are implementing task {task_id} for spec {spec_id}.
+
+TASK PATH: {task_path_str}
+
+INSTRUCTIONS:
+1. Read the task specification in the .arborist/specs/{spec_id}/ directory
+2. Find the description for task {task_id}
+3. Implement the task according to the specification
+4. Ensure your changes are complete and tested
+
+When done, your changes will be automatically committed by the arborist system.
+"""
+
+
+def _build_merge_prompt(
+    spec_id: str,
+    task_id: str,
+    task_path: list[str] | None,
+    children: list[ChildTaskInfo],
+    conflicting_files: list[str],
+) -> str:
+    """Build prompt for parent/merge task (children completed, may have conflicts)."""
+    task_path_str = ":".join(task_path) if task_path else task_id
+
+    # Build children summary
+    children_section = "COMPLETED CHILD TASKS:\n"
+    for child in children:
+        children_section += f"\n### {child.task_id}\n"
+        children_section += f"Description: {child.description}\n"
+        if child.files_changed:
+            children_section += "Files changed:\n"
+            for f in child.files_changed:
+                children_section += f"  - {f}\n"
+        else:
+            children_section += "Files changed: (none)\n"
+
+    # Build conflict section
+    if conflicting_files:
+        conflict_section = f"""
+MERGE CONFLICTS DETECTED:
+The following files have conflicts that MUST be resolved:
+{chr(10).join(f"  - {f}" for f in conflicting_files)}
+
+HOW TO RESOLVE:
+1. Open each conflicted file
+2. Look for conflict markers:
+   <<<<<<< (start of first version)
+   ======= (separator)
+   >>>>>>> (end of second version)
+3. Understand what each child task intended
+4. Edit the file to combine both changes correctly
+5. Remove ALL conflict markers
+6. Save the file - jj will automatically detect the resolution
+
+DO NOT proceed with integration until ALL conflicts are resolved.
+"""
+    else:
+        conflict_section = """
+NO MERGE CONFLICTS - children's work merged cleanly.
+"""
+
+    return f"""You are running the MERGE/INTEGRATION step for task {task_id} in spec {spec_id}.
+
+TASK PATH: {task_path_str}
+
+CONTEXT:
+This is a PARENT task. The following child tasks have completed their work
+and their changes have been merged into your working tree.
+
+{children_section}
+{conflict_section}
+YOUR RESPONSIBILITIES:
+1. RESOLVE any merge conflicts first (if present)
+2. INTEGRATE the children's work - ensure features work together
+3. Do any PARENT-LEVEL work described in the task spec
+4. Verify the combined changes are correct
+
+Read the task specification in .arborist/specs/{spec_id}/ for details on what
+task {task_id} should accomplish beyond integrating children's work.
+"""
+
+
+def _build_root_prompt(
+    spec_id: str,
+    children: list[ChildTaskInfo],
+    conflicting_files: list[str],
+) -> str:
+    """Build prompt for ROOT task (final integration of all work)."""
+    # Build children summary
+    children_section = "COMPLETED ROOT-LEVEL TASKS:\n"
+    for child in children:
+        children_section += f"\n### {child.task_id}\n"
+        children_section += f"Description: {child.description}\n"
+        if child.files_changed:
+            children_section += "Files changed:\n"
+            for f in child.files_changed:
+                children_section += f"  - {f}\n"
+        else:
+            children_section += "Files changed: (none)\n"
+
+    # Build conflict section
+    if conflicting_files:
+        conflict_section = f"""
+MERGE CONFLICTS DETECTED:
+The following files have conflicts that MUST be resolved:
+{chr(10).join(f"  - {f}" for f in conflicting_files)}
+
+HOW TO RESOLVE:
+1. Open each conflicted file
+2. Look for conflict markers:
+   <<<<<<< (start of first version)
+   ======= (separator)
+   >>>>>>> (end of second version)
+3. Understand what each task intended
+4. Edit the file to combine all changes correctly
+5. Remove ALL conflict markers
+6. Save the file - jj will automatically detect the resolution
+
+DO NOT proceed until ALL conflicts are resolved.
+"""
+    else:
+        conflict_section = """
+NO MERGE CONFLICTS - all work merged cleanly.
+"""
+
+    return f"""You are running the FINAL INTEGRATION step (ROOT) for spec {spec_id}.
+
+CONTEXT:
+All tasks in the spec have completed. Their work has been merged into your
+working tree for final integration.
+
+{children_section}
+{conflict_section}
+YOUR RESPONSIBILITIES:
+1. RESOLVE any merge conflicts first (if present)
+2. Ensure ALL features work together correctly
+3. Run the full test suite and fix any issues
+4. Verify all spec requirements are met
+
+This is the final step before the changes are exported to git.
+"""
+
+
 @task.command("run")
 @click.argument("task_id")
 @click.option("--timeout", "-t", default=1800, help="Timeout in seconds")
@@ -516,12 +666,13 @@ def task_run(ctx: click.Context, task_id: str, timeout: int) -> None:
     """Execute the AI runner for a task.
 
     Runs the configured AI runner (e.g., Claude Code) in the task's workspace.
-    Uses env vars: ARBORIST_SPEC_ID, ARBORIST_TASK_PATH
+    Uses env vars: ARBORIST_SPEC_ID, ARBORIST_TASK_PATH, ARBORIST_POST_MERGE
     """
     from agent_arborist.runner import get_runner, get_default_runner, get_default_model
 
     spec_id = _get_spec_id(ctx)
     task_path = _get_task_path()
+    is_post_merge = os.environ.get("ARBORIST_POST_MERGE", "").lower() == "true"
 
     if ctx.obj and ctx.obj.get("echo_for_testing"):
         _echo_command("task run", spec_id=spec_id, task_id=task_id, timeout=str(timeout))
@@ -544,6 +695,38 @@ def task_run(ctx: click.Context, task_id: str, timeout: int) -> None:
         if task_path:
             console.print(f"[dim]Task path:[/dim] {':'.join(task_path)}")
         console.print(f"[dim]Workspace:[/dim] {workspace_path}")
+        console.print(f"[dim]Post-merge:[/dim] {is_post_merge}")
+
+        # Get git root for jj operations
+        git_root = get_git_root()
+
+        # Gather child info and conflicts for post-merge tasks
+        children: list[ChildTaskInfo] = []
+        conflicting_files: list[str] = []
+
+        if is_post_merge:
+            # Get conflicts in current workspace
+            conflicting_files = get_conflicting_files(cwd=workspace_path)
+            if conflicting_files:
+                console.print(f"[yellow]Conflicts:[/yellow] {len(conflicting_files)} files")
+                for f in conflicting_files:
+                    console.print(f"  [dim]-[/dim] {f}")
+
+            # Get child task info
+            if task_id == "ROOT":
+                # ROOT merges root-level tasks
+                child_changes = find_root_task_changes(spec_id, cwd=git_root)
+            else:
+                # Parent task merges its children
+                child_changes = find_completed_children(spec_id, task_path or [], cwd=git_root)
+
+            for change_id in child_changes:
+                try:
+                    child_info = get_child_task_info(change_id, cwd=git_root)
+                    children.append(child_info)
+                    console.print(f"  [dim]Child:[/dim] {child_info.task_id} ({len(child_info.files_changed)} files)")
+                except Exception:
+                    pass  # Skip if we can't get info
 
         # Get runner configuration
         runner_type = get_default_runner()
@@ -551,8 +734,13 @@ def task_run(ctx: click.Context, task_id: str, timeout: int) -> None:
 
         runner = get_runner(runner_type, model)
 
-        # TODO: Load task prompt from spec
-        prompt = f"Execute task {task_id} for spec {spec_id}. See the task description in the spec file."
+        # Build appropriate prompt based on task type
+        if task_id == "ROOT":
+            prompt = _build_root_prompt(spec_id, children, conflicting_files)
+        elif is_post_merge:
+            prompt = _build_merge_prompt(spec_id, task_id, task_path, children, conflicting_files)
+        else:
+            prompt = _build_leaf_prompt(spec_id, task_id, task_path)
 
         console.print(f"[dim]Runner:[/dim] {runner_type}")
         console.print(f"[dim]Model:[/dim] {model or 'default'}")

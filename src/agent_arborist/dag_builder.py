@@ -274,6 +274,8 @@ class SubDagBuilder:
             "ARBORIST_TASK_PATH=ROOT",
             "ARBORIST_CONTAINER_MODE=${ARBORIST_CONTAINER_MODE}",
             "ARBORIST_SOURCE_REV=${ARBORIST_SOURCE_REV}",
+            # ROOT runs after create-merge, so AI needs merge-aware prompt
+            "ARBORIST_POST_MERGE=true",
         ]
 
         return SubDag(
@@ -531,6 +533,8 @@ class SubDagBuilder:
             f"ARBORIST_TASK_PATH={task_path_str}",
             "ARBORIST_CONTAINER_MODE=${ARBORIST_CONTAINER_MODE}",
             "ARBORIST_SOURCE_REV=${ARBORIST_SOURCE_REV}",
+            # Parent tasks run after create-merge, so AI needs merge-aware prompt
+            "ARBORIST_POST_MERGE=true",
         ]
 
         # If this task depends on a predecessor, add ARBORIST_PREDECESSOR
