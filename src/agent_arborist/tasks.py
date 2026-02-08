@@ -1029,8 +1029,13 @@ def setup_task_workspace(
     workspace_name = f"ws-{task_id}"
     git_root = cwd or Path.cwd()
 
-    # Create workspace if needed
-    if not workspace_exists(workspace_name, cwd):
+    # Create workspace if needed - check BOTH that jj knows about it AND path exists
+    # (handles case where workspace path changed but old workspace still registered)
+    workspace_path_valid = workspace_path.exists() and (workspace_path / ".jj").exists()
+    if not workspace_path_valid:
+        # Forget old workspace if it exists with different path
+        if workspace_exists(workspace_name, cwd):
+            forget_workspace(workspace_name, cwd)
         result = create_workspace(workspace_path, workspace_name, cwd)
         if not result.success:
             return result
