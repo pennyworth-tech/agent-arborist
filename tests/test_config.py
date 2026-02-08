@@ -1545,14 +1545,12 @@ class TestDagBuilderConfig:
 
     def test_dag_builder_does_not_embed_runner_model(self, tmp_path):
         """DAG builder should NOT embed runner/model - resolved at runtime."""
-        from agent_arborist.dag_builder import DagConfig, SubDagBuilder
-        from agent_arborist.task_spec import TaskSpec, Phase, Task
+        from agent_arborist.dag_builder import DagConfig, SequentialDagBuilder
         from agent_arborist.task_state import TaskTree, TaskNode
 
         arborist_config = ArboristConfig(
             steps={
                 "run": StepConfig(runner="opencode", model="glm-4.7"),
-                "complete": StepConfig(runner="gemini", model="flash"),  # jj uses complete instead of post-merge
             }
         )
 
@@ -1560,40 +1558,26 @@ class TestDagBuilderConfig:
             name="test-spec",
             spec_id="001-test",
             arborist_config=arborist_config,
+            repo_path=tmp_path,
         )
 
-        # Create a simple spec and task tree
-        spec = TaskSpec(
-            project="Test",
-            total_tasks=1,
-            phases=[Phase(name="Phase 1", tasks=[Task(id="T001", description="Test task")])],
-        )
+        # Create a simple task tree
         task_tree = TaskTree(spec_id="001-test")
         task_tree.tasks = {"T001": TaskNode(task_id="T001", description="Test task")}
         task_tree.root_tasks = ["T001"]
 
-        builder = SubDagBuilder(dag_config)
-        bundle = builder.build(spec, task_tree)
+        builder = SequentialDagBuilder(dag_config)
+        bundle = builder.build(task_tree)
 
-        # Find the T001 subdag
-        t001_subdag = next((s for s in bundle.subdags if s.name == "T001"), None)
-        assert t001_subdag is not None
+        # In the new model, leaf tasks are run directly from root DAG
+        # Find the T001 step in root DAG
+        t001_step = next((s for s in bundle.root.steps if s.name == "T001"), None)
+        assert t001_step is not None
 
-        # Verify run step does NOT contain runner/model (resolved at runtime)
-        run_step = next((s for s in t001_subdag.steps if s.name == "run"), None)
-        assert run_step is not None
-        assert run_step.command == "arborist task run T001"
-        assert "--runner" not in run_step.command
-        assert "--model" not in run_step.command
-
-        # Verify complete step does NOT contain runner/model (jj uses complete instead of post-merge)
-        complete_step = next(
-            (s for s in t001_subdag.steps if s.name == "complete"), None
-        )
-        assert complete_step is not None
-        assert complete_step.command == "arborist task complete T001"
-        assert "--runner" not in complete_step.command
-        assert "--model" not in complete_step.command
+        # Verify run command does NOT contain runner/model (resolved at runtime)
+        assert t001_step.command == "arborist task run T001"
+        assert "--runner" not in t001_step.command
+        assert "--model" not in t001_step.command
 
     def test_dag_config_get_step_runner_model_still_works(self, tmp_path):
         """DagConfig.get_step_runner_model() should still resolve for other uses."""

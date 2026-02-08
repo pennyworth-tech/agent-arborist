@@ -53,13 +53,13 @@ class TestEchoForTesting:
         assert result.exit_code == 0
         assert "--echo-for-testing" not in result.output
 
-    def test_echo_task_status(self):
+    def test_echo_task_run(self):
+        """Test echo mode for task run command."""
         runner = CliRunner()
-        result = runner.invoke(main, ["--echo-for-testing", "task", "status"])
+        result = runner.invoke(main, ["--echo-for-testing", "task", "run", "T001"])
         assert result.exit_code == 0
-        assert "ECHO: task status" in result.output
-        assert "spec_id=" in result.output
-        assert "task_id=all" in result.output
+        assert "ECHO: task run" in result.output
+        assert "task_id=T001" in result.output
 
     def test_echo_spec_dag_show(self):
         runner = CliRunner()
@@ -77,16 +77,17 @@ class TestEchoForTesting:
         assert "no_ai=True" in result.output
 
     def test_echo_standard_fields_first(self):
-        """spec_id and task_id should always come first in echo output."""
+        """task_id should come first after ECHO: prefix in echo output."""
         runner = CliRunner()
-        result = runner.invoke(main, ["--echo-for-testing", "task", "status", "T001"])
+        result = runner.invoke(main, ["--echo-for-testing", "task", "run", "T001"])
         assert result.exit_code == 0
         output = result.output
-        # spec_id should come before task_id, which should come before other fields
-        spec_pos = output.find("spec_id=")
-        task_pos = output.find("task_id=")
-        json_pos = output.find("json=")
-        assert spec_pos < task_pos < json_pos, f"Fields out of order: {output}"
+        # task_id should be present and come after ECHO:
+        task_pos = output.find("task_id=T001")
+        echo_pos = output.find("ECHO:")
+        assert echo_pos >= 0, f"ECHO: not found in: {output}"
+        assert task_pos >= 0, f"task_id=T001 not found in: {output}"
+        assert echo_pos < task_pos, f"Fields out of order: {output}"
 
 
 class TestDoctorCommand:
@@ -174,7 +175,7 @@ class TestSpecBranchCommands:
         result = runner.invoke(main, ["spec", "branch-create-all"])
         assert result.exit_code != 0
         assert "DEPRECATED" in result.output
-        assert "jj workflow" in result.output
+        assert "dag run" in result.output
 
     def test_spec_branch_cleanup_all_help(self):
         runner = CliRunner()
@@ -193,57 +194,32 @@ class TestSpecBranchCommands:
 
 class TestTaskCommands:
     def test_task_group_help(self):
+        """Task group shows available commands."""
         runner = CliRunner()
         result = runner.invoke(main, ["task", "--help"])
         assert result.exit_code == 0
         assert "status" in result.output
-        assert "pre-sync" in result.output
         assert "run" in result.output
         assert "run-test" in result.output
-        assert "complete" in result.output  # jj uses complete instead of post-merge
-        assert "cleanup" in result.output   # jj uses cleanup instead of post-cleanup
+        assert "list" in result.output
 
-    def test_task_pre_sync_requires_spec(self):
-        """pre-sync requires spec to be available."""
-        runner = CliRunner()
-        result = runner.invoke(main, ["task", "pre-sync", "T001"])
-        assert result.exit_code != 0
-        assert "No spec available" in result.output
-
-    def test_task_run_requires_spec(self):
-        """run requires spec to be available."""
-        runner = CliRunner()
-        result = runner.invoke(main, ["task", "run", "T001"])
-        assert result.exit_code != 0
-        assert "No spec available" in result.output
-
-    def test_task_status_requires_spec(self):
-        """status requires a spec to be available (via context or --spec)."""
+    def test_task_status_requires_task_id(self):
+        """status requires a task_id argument."""
         runner = CliRunner()
         result = runner.invoke(main, ["task", "status"])
-        assert result.exit_code != 0
-        assert "No spec available" in result.output
+        assert result.exit_code != 0  # Missing required argument
 
-    def test_task_run_test_requires_spec(self):
-        """run-test requires spec to be available."""
+    def test_task_run_requires_task_id(self):
+        """run requires a task_id argument."""
         runner = CliRunner()
-        result = runner.invoke(main, ["task", "run-test", "T001"])
-        assert result.exit_code != 0
-        assert "No spec available" in result.output
+        result = runner.invoke(main, ["task", "run"])
+        assert result.exit_code != 0  # Missing required argument
 
-    def test_task_complete_requires_spec(self):
-        """complete requires spec to be available."""
+    def test_task_run_test_requires_task_id(self):
+        """run-test requires a task_id argument."""
         runner = CliRunner()
-        result = runner.invoke(main, ["task", "complete", "T001"])
-        assert result.exit_code != 0
-        assert "No spec available" in result.output
-
-    def test_task_cleanup_requires_spec(self):
-        """cleanup requires spec to be available."""
-        runner = CliRunner()
-        result = runner.invoke(main, ["task", "cleanup", "T001"])
-        assert result.exit_code != 0
-        assert "No spec available" in result.output
+        result = runner.invoke(main, ["task", "run-test"])
+        assert result.exit_code != 0  # Missing required argument
 
 
 class TestSpecCommands:

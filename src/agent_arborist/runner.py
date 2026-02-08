@@ -282,3 +282,92 @@ def get_runner(runner_type: RunnerType | None = None, model: str | None = None) 
         raise ValueError(f"Unknown runner type: {resolved_runner}")
 
     return runners[resolved_runner](model=resolved_model)
+
+
+@dataclass
+class AITaskResult:
+    """Result from running an AI task."""
+
+    success: bool
+    output: str = ""
+    error: str | None = None
+    summary: str | None = None
+    duration_seconds: float | None = None
+
+
+def run_ai_task(
+    prompt: str,
+    runner: RunnerType | None = None,
+    model: str | None = None,
+    cwd: Path | None = None,
+    timeout: int = 1800,
+    use_container: bool = False,
+) -> AITaskResult:
+    """Run an AI task using the specified runner.
+
+    This is the main entry point for executing AI tasks.
+
+    Args:
+        prompt: The task prompt to execute
+        runner: Runner type to use (claude, opencode, gemini)
+        model: Model to use
+        cwd: Working directory for the AI to explore
+        timeout: Timeout in seconds
+        use_container: Whether to use container execution
+
+    Returns:
+        AITaskResult with success status and details
+    """
+    import time
+
+    start_time = time.time()
+
+    try:
+        runner_instance = get_runner(runner, model)
+
+        # Get container command prefix if needed
+        container_cmd_prefix = None
+        if use_container and cwd:
+            from agent_arborist.container_runner import get_devcontainer_exec_prefix
+
+            container_cmd_prefix = get_devcontainer_exec_prefix(cwd)
+
+        result = runner_instance.run(
+            prompt=prompt,
+            timeout=timeout,
+            cwd=cwd,
+            container_cmd_prefix=container_cmd_prefix,
+        )
+
+        duration = time.time() - start_time
+
+        if result.success:
+            # Try to extract a summary from the output (first non-empty line)
+            summary = None
+            for line in result.output.split("\n"):
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    summary = line[:200]  # Truncate long summaries
+                    break
+
+            return AITaskResult(
+                success=True,
+                output=result.output,
+                summary=summary,
+                duration_seconds=duration,
+            )
+        else:
+            return AITaskResult(
+                success=False,
+                output=result.output,
+                error=result.error,
+                duration_seconds=duration,
+            )
+
+    except Exception as e:
+        duration = time.time() - start_time
+        return AITaskResult(
+            success=False,
+            error=str(e),
+            duration_seconds=duration,
+        )

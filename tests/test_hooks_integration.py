@@ -16,7 +16,7 @@ from click.testing import CliRunner
 
 from agent_arborist.cli import main
 from agent_arborist.config import ArboristConfig, HooksConfig, HookInjection, StepDefinition
-from agent_arborist.dag_builder import DagConfig, SubDagBuilder
+from agent_arborist.dag_builder import DagConfig, SequentialDagBuilder
 
 
 class TestHooksWithDagBuilder:

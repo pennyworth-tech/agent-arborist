@@ -1,0 +1,18 @@
+# Container-based Workflow
+# Using a container for all steps
+
+description: Run workflow steps in a Python container
+
+container:
+  image: python:3.13
+  volumes:
+    - /tmp/data:/data
+
+steps:
+  # write data to a file
+  - |
+    python -c "with open('/data/output.txt', 'w') as f: f.write('Hello from Dagu!')"
+
+  # read data from the file
+  - |
+    python -c "with open('/data/output.txt') as f: print(f.read())"

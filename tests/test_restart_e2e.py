@@ -81,6 +81,13 @@ def git_repo(tmp_path):
     result = cli_runner.invoke(main, ["init"])
     assert result.exit_code == 0, f"Init failed: {result.output}"
 
+    # Create and checkout feature branch (required for dag run in sequential model)
+    subprocess.run(
+        ["git", "checkout", "-b", "feature-test"],
+        capture_output=True,
+        check=True,
+    )
+
     yield tmp_path
     os.chdir(original_cwd)
 

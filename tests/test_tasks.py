@@ -1,4 +1,4 @@
-"""Tests for tasks module."""
+"""Tests for tasks module (git-based sequential execution)."""
 
 import subprocess
 from pathlib import Path
@@ -7,489 +7,417 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from agent_arborist.tasks import (
-    JJResult,
-    ChangeInfo,
-    TaskChange,
-    is_jj_installed,
-    is_jj_repo,
-    is_colocated,
-    run_jj,
-    get_change_id,
-    get_commit_id,
-    get_change_info,
-    get_description,
-    has_conflicts,
-    create_change,
-    create_task_change,
-    describe_change,
-    edit_change,
-    rebase_change,
-    get_workspace_path,
-    list_workspaces,
-    workspace_exists,
-    create_workspace,
-    mark_task_done,
-    find_tasks_by_spec,
-    find_task_change,
-    get_task_status,
-    get_operation_log,
-    undo_operation,
-    restore_operation,
-    init_colocated,
-    JJNotInstalledError,
-    # Merge-based rollup functions
-    create_merge_commit,
-    find_completed_children,
-    find_parent_base,
-    find_root_task_changes,
+    GitResult,
+    run_git,
+    is_git_repo,
+    get_current_branch,
+    get_current_commit,
+    get_short_commit,
+    has_uncommitted_changes,
+    get_changed_files,
+    stage_all,
+    commit,
+    stage_and_commit,
+    create_branch,
+    checkout_branch,
+    push_branch,
+    get_commit_log,
+    get_diff_stat,
+    count_changed_files,
+    build_commit_message,
+    commit_task,
+    detect_test_command,
+    run_tests,
 )
 
 
-class TestJJInstallation:
-    """Tests for jj installation detection."""
+class TestGitResult:
+    """Tests for GitResult dataclass."""
 
-    def test_is_jj_installed_true(self):
-        """Returns True when jj is available."""
+    def test_success_result(self):
+        """Creates a success result."""
+        result = GitResult(
+            success=True,
+            message="Committed",
+            stdout="output",
+            stderr="",
+        )
+        assert result.success is True
+        assert result.message == "Committed"
+        assert result.error is None
+
+    def test_failure_result(self):
+        """Creates a failure result."""
+        result = GitResult(
+            success=False,
+            message="Failed",
+            error="Something went wrong",
+        )
+        assert result.success is False
+        assert result.error == "Something went wrong"
+
+
+class TestRunGit:
+    """Tests for run_git helper function."""
+
+    def test_run_git_success(self):
+        """Runs git command successfully."""
         with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0)
-            assert is_jj_installed() is True
-
-    def test_is_jj_installed_false(self):
-        """Returns False when jj is not found."""
-        with patch("subprocess.run") as mock_run:
-            mock_run.side_effect = FileNotFoundError()
-            assert is_jj_installed() is False
-
-
-class TestRunJJ:
-    """Tests for run_jj helper function."""
-
-    def test_run_jj_success(self):
-        """Runs jj command successfully."""
-        with patch("agent_arborist.tasks.is_jj_installed", return_value=True):
-            with patch("subprocess.run") as mock_run:
-                mock_run.return_value = MagicMock(
-                    returncode=0,
-                    stdout="output",
-                    stderr="",
-                )
-                with patch("agent_arborist.tasks.get_git_root", return_value=Path("/tmp")):
-                    result = run_jj("log")
-                    assert result.returncode == 0
-                    mock_run.assert_called_once()
-
-    def test_run_jj_not_installed(self):
-        """Raises JJNotInstalledError when jj not installed."""
-        with patch("agent_arborist.tasks.is_jj_installed", return_value=False):
-            with pytest.raises(JJNotInstalledError):
-                run_jj("log")
-
-
-class TestChangeOperations:
-    """Tests for change creation and management."""
-
-    def test_get_change_id(self):
-        """Gets change ID from revset."""
-        with patch("agent_arborist.tasks.run_jj") as mock_run:
-            mock_run.return_value = MagicMock(stdout="qpvuntsm\n")
-            result = get_change_id("@")
-            assert result == "qpvuntsm"
-
-    def test_get_commit_id(self):
-        """Gets commit ID from revset."""
-        with patch("agent_arborist.tasks.run_jj") as mock_run:
-            mock_run.return_value = MagicMock(stdout="abc123def456\n")
-            result = get_commit_id("@")
-            assert result == "abc123def456"
-
-    def test_get_description(self):
-        """Gets description from change."""
-        with patch("agent_arborist.tasks.run_jj") as mock_run:
-            mock_run.return_value = MagicMock(stdout="spec:123:T001\n")
-            result = get_description("qpvuntsm")
-            assert result == "spec:123:T001"
-
-    def test_has_conflicts_true(self):
-        """Detects conflicts in a change."""
-        with patch("agent_arborist.tasks.run_jj") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0,
-                stdout="qpvuntsm\n",
+                stdout="output",
+                stderr="",
             )
-            result = has_conflicts("qpvuntsm")
-            assert result is True
-
-    def test_has_conflicts_false(self):
-        """No conflicts detected."""
-        with patch("agent_arborist.tasks.run_jj") as mock_run:
-            mock_run.return_value = MagicMock(
-                returncode=0,
-                stdout="",
-            )
-            result = has_conflicts("qpvuntsm")
-            assert result is False
-
-
-class TestCreateChange:
-    """Tests for change creation."""
-
-    def test_create_change(self):
-        """Creates a new change."""
-        with patch("agent_arborist.tasks.run_jj"):
-            with patch("agent_arborist.tasks.get_change_id", return_value="newchange"):
-                result = create_change(parent="main", description="test")
-                assert result == "newchange"
-
-    def test_create_task_change(self):
-        """Creates a task change with proper description."""
-        with patch("agent_arborist.tasks.create_change", return_value="taskchange") as mock_create:
-            result = create_task_change(
-                spec_id="002-feature",
-                task_id="T001",
-                parent_change="main",
-            )
-            assert result == "taskchange"
-            mock_create.assert_called_once()
-            # Check description format - now uses hierarchical format spec_id:task_path
-            call_args = mock_create.call_args
-            assert "002-feature:T001" in call_args.kwargs["description"]
-
-    def test_create_task_change_with_task_path(self):
-        """Creates task change with hierarchical task path."""
-        with patch("agent_arborist.tasks.create_change", return_value="taskchange") as mock_create:
-            create_task_change(
-                spec_id="002-feature",
-                task_id="T004",
-                parent_change="t001change",
-                task_path=["T001", "T004"],  # T004 is child of T001
-            )
-            call_args = mock_create.call_args
-            # Should use full hierarchical path
-            assert "002-feature:T001:T004" in call_args.kwargs["description"]
-
-
-class TestDescribeChange:
-    """Tests for describe_change."""
-
-    def test_describe_change_success(self):
-        """Successfully updates description."""
-        with patch("agent_arborist.tasks.run_jj") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-            result = describe_change("new description", "@")
-            assert result.success is True
-
-    def test_describe_change_failure(self):
-        """Handles describe failure."""
-        with patch("agent_arborist.tasks.run_jj") as mock_run:
-            mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="error")
-            result = describe_change("new description", "@")
-            assert result.success is False
-            assert result.error == "error"
-
-
-class TestRebase:
-    """Tests for rebase operations."""
-
-    def test_rebase_change_success(self):
-        """Successfully rebases change."""
-        with patch("agent_arborist.tasks.run_jj") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-            result = rebase_change("change", "destination")
-            assert result.success is True
-
-
-class TestWorkspaceManagement:
-    """Tests for workspace operations."""
-
-    def test_get_workspace_path(self, tmp_path, monkeypatch):
-        """Returns correct workspace path using ARBORIST_WORKSPACE_DIR."""
-        from agent_arborist import tasks
-
-        # Mock get_workspace_base_dir to return tmp_path
-        monkeypatch.setattr(tasks, "get_workspace_base_dir", lambda: tmp_path)
-        # Mock get_git_root to return a fake repo path
-        monkeypatch.setattr(tasks, "get_git_root", lambda: Path("/fake/repo"))
-
-        path = get_workspace_path("002-feature", "T001")
-        expected = tmp_path / "repo" / "002-feature" / "T001"
-        assert path == expected
-
-    def test_list_workspaces(self):
-        """Lists workspaces from jj output."""
-        with patch("agent_arborist.tasks.run_jj") as mock_run:
-            mock_run.return_value = MagicMock(
-                returncode=0,
-                stdout="default: /path/to/repo\nws-T001: /path/to/ws1\n",
-            )
-            workspaces = list_workspaces()
-            assert "default" in workspaces
-            assert "ws-T001" in workspaces
-
-    def test_workspace_exists_true(self):
-        """Returns True for existing workspace."""
-        with patch("agent_arborist.tasks.list_workspaces", return_value=["default", "ws-T001"]):
-            assert workspace_exists("ws-T001") is True
-
-    def test_workspace_exists_false(self):
-        """Returns False for non-existent workspace."""
-        with patch("agent_arborist.tasks.list_workspaces", return_value=["default"]):
-            assert workspace_exists("ws-T001") is False
-
-
-class TestQueryFunctions:
-    """Tests for revset query functions."""
-
-    def test_find_tasks_by_spec(self):
-        """Finds tasks by spec ID."""
-        with patch("agent_arborist.tasks.run_jj") as mock_run:
-            mock_run.return_value = MagicMock(
-                returncode=0,
-                stdout="qpvuntsm|spec:002-feature:T001\nrrrrrrrr|spec:002-feature:T002 [DONE]\n",
-            )
-            with patch("agent_arborist.tasks.has_conflicts", return_value=False):
-                tasks = find_tasks_by_spec("002-feature")
-                assert len(tasks) == 2
-                assert tasks[0].task_id == "T001"
-                assert tasks[0].status == "pending"
-                assert tasks[1].task_id == "T002"
-                assert tasks[1].status == "done"
-
-    def test_find_task_change(self):
-        """Finds specific task change."""
-        with patch("agent_arborist.tasks.run_jj") as mock_run:
-            mock_run.return_value = MagicMock(
-                returncode=0,
-                stdout="qpvuntsm\n",
-            )
-            with patch("agent_arborist.tasks.get_description", return_value="spec:002:T001"):
-                with patch("agent_arborist.tasks.has_conflicts", return_value=False):
-                    task = find_task_change("002", "T001")
-                    assert task is not None
-                    assert task.change_id == "qpvuntsm"
-                    assert task.task_id == "T001"
-
-    def test_find_task_change_not_found(self):
-        """Returns None when task not found."""
-        with patch("agent_arborist.tasks.run_jj") as mock_run:
-            mock_run.return_value = MagicMock(
-                returncode=0,
-                stdout="",
-            )
-            task = find_task_change("002", "T999")
-            assert task is None
-
-    def test_get_task_status(self):
-        """Gets task status summary."""
-        mock_tasks = [
-            TaskChange(
-                change_id="a",
-                task_id="T001",
-                spec_id="002",
-                parent_change=None,
-                status="pending",
-            ),
-            TaskChange(
-                change_id="b",
-                task_id="T002",
-                spec_id="002",
-                parent_change=None,
-                status="done",
-            ),
-            TaskChange(
-                change_id="c",
-                task_id="T003",
-                spec_id="002",
-                parent_change=None,
-                status="conflict",
-            ),
-        ]
-        with patch("agent_arborist.tasks.find_tasks_by_spec", return_value=mock_tasks):
-            status = get_task_status("002")
-            assert status["total"] == 3
-            assert status["pending"] == 1
-            assert status["done"] == 1
-            assert status["conflict"] == 1
-
-
-class TestOperationLog:
-    """Tests for operation log functions."""
-
-    def test_get_operation_log(self):
-        """Gets recent operations."""
-        with patch("agent_arborist.tasks.run_jj") as mock_run:
-            mock_run.return_value = MagicMock(
-                returncode=0,
-                stdout="abc123|new commit\ndef456|rebase\n",
-            )
-            ops = get_operation_log(limit=5)
-            assert len(ops) == 2
-            assert ops[0]["id"] == "abc123"
-            assert ops[0]["description"] == "new commit"
-
-    def test_undo_operation(self):
-        """Undoes last operation."""
-        with patch("agent_arborist.tasks.run_jj") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-            result = undo_operation()
-            assert result.success is True
-
-    def test_restore_operation(self):
-        """Restores to specific operation."""
-        with patch("agent_arborist.tasks.run_jj") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-            result = restore_operation("abc123")
-            assert result.success is True
-
-
-class TestInitColocated:
-    """Tests for colocated initialization."""
-
-    def test_init_colocated_already_exists(self, tmp_path):
-        """Handles already colocated repo."""
-        # Create .jj and .git dirs
-        (tmp_path / ".jj").mkdir()
-        (tmp_path / ".git").mkdir()
-
-        with patch("agent_arborist.tasks.get_git_root", return_value=tmp_path):
-            result = init_colocated(tmp_path)
-            assert result.success is True
-            assert "already colocated" in result.message
-
-    def test_init_colocated_jj_only(self, tmp_path):
-        """Handles jj-only repo (not colocated)."""
-        (tmp_path / ".jj").mkdir()
-
-        with patch("agent_arborist.tasks.get_git_root", return_value=tmp_path):
-            result = init_colocated(tmp_path)
-            assert result.success is False
-            assert "not a colocated repo" in result.message
-
-
-class TestChangeInfo:
-    """Tests for ChangeInfo dataclass."""
-
-    def test_get_change_info(self):
-        """Parses change info from jj output."""
-        with patch("agent_arborist.tasks.run_jj") as mock_run:
-            mock_run.return_value = MagicMock(
-                stdout="qpvuntsm\nabc123\nMy commit\ntest@test.com\nfalse\nfalse",
-            )
-            info = get_change_info("@")
-            assert info.change_id == "qpvuntsm"
-            assert info.commit_id == "abc123"
-            assert info.description == "My commit"
-            assert info.author == "test@test.com"
-            assert info.is_empty is False
-            assert info.has_conflict is False
-
-
-class TestMergeBasedRollup:
-    """Tests for merge-based rollup functions."""
-
-    def test_create_merge_commit_success(self):
-        """Creates merge commit with multiple parents."""
-        with patch("agent_arborist.tasks.run_jj") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-            with patch("agent_arborist.tasks.get_change_id", return_value="mergechange"):
-                result = create_merge_commit(
-                    parent_changes=["child1", "child2"],
-                    description="spec:T1",
-                )
-                assert result == "mergechange"
-                # Verify jj new was called with both parents
+            with patch("agent_arborist.tasks.get_git_root", return_value=Path("/tmp")):
+                result = run_git("status")
+                assert result.returncode == 0
                 mock_run.assert_called_once()
-                args = mock_run.call_args[0]
-                assert "new" in args
-                assert "child1" in args
-                assert "child2" in args
 
-    def test_create_merge_commit_empty_parents(self):
-        """Raises error when no parents provided."""
-        with pytest.raises(ValueError, match="Need at least one parent"):
-            create_merge_commit(parent_changes=[], description="test")
-
-    def test_create_merge_commit_single_parent(self):
-        """Works with single parent (degenerate merge)."""
-        with patch("agent_arborist.tasks.run_jj") as mock_run:
+    def test_run_git_with_cwd(self):
+        """Runs git command with specified working directory."""
+        with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-            with patch("agent_arborist.tasks.get_change_id", return_value="mergechange"):
-                result = create_merge_commit(
-                    parent_changes=["child1"],
-                    description="spec:T1",
-                )
-                assert result == "mergechange"
+            run_git("status", cwd=Path("/custom/path"))
+            call_kwargs = mock_run.call_args.kwargs
+            assert call_kwargs["cwd"] == Path("/custom/path")
 
-    def test_find_completed_children(self):
-        """Finds completed children of a parent task."""
-        with patch("agent_arborist.tasks.ensure_workspace_fresh"):
-            with patch("agent_arborist.tasks.run_jj") as mock_run:
-                mock_run.return_value = MagicMock(
-                    returncode=0,
-                    stdout="child1change\nchild2change\n",
-                )
-                children = find_completed_children("my-spec", ["T1"])
-                assert len(children) == 2
-                assert "child1change" in children
-                assert "child2change" in children
 
-    def test_find_completed_children_empty(self):
-        """Returns empty list when no completed children."""
-        with patch("agent_arborist.tasks.ensure_workspace_fresh"):
-            with patch("agent_arborist.tasks.run_jj") as mock_run:
-                mock_run.return_value = MagicMock(
-                    returncode=0,
-                    stdout="",
-                )
-                children = find_completed_children("my-spec", ["T1"])
-                assert len(children) == 0
+class TestRepoDetection:
+    """Tests for repository detection."""
 
-    def test_find_parent_base_with_completed_ancestor(self):
-        """Returns completed ancestor's change."""
-        with patch("agent_arborist.tasks.ensure_workspace_fresh"):
-            with patch("agent_arborist.tasks.find_change_by_description") as mock_find:
-                mock_find.return_value = "parentchange"
-                with patch("agent_arborist.tasks.get_description") as mock_desc:
-                    mock_desc.return_value = "spec:Phase1 [DONE]"
-                    base = find_parent_base(
-                        "my-spec",
-                        ["Phase1", "T2"],
-                        "feature-branch",
-                    )
-                    assert base == "parentchange"
+    def test_is_git_repo_true(self):
+        """Returns True when in a git repo."""
+        with patch("agent_arborist.tasks.run_git") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            assert is_git_repo(Path("/tmp")) is True
 
-    def test_find_parent_base_no_ancestor(self):
-        """Returns source_rev when no completed ancestor."""
-        with patch("agent_arborist.tasks.ensure_workspace_fresh"):
-            with patch("agent_arborist.tasks.find_change_by_description") as mock_find:
-                mock_find.return_value = None  # No parent found
-                base = find_parent_base(
-                    "my-spec",
-                    ["T1"],  # Root task, no parent
-                    "feature-branch",
-                )
-                assert base == "feature-branch"
+    def test_is_git_repo_false(self):
+        """Returns False when not in a git repo."""
+        with patch("agent_arborist.tasks.run_git") as mock_run:
+            mock_run.return_value = MagicMock(returncode=128)
+            assert is_git_repo(Path("/tmp")) is False
 
-    def test_find_root_task_changes(self):
-        """Finds all completed root tasks."""
-        with patch("agent_arborist.tasks.ensure_workspace_fresh"):
-            with patch("agent_arborist.tasks.run_jj") as mock_run:
-                mock_run.return_value = MagicMock(
-                    returncode=0,
-                    stdout="t1change\nt2change\nt3change\n",
-                )
-                roots = find_root_task_changes("my-spec")
-                assert len(roots) == 3
-                assert "t1change" in roots
-                assert "t2change" in roots
-                assert "t3change" in roots
 
-    def test_find_root_task_changes_empty(self):
-        """Returns empty list when no completed root tasks."""
-        with patch("agent_arborist.tasks.ensure_workspace_fresh"):
-            with patch("agent_arborist.tasks.run_jj") as mock_run:
-                mock_run.return_value = MagicMock(
-                    returncode=0,
-                    stdout="",
+class TestBranchOperations:
+    """Tests for branch operations."""
+
+    def test_get_current_branch(self):
+        """Gets current branch name."""
+        with patch("agent_arborist.tasks.run_git") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="main\n")
+            result = get_current_branch(Path("/tmp"))
+            assert result == "main"
+
+    def test_get_current_branch_detached(self):
+        """Returns None for detached HEAD."""
+        with patch("agent_arborist.tasks.run_git") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="HEAD\n")
+            result = get_current_branch(Path("/tmp"))
+            assert result is None
+
+    def test_create_branch(self):
+        """Creates a new branch."""
+        with patch("agent_arborist.tasks.run_git") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            result = create_branch("feature-branch", cwd=Path("/tmp"))
+            assert result.success is True
+            assert "feature-branch" in result.message
+
+    def test_checkout_branch(self):
+        """Checks out an existing branch."""
+        with patch("agent_arborist.tasks.run_git") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            result = checkout_branch("main", cwd=Path("/tmp"))
+            assert result.success is True
+
+    def test_push_branch(self):
+        """Pushes branch to remote."""
+        with patch("agent_arborist.tasks.run_git") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            result = push_branch("feature-branch", cwd=Path("/tmp"))
+            assert result.success is True
+
+
+class TestCommitOperations:
+    """Tests for commit operations."""
+
+    def test_get_current_commit(self):
+        """Gets current commit SHA."""
+        with patch("agent_arborist.tasks.run_git") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="abc123def456789\n",
+            )
+            result = get_current_commit(Path("/tmp"))
+            assert result == "abc123def456789"
+
+    def test_get_short_commit(self):
+        """Gets short commit SHA."""
+        with patch("agent_arborist.tasks.run_git") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="abc123d\n",
+            )
+            result = get_short_commit(Path("/tmp"))
+            assert result == "abc123d"
+
+
+class TestChangesDetection:
+    """Tests for detecting changes."""
+
+    def test_has_uncommitted_changes_true(self):
+        """Detects uncommitted changes."""
+        with patch("agent_arborist.tasks.run_git") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="M file.py\n",
+            )
+            assert has_uncommitted_changes(Path("/tmp")) is True
+
+    def test_has_uncommitted_changes_false(self):
+        """Returns False when working tree clean."""
+        with patch("agent_arborist.tasks.run_git") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="",
+            )
+            assert has_uncommitted_changes(Path("/tmp")) is False
+
+    def test_get_changed_files(self):
+        """Gets list of changed files."""
+        with patch("agent_arborist.tasks.run_git") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="M  file1.py\nA  file2.py\n",
+            )
+            files = get_changed_files(Path("/tmp"))
+            assert len(files) == 2
+            assert "file1.py" in files
+            assert "file2.py" in files
+
+    def test_count_changed_files(self):
+        """Counts changed files."""
+        with patch("agent_arborist.tasks.get_changed_files", return_value=["a.py", "b.py"]):
+            assert count_changed_files(Path("/tmp")) == 2
+
+
+class TestStageAndCommit:
+    """Tests for staging and committing."""
+
+    def test_stage_all(self):
+        """Stages all changes."""
+        with patch("agent_arborist.tasks.run_git") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            result = stage_all(Path("/tmp"))
+            assert result.success is True
+
+    def test_commit_success(self):
+        """Creates a commit successfully."""
+        with patch("agent_arborist.tasks.run_git") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            result = commit("Test commit", cwd=Path("/tmp"))
+            assert result.success is True
+
+    def test_commit_nothing_to_commit(self):
+        """Handles nothing to commit gracefully."""
+        with patch("agent_arborist.tasks.run_git") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=1,
+                stdout="nothing to commit, working tree clean",
+                stderr="",
+            )
+            result = commit("Test commit", cwd=Path("/tmp"))
+            assert result.success is True
+            assert "Nothing to commit" in result.message
+
+    def test_stage_and_commit_success(self):
+        """Stages and commits in one operation."""
+        with patch("agent_arborist.tasks.stage_all") as mock_stage:
+            mock_stage.return_value = GitResult(success=True, message="Staged")
+            with patch("agent_arborist.tasks.has_uncommitted_changes", return_value=True):
+                with patch("agent_arborist.tasks.commit") as mock_commit:
+                    mock_commit.return_value = GitResult(success=True, message="Committed")
+                    result = stage_and_commit("Test message", cwd=Path("/tmp"))
+                    assert result.success is True
+
+    def test_stage_and_commit_nothing_to_commit(self):
+        """Returns success when nothing to commit."""
+        with patch("agent_arborist.tasks.stage_all") as mock_stage:
+            mock_stage.return_value = GitResult(success=True, message="Staged")
+            with patch("agent_arborist.tasks.has_uncommitted_changes", return_value=False):
+                result = stage_and_commit("Test message", cwd=Path("/tmp"))
+                assert result.success is True
+                assert "Nothing to commit" in result.message
+
+
+class TestCommitLog:
+    """Tests for commit log operations."""
+
+    def test_get_commit_log(self):
+        """Gets commit log."""
+        with patch("agent_arborist.tasks.run_git") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="abc123 First commit\ndef456 Second commit\n",
+            )
+            commits = get_commit_log(limit=5, cwd=Path("/tmp"))
+            assert len(commits) == 2
+            assert "abc123 First commit" in commits
+            assert "def456 Second commit" in commits
+
+    def test_get_diff_stat(self):
+        """Gets diff statistics."""
+        with patch("agent_arborist.tasks.run_git") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="file.py | 10 ++++++----",
+            )
+            stat = get_diff_stat(Path("/tmp"))
+            assert "file.py" in stat
+
+
+class TestBuildCommitMessage:
+    """Tests for commit message building."""
+
+    def test_build_commit_message_basic(self):
+        """Builds basic commit message."""
+        message = build_commit_message(
+            spec_id="002-feature",
+            task_id="T001",
+        )
+        assert "002-feature:T001" in message
+
+    def test_build_commit_message_with_summary(self):
+        """Builds commit message with summary."""
+        message = build_commit_message(
+            spec_id="002-feature",
+            task_id="T001",
+            summary="Added new feature",
+        )
+        assert "002-feature:T001" in message
+        assert "Added new feature" in message
+
+    def test_build_commit_message_with_files_changed(self):
+        """Builds commit message with files changed."""
+        message = build_commit_message(
+            spec_id="002-feature",
+            task_id="T001",
+            files_changed=5,
+        )
+        assert "Files changed: 5" in message
+
+
+class TestCommitTask:
+    """Tests for commit_task function."""
+
+    def test_commit_task_success(self):
+        """Commits task changes successfully."""
+        with patch("agent_arborist.tasks.count_changed_files", return_value=3):
+            with patch("agent_arborist.tasks.stage_and_commit") as mock_commit:
+                mock_commit.return_value = GitResult(success=True, message="Committed")
+                result = commit_task(
+                    spec_id="002-feature",
+                    task_id="T001",
+                    summary="Completed task",
+                    cwd=Path("/tmp"),
                 )
-                roots = find_root_task_changes("my-spec")
-                assert len(roots) == 0
+                assert result.success is True
+
+
+class TestDetectTestCommand:
+    """Tests for test command detection."""
+
+    def test_detect_pytest(self, tmp_path):
+        """Detects pytest from pyproject.toml."""
+        (tmp_path / "pyproject.toml").write_text("[project]\nname = 'test'\n")
+        assert detect_test_command(tmp_path) == "pytest"
+
+    def test_detect_pytest_ini(self, tmp_path):
+        """Detects pytest from pytest.ini."""
+        (tmp_path / "pytest.ini").write_text("[pytest]\n")
+        assert detect_test_command(tmp_path) == "pytest"
+
+    def test_detect_npm_test(self, tmp_path):
+        """Detects npm test from package.json."""
+        (tmp_path / "package.json").write_text("{}")
+        assert detect_test_command(tmp_path) == "npm test"
+
+    def test_detect_make_test(self, tmp_path):
+        """Detects make test from Makefile."""
+        (tmp_path / "Makefile").write_text("test:\n\techo test\n")
+        assert detect_test_command(tmp_path) == "make test"
+
+    def test_detect_cargo_test(self, tmp_path):
+        """Detects cargo test from Cargo.toml."""
+        (tmp_path / "Cargo.toml").write_text("[package]\n")
+        assert detect_test_command(tmp_path) == "cargo test"
+
+    def test_detect_go_test(self, tmp_path):
+        """Detects go test from go.mod."""
+        (tmp_path / "go.mod").write_text("module test\n")
+        assert detect_test_command(tmp_path) == "go test ./..."
+
+    def test_detect_none(self, tmp_path):
+        """Returns None when no test command detected."""
+        assert detect_test_command(tmp_path) is None
+
+
+class TestRunTests:
+    """Tests for run_tests function."""
+
+    def test_run_tests_success(self):
+        """Runs tests successfully."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="All tests passed",
+                stderr="",
+            )
+            result = run_tests(Path("/tmp"), test_cmd="pytest")
+            assert result.success is True
+            assert "passed" in result.message.lower()
+
+    def test_run_tests_failure(self):
+        """Handles test failure."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=1,
+                stdout="1 test failed",
+                stderr="Error details",
+            )
+            result = run_tests(Path("/tmp"), test_cmd="pytest")
+            assert result.success is False
+            assert "failed" in result.message.lower()
+
+    def test_run_tests_timeout(self):
+        """Handles test timeout."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = subprocess.TimeoutExpired("pytest", 300)
+            result = run_tests(Path("/tmp"), test_cmd="pytest", timeout=300)
+            assert result.success is False
+            assert "timed out" in result.message.lower()
+
+    def test_run_tests_no_command(self):
+        """Skips tests when no command available."""
+        with patch("agent_arborist.tasks.detect_test_command", return_value=None):
+            result = run_tests(Path("/tmp"))
+            assert result.success is True
+            assert "skipping" in result.message.lower()
+
+    def test_run_tests_with_container(self):
+        """Runs tests with container command prefix."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="Tests passed",
+                stderr="",
+            )
+            result = run_tests(
+                Path("/tmp"),
+                test_cmd="pytest",
+                container_cmd_prefix=["docker", "exec", "container"],
+            )
+            assert result.success is True
+            # Verify container prefix was used
+            call_args = mock_run.call_args[0][0]
+            assert call_args[0] == "docker"
