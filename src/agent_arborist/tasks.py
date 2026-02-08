@@ -403,6 +403,112 @@ def build_task_description(spec_id: str, task_path: list[str]) -> str:
     return f"{spec_id}:{':'.join(task_path)}"
 
 
+def build_rich_description(
+    spec_id: str,
+    task_id: str,
+    status: str = "DONE",
+    commit_message: str | None = None,
+    summary: str = "",
+    files_changed: int = 0,
+    test_command: str | None = None,
+    test_passed: int | None = None,
+    test_failed: int | None = None,
+    test_total: int | None = None,
+    runner: str = "",
+    model: str | None = None,
+    duration_seconds: float = 0.0,
+    children_ids: list[str] | None = None,
+    conflicts_resolved: list[tuple[str, str]] | None = None,
+) -> str:
+    """Build a rich multi-line description for a jj change.
+
+    Args:
+        spec_id: Specification identifier
+        task_id: Task identifier (e.g., "T001" or "ROOT")
+        status: Status marker (DONE, MERGE, RUNNING)
+        commit_message: One-line commit message from AI
+        summary: Longer summary of what was accomplished
+        files_changed: Number of files modified
+        test_command: Test command that was run
+        test_passed: Number of tests passed
+        test_failed: Number of tests failed
+        test_total: Total number of tests
+        runner: AI runner used (e.g., "opencode")
+        model: Model used (e.g., "cerebras/zai-glm-4.7")
+        duration_seconds: Execution duration
+        children_ids: List of child task IDs that were merged
+        conflicts_resolved: List of (filepath, resolution_note) tuples
+
+    Returns:
+        Multi-line description suitable for jj commit message
+    """
+    lines = []
+
+    # First line: spec:task: commit_message
+    first_line = f"{spec_id}:{task_id}"
+    if commit_message:
+        first_line += f": {commit_message}"
+    lines.append(first_line)
+    lines.append("")
+
+    # Status marker
+    lines.append(f"[{status}]")
+    lines.append("")
+
+    # Summary section (for leaf tasks)
+    if summary and not children_ids:
+        lines.append("## Summary")
+        # Truncate and clean summary
+        clean_summary = summary.strip()[:500]
+        if clean_summary:
+            lines.append(clean_summary)
+        lines.append("")
+        lines.append(f"Files changed: {files_changed}")
+        lines.append("")
+
+    # Merge work section (for parent tasks)
+    if children_ids:
+        if summary:
+            lines.append("## Merge Work")
+            clean_summary = summary.strip()[:500]
+            if clean_summary:
+                lines.append(clean_summary)
+            lines.append("")
+
+        # Children rolled up
+        lines.append("## Children Rolled Up")
+        lines.append(", ".join(children_ids))
+        lines.append("")
+
+    # Conflicts resolved
+    if conflicts_resolved:
+        lines.append("## Conflicts Resolved")
+        for filepath, note in conflicts_resolved:
+            lines.append(f"- {filepath}: {note}")
+        lines.append("")
+
+    # Tests section
+    if test_command:
+        lines.append("## Tests")
+        lines.append(f"Command: {test_command}")
+        if test_total is not None:
+            passed = test_passed or 0
+            failed = test_failed or 0
+            lines.append(f"Results: {passed}/{test_total} passed ({failed} failed)")
+        lines.append("")
+
+    # Execution section
+    if runner:
+        lines.append("## Execution")
+        model_str = f" ({model})" if model else ""
+        lines.append(f"Runner: {runner}{model_str}")
+        if duration_seconds > 0:
+            lines.append(f"Duration: {duration_seconds:.1f}s")
+        lines.append("")
+
+    return "\n".join(lines).strip()
+
+
 def parse_task_description(description: str) -> tuple[str, list[str]] | None:
     """Parse hierarchical task description.
 

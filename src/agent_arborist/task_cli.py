@@ -234,6 +234,59 @@ def _echo_command(cmd: str, **kwargs: str | None) -> None:
     print(" | ".join(parts) if len(parts) > 1 else parts[0])
 
 
+def _count_workspace_changes(workspace_path: Path) -> int:
+    """Count files changed in workspace (staged + unstaged)."""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--name-only", "HEAD"],
+            cwd=workspace_path,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return len(result.stdout.strip().split("\n"))
+        return 0
+    except Exception:
+        return 0
+
+
+def _persist_run_result(workspace_path: Path, result: "RunResult") -> None:
+    """Persist RunResult to file for task complete to read."""
+    result_dir = workspace_path / ".arborist"
+    result_dir.mkdir(parents=True, exist_ok=True)
+    result_file = result_dir / "run_result.json"
+    result_file.write_text(result.to_json())
+
+
+def _persist_test_result(workspace_path: Path, result: "RunTestResult") -> None:
+    """Persist RunTestResult to file for task complete to read."""
+    result_dir = workspace_path / ".arborist"
+    result_dir.mkdir(parents=True, exist_ok=True)
+    result_file = result_dir / "test_result.json"
+    result_file.write_text(result.to_json())
+
+
+def _read_run_result(workspace_path: Path) -> "RunResult | None":
+    """Read persisted RunResult if it exists."""
+    result_file = workspace_path / ".arborist" / "run_result.json"
+    if result_file.exists():
+        import json
+        data = json.loads(result_file.read_text())
+        return RunResult(**{k: v for k, v in data.items() if k != "timestamp"})
+    return None
+
+
+def _read_test_result(workspace_path: Path) -> "RunTestResult | None":
+    """Read persisted RunTestResult if it exists."""
+    result_file = workspace_path / ".arborist" / "test_result.json"
+    if result_file.exists():
+        import json
+        data = json.loads(result_file.read_text())
+        return RunTestResult(**{k: v for k, v in data.items() if k != "timestamp"})
+    return None
+
+
 @click.group()
 def task() -> None:
     """Task execution commands.
@@ -745,20 +798,32 @@ def task_run(ctx: click.Context, task_id: str, timeout: int) -> None:
         console.print(f"[dim]Runner:[/dim] {runner_type}")
         console.print(f"[dim]Model:[/dim] {model or 'default'}")
 
-        # Run the task
+        # Run the task with timing
+        import time
+        start_time = time.time()
         run_result = runner.run(
             prompt=prompt,
             timeout=timeout,
             cwd=workspace_path,
         )
+        duration = time.time() - start_time
+
+        # Count files changed in workspace
+        files_changed = _count_workspace_changes(workspace_path)
 
         result = RunResult(
             success=run_result.success,
             runner=runner_type,
             model=model,
+            duration_seconds=duration,
+            files_changed=files_changed,
+            summary=run_result.output[:2000] if run_result.output else "",
             error=run_result.error if not run_result.success else None,
         )
         _output_result(result, ctx)
+
+        # Persist result for task complete to read
+        _persist_run_result(workspace_path, result)
 
         if run_result.success:
             console.print("[green]Task execution complete[/green]")
@@ -818,6 +883,7 @@ def task_run_test(ctx: click.Context, task_id: str, cmd: str | None) -> None:
                 skip_reason="No test command detected",
             )
             _output_result(result, ctx)
+            _persist_test_result(workspace_path, result)
             return
 
         console.print(f"[dim]Test command:[/dim] {test_cmd}")
@@ -840,6 +906,7 @@ def task_run_test(ctx: click.Context, task_id: str, cmd: str | None) -> None:
             error=test_result.stderr[-1000:] if not success and test_result.stderr else None,
         )
         _output_result(result, ctx)
+        _persist_test_result(workspace_path, result)
 
         if success:
             console.print("[green]Tests passed[/green]")
@@ -913,13 +980,32 @@ def task_complete(ctx: click.Context, task_id: str) -> None:
         workspace_path = get_workspace_path(spec_id, task_id)
         cwd = workspace_path if workspace_path.exists() else None
 
-        # Mark task as done by updating description
+        # Read persisted results for rich description
+        run_result = _read_run_result(workspace_path) if workspace_path.exists() else None
+        test_result = _read_test_result(workspace_path) if workspace_path.exists() else None
+
+        # Build rich description
+        from agent_arborist.tasks import build_rich_description, describe_change
+
+        rich_desc = build_rich_description(
+            spec_id=spec_id,
+            task_id=task_id,
+            status="DONE",
+            commit_message=run_result.commit_message if run_result else None,
+            summary=run_result.summary if run_result else "",
+            files_changed=run_result.files_changed if run_result else 0,
+            test_command=test_result.test_command if test_result else None,
+            test_passed=test_result.passed if test_result else None,
+            test_failed=test_result.failed if test_result else None,
+            test_total=test_result.test_count if test_result else None,
+            runner=run_result.runner if run_result else "",
+            model=run_result.model if run_result else None,
+            duration_seconds=run_result.duration_seconds if run_result else 0.0,
+        )
+
+        # Update change description with rich content
         try:
-            mark_task_done(
-                task_id=task_id,
-                change_id=change_id,
-                cwd=cwd,
-            )
+            describe_change(rich_desc, change_id, cwd)
             step_result = CommitResult(
                 success=True,
                 commit_sha="",
@@ -992,12 +1078,27 @@ def task_create_merge(ctx: click.Context, task_id: str) -> None:
                 raise SystemExit(1)
 
             console.print(f"[dim]Root tasks to merge:[/dim] {len(root_changes)}")
+            child_task_ids = []
             for change_id in root_changes:
                 desc = get_description(change_id, cwd=git_root)
                 console.print(f"  - {change_id[:12]}: {desc}")
+                # Extract task ID from description (first line, after spec_id:)
+                first_line = desc.split("\n")[0]
+                if ":" in first_line:
+                    parts = first_line.split(":")
+                    if len(parts) >= 2:
+                        # Get task ID (e.g., "T001" from "spec:T001: message")
+                        task_part = parts[1].split()[0]  # Handle "T001 [DONE]" -> "T001"
+                        child_task_ids.append(task_part)
 
-            # Create the ROOT merge commit
-            root_desc = f"{spec_id}:ROOT"
+            # Create the ROOT merge commit with rich description
+            from agent_arborist.tasks import build_rich_description
+            root_desc = build_rich_description(
+                spec_id=spec_id,
+                task_id="ROOT",
+                status="MERGE",
+                children_ids=child_task_ids,
+            )
             merge_change = create_merge_commit(
                 parent_changes=root_changes,
                 description=root_desc,
@@ -1038,15 +1139,32 @@ def task_create_merge(ctx: click.Context, task_id: str) -> None:
                 raise SystemExit(1)
 
             console.print(f"[dim]Children to merge:[/dim] {len(child_changes)}")
+            child_task_ids = []
             for change_id in child_changes:
                 desc = get_description(change_id, cwd=git_root)
                 console.print(f"  - {change_id[:12]}: {desc}")
+                # Extract task ID from description
+                first_line = desc.split("\n")[0]
+                if ":" in first_line:
+                    parts = first_line.split(":")
+                    # Find the last task ID in the path (immediate child)
+                    for part in reversed(parts[1:]):
+                        task_part = part.split()[0]  # Handle "T001 [DONE]" -> "T001"
+                        if task_part.startswith("T"):
+                            child_task_ids.append(task_part)
+                            break
 
-            # Create the merge commit for this parent
-            parent_desc = build_task_description(spec_id, task_path)
+            # Create the merge commit for this parent with rich description
+            from agent_arborist.tasks import build_rich_description
+            merge_desc = build_rich_description(
+                spec_id=spec_id,
+                task_id=task_id,
+                status="MERGE",
+                children_ids=child_task_ids,
+            )
             merge_change = create_merge_commit(
                 parent_changes=child_changes,
-                description=f"{parent_desc} [MERGE]",
+                description=merge_desc,
                 cwd=git_root,
             )
 
