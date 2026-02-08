@@ -14,29 +14,48 @@ RunnerType = Literal["claude", "opencode", "gemini"]
 ARBORIST_DEFAULT_RUNNER_ENV_VAR = "ARBORIST_DEFAULT_RUNNER"
 ARBORIST_DEFAULT_MODEL_ENV_VAR = "ARBORIST_DEFAULT_MODEL"
 
+# Default runners/models for different purposes
+# Task execution: opencode with Cerebras (fast, good for implementation)
+TASK_DEFAULT_RUNNER: RunnerType = "opencode"
+TASK_DEFAULT_MODEL: str = "cerebras/zai-glm-4.7"
+
+# DAG building (spec analysis): claude with opus (best reasoning)
+DAG_DEFAULT_RUNNER: RunnerType = "claude"
+DAG_DEFAULT_MODEL: str = "opus"
+
 
 def _get_default_runner() -> RunnerType:
-    """Get default runner from environment or fallback."""
+    """Get default runner from environment or fallback to task default."""
     env_runner = os.environ.get(ARBORIST_DEFAULT_RUNNER_ENV_VAR, "").lower()
     if env_runner in ("claude", "opencode", "gemini"):
         return env_runner  # type: ignore
-    return "claude"  # Default to claude
+    return TASK_DEFAULT_RUNNER
 
 
 def _get_default_model() -> str | None:
-    """Get default model from environment."""
-    return os.environ.get(ARBORIST_DEFAULT_MODEL_ENV_VAR) or "opus"
+    """Get default model from environment or fallback to task default."""
+    return os.environ.get(ARBORIST_DEFAULT_MODEL_ENV_VAR) or TASK_DEFAULT_MODEL
 
 
 # These are functions to allow dynamic resolution from env
 def get_default_runner() -> RunnerType:
-    """Get the default runner type."""
+    """Get the default runner type for task execution."""
     return _get_default_runner()
 
 
 def get_default_model() -> str | None:
-    """Get the default model."""
+    """Get the default model for task execution."""
     return _get_default_model()
+
+
+def get_dag_runner() -> RunnerType:
+    """Get the default runner type for DAG building."""
+    return DAG_DEFAULT_RUNNER
+
+
+def get_dag_model() -> str:
+    """Get the default model for DAG building."""
+    return DAG_DEFAULT_MODEL
 
 
 # For backwards compatibility, expose as a constant that's evaluated at import time
