@@ -200,14 +200,15 @@ class TestClaudeOpusProvider:
         not is_runner_available("claude"),
         reason="claude CLI not available"
     )
-    def test_claude_opus_generates_subdags(self, runner, hello_world_spec):
-        """Test Claude Opus generates subdags for tasks."""
+    def test_claude_opus_generates_dag(self, runner, hello_world_spec):
+        """Test Claude Opus generates a valid sequential DAG."""
         generator = DagGenerator(runner=runner)
         result = generator.generate(hello_world_spec, "hello-world", timeout=180)
 
         assert result.success, f"Generation failed: {result.error}"
 
-        documents = assert_valid_multi_doc_yaml(result.yaml_content, min_docs=2)
+        # In sequential model, we need at least root DAG (min_docs=1)
+        documents = assert_valid_multi_doc_yaml(result.yaml_content, min_docs=1)
 
         for doc in documents:
             assert_dag_structure(doc)
@@ -239,14 +240,14 @@ class TestClaudeSonnetProvider:
         not is_runner_available("claude"),
         reason="claude CLI not available"
     )
-    def test_claude_sonnet_generates_subdags(self, runner, hello_world_spec):
-        """Test Claude Sonnet generates subdags for tasks."""
+    def test_claude_sonnet_generates_dag(self, runner, hello_world_spec):
+        """Test Claude Sonnet generates a valid sequential DAG."""
         generator = DagGenerator(runner=runner)
         result = generator.generate(hello_world_spec, "hello-world", timeout=180)
 
         assert result.success, f"Generation failed: {result.error}"
 
-        documents = assert_valid_multi_doc_yaml(result.yaml_content, min_docs=2)
+        documents = assert_valid_multi_doc_yaml(result.yaml_content, min_docs=1)
 
         for doc in documents:
             assert_dag_structure(doc)
@@ -278,14 +279,14 @@ class TestClaudeHaikuProvider:
         not is_runner_available("claude"),
         reason="claude CLI not available"
     )
-    def test_claude_haiku_generates_subdags(self, runner, hello_world_spec):
-        """Test Claude Haiku generates subdags for tasks."""
+    def test_claude_haiku_generates_dag(self, runner, hello_world_spec):
+        """Test Claude Haiku generates a valid sequential DAG."""
         generator = DagGenerator(runner=runner)
         result = generator.generate(hello_world_spec, "hello-world", timeout=180)
 
         assert result.success, f"Generation failed: {result.error}"
 
-        documents = assert_valid_multi_doc_yaml(result.yaml_content, min_docs=2)
+        documents = assert_valid_multi_doc_yaml(result.yaml_content, min_docs=1)
 
         for doc in documents:
             assert_dag_structure(doc)
@@ -318,14 +319,14 @@ class TestGeminiProvider:
         not is_runner_available("gemini"),
         reason="gemini CLI not available"
     )
-    def test_gemini_generates_subdags(self, runner, hello_world_spec):
-        """Test Gemini generates subdags for tasks."""
+    def test_gemini_generates_dag(self, runner, hello_world_spec):
+        """Test Gemini generates a valid sequential DAG."""
         generator = DagGenerator(runner=runner)
         result = generator.generate(hello_world_spec, "hello-world", timeout=180)
 
         assert result.success, f"Generation failed: {result.error}"
 
-        documents = assert_valid_multi_doc_yaml(result.yaml_content, min_docs=2)
+        documents = assert_valid_multi_doc_yaml(result.yaml_content, min_docs=1)
 
         # Should have root + subdags
         for doc in documents:
@@ -358,14 +359,14 @@ class TestZaiProvider:
         not is_runner_available("opencode"),
         reason="opencode CLI not available"
     )
-    def test_zai_generates_subdags(self, runner, hello_world_spec):
-        """Test ZAI generates subdags for tasks."""
+    def test_zai_generates_dag(self, runner, hello_world_spec):
+        """Test ZAI generates a valid sequential DAG."""
         generator = DagGenerator(runner=runner)
         result = generator.generate(hello_world_spec, "hello-world", timeout=180)
 
         assert result.success, f"Generation failed: {result.error}"
 
-        documents = assert_valid_multi_doc_yaml(result.yaml_content, min_docs=2)
+        documents = assert_valid_multi_doc_yaml(result.yaml_content, min_docs=1)
 
         for doc in documents:
             assert_dag_structure(doc)
@@ -397,14 +398,14 @@ class TestCerebrasProvider:
         not is_runner_available("opencode"),
         reason="opencode CLI not available"
     )
-    def test_cerebras_generates_subdags(self, runner, hello_world_spec):
-        """Test Cerebras generates subdags for tasks."""
+    def test_cerebras_generates_dag(self, runner, hello_world_spec):
+        """Test Cerebras generates a valid sequential DAG."""
         generator = DagGenerator(runner=runner)
         result = generator.generate(hello_world_spec, "hello-world", timeout=180)
 
         assert result.success, f"Generation failed: {result.error}"
 
-        documents = assert_valid_multi_doc_yaml(result.yaml_content, min_docs=2)
+        documents = assert_valid_multi_doc_yaml(result.yaml_content, min_docs=1)
 
         for doc in documents:
             assert_dag_structure(doc)
@@ -436,14 +437,14 @@ class TestMinimaxProvider:
         not is_runner_available("opencode"),
         reason="opencode CLI not available"
     )
-    def test_minimax_generates_subdags(self, runner, hello_world_spec):
-        """Test MiniMax generates subdags for tasks."""
+    def test_minimax_generates_dag(self, runner, hello_world_spec):
+        """Test MiniMax generates a valid sequential DAG."""
         generator = DagGenerator(runner=runner)
         result = generator.generate(hello_world_spec, "hello-world", timeout=180)
 
         assert result.success, f"Generation failed: {result.error}"
 
-        documents = assert_valid_multi_doc_yaml(result.yaml_content, min_docs=2)
+        documents = assert_valid_multi_doc_yaml(result.yaml_content, min_docs=1)
 
         for doc in documents:
             assert_dag_structure(doc)
@@ -499,7 +500,7 @@ class TestAllProvidersParameterized:
             f"Raw output: {result.raw_output}"
         )
 
-        documents = assert_valid_multi_doc_yaml(result.yaml_content, min_docs=2)
+        documents = assert_valid_multi_doc_yaml(result.yaml_content, min_docs=1)
 
         # Should have multiple subdags for calculator spec
         print(f"\n[{display_name}] Generated {len(documents)} documents for calculator")

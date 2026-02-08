@@ -45,12 +45,11 @@ from agent_arborist.container_context import (
 )
 from agent_arborist import dagu_runs
 from agent_arborist.tasks import (
-    get_workspace_path,
-    get_workspace_base_dir,
     detect_test_command,
     run_tests,
-    is_jj_repo,
-    run_jj,
+    is_git_repo,
+    get_current_branch as git_get_current_branch,
+    push_branch,
 )
 from agent_arborist.task_state import build_task_tree_from_yaml
 from agent_arborist.step_results import (
@@ -70,7 +69,6 @@ console = Console()
 def get_current_branch() -> str | None:
     """Get the current git branch name.
 
-    Works in both pure git repos and jj colocated repos.
     Returns None if not on a branch (detached HEAD, main, etc).
 
     IMPORTANT: Never returns 'main' - operations should run from feature branches.
@@ -88,23 +86,9 @@ def get_current_branch() -> str | None:
     except Exception:
         pass
 
-    # Fallback: try jj bookmark
-    try:
-        result = subprocess.run(
-            ["jj", "log", "-r", "@-", "--no-graph", "-T", "bookmarks"],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        # bookmarks could be space-separated, take the first one that's not empty
-        bookmarks = result.stdout.strip().split()
-        for bm in bookmarks:
-            if bm and not bm.endswith("@origin") and bm != "main" and bm != "master":
-                return bm
-    except Exception:
-        pass
-
     return None
+
+
 
 
 def echo_command(cmd: str, **kwargs: str | None) -> None:
@@ -1356,21 +1340,11 @@ def spec_whoami() -> None:
 def spec_branch_create_all(ctx: click.Context) -> None:
     """[DEPRECATED] Create all branches from manifest.
 
-    This command is deprecated. Use 'arborist dag run' instead, which
-    automatically creates jj changes via the setup-changes step.
-
-    The jj workflow uses change descriptions to encode task hierarchy:
-      spec_id:T1        (root task)
-      spec_id:T1:T2     (child of T1)
-      spec_id:T1:T2:T6  (child of T2)
+    This command is deprecated. Use 'arborist dag run' instead.
     """
     console.print("[yellow]DEPRECATED:[/yellow] This command is no longer needed.")
     console.print("")
-    console.print("The jj workflow creates changes automatically during DAG execution.")
     console.print("Use [cyan]arborist dag run <spec-id>[/cyan] to run your DAG.")
-    console.print("")
-    console.print("Changes are created in the 'setup-changes' step with hierarchical")
-    console.print("descriptions like: [dim]spec_id:T1:T2:T6[/dim]")
     raise SystemExit(1)
 
 
@@ -1474,13 +1448,11 @@ def spec_merge_container_up(ctx: click.Context) -> None:
 @spec.command("finalize")
 @click.pass_context
 def spec_finalize(ctx: click.Context) -> None:
-    """Finalize a spec by exporting jj changes to git branch.
+    """Finalize a spec by pushing changes to remote.
 
     This command:
-    1. Moves the source branch bookmark to the current jj state
-    2. Exports jj changes to git (jj git export)
-
-    This ensures all work done in jj ends up on a git branch.
+    1. Pushes the current branch to remote
+    2. Reports success/failure
 
     Uses env vars: ARBORIST_SPEC_ID, ARBORIST_SOURCE_REV
     """
@@ -1488,7 +1460,7 @@ def spec_finalize(ctx: click.Context) -> None:
 
     from agent_arborist.step_results import FinalizeResult
     from agent_arborist.home import get_git_root
-    from agent_arborist.tasks import run_jj, find_change_by_description
+    from agent_arborist.tasks import push_branch, get_current_branch as get_branch
 
     spec_id = os.environ.get("ARBORIST_SPEC_ID", "")
     source_rev = os.environ.get("ARBORIST_SOURCE_REV", "")
@@ -1501,109 +1473,50 @@ def spec_finalize(ctx: click.Context) -> None:
         )
         return
 
-    if not source_rev:
-        console.print("[red]Error:[/red] No source revision (set ARBORIST_SOURCE_REV)")
-        raise SystemExit(1)
-
     try:
         git_root = get_git_root()
     except Exception as e:
         console.print(f"[red]Error:[/red] Could not find git root: {e}")
         raise SystemExit(1)
 
+    # Get current branch
+    current_branch = get_branch(git_root) or source_rev
+
     if not ctx.obj.get("quiet"):
         console.print(f"[cyan]Finalizing spec:[/cyan] {spec_id}")
-        console.print(f"[dim]Source branch:[/dim] {source_rev}")
-
-    bookmark_created = False
-    git_exported = False
+        console.print(f"[dim]Branch:[/dim] {current_branch}")
 
     try:
-        # Find ROOT change (merge of all root tasks)
-        root_change = find_change_by_description(spec_id, ["ROOT"], cwd=git_root)
-        target_rev = root_change if root_change else "@"
-
-        if root_change:
-            if not ctx.obj.get("quiet"):
-                console.print(f"[dim]Found ROOT:[/dim] {root_change}")
-        else:
-            if not ctx.obj.get("quiet"):
-                console.print("[yellow]Warning:[/yellow] ROOT not found, using @")
-
-        # Move the bookmark to ROOT (or @ as fallback)
-        result = run_jj(
-            "bookmark", "set", source_rev, "-r", target_rev,
+        # Push to remote
+        push_result = push_branch(
+            branch_name=current_branch,
             cwd=git_root,
-            check=False,
         )
 
-        if result.returncode == 0:
-            bookmark_created = True
+        if push_result.success:
             if not ctx.obj.get("quiet"):
-                console.print(f"[green]OK:[/green] Bookmark '{source_rev}' updated to current state")
-        else:
-            # Try creating if set failed (bookmark doesn't exist)
-            result = run_jj(
-                "bookmark", "create", source_rev, "-r", target_rev,
-                cwd=git_root,
-                check=False,
-            )
-            if result.returncode == 0:
-                bookmark_created = True
-                if not ctx.obj.get("quiet"):
-                    console.print(f"[green]OK:[/green] Bookmark '{source_rev}' created")
-            else:
-                console.print(f"[yellow]Warning:[/yellow] Could not update bookmark: {result.stderr}")
-
-        # Export to git
-        result = run_jj(
-            "git", "export",
-            cwd=git_root,
-            check=False,
-        )
-
-        if result.returncode == 0:
-            git_exported = True
-            if not ctx.obj.get("quiet"):
-                console.print("[green]OK:[/green] Exported jj changes to git")
-        else:
-            console.print(f"[yellow]Warning:[/yellow] Git export issue: {result.stderr}")
-
-        # Checkout the branch so HEAD is not detached
-        if git_exported:
-            import subprocess
-            checkout_result = subprocess.run(
-                ["git", "checkout", source_rev],
-                cwd=git_root,
-                capture_output=True,
-                text=True,
-            )
-            if checkout_result.returncode == 0:
-                if not ctx.obj.get("quiet"):
-                    console.print(f"[green]OK:[/green] Checked out branch '{source_rev}'")
-            else:
-                console.print(f"[yellow]Warning:[/yellow] Could not checkout branch: {checkout_result.stderr}")
+                console.print(f"[green]OK:[/green] Pushed to remote")
 
         step_result = FinalizeResult(
-            success=bookmark_created and git_exported,
+            success=push_result.success,
             spec_id=spec_id,
-            source_branch=source_rev,
-            bookmark_created=bookmark_created,
-            git_exported=git_exported,
+            source_branch=current_branch,
+            bookmark_created=True,  # Not applicable but kept for compatibility
+            git_exported=push_result.success,
         )
         output_result(step_result, ctx)
 
-        if bookmark_created and git_exported:
-            console.print(f"[green]Finalized:[/green] Changes are on git branch '{source_rev}'")
+        if push_result.success:
+            console.print(f"[green]Finalized:[/green] Changes pushed to '{current_branch}'")
         else:
-            console.print("[yellow]Partial success:[/yellow] Check warnings above")
+            console.print(f"[yellow]Warning:[/yellow] Push failed: {push_result.error}")
 
     except Exception as e:
         step_result = FinalizeResult(
             success=False,
             error=str(e),
             spec_id=spec_id,
-            source_branch=source_rev,
+            source_branch=current_branch,
         )
         output_result(step_result, ctx)
         console.print(f"[red]Error:[/red] {e}")
@@ -1776,7 +1689,7 @@ def spec_dag_build(
         except Exception:
             arborist_config = None
 
-        # Build task tree from spec for jj dag builder
+        # Build task tree from spec for sequential dag builder
         from agent_arborist.task_state import TaskTree, TaskNode
         tree = TaskTree(spec_id=dag_name)
         for task in task_spec.tasks:
@@ -1855,9 +1768,9 @@ def spec_dag_build(
         if not ctx.obj.get("quiet"):
             console.print("[green]OK:[/green] DAG generated successfully")
 
-        # Rebuild the DAG with jj commands using the AI-generated task tree
+        # Rebuild the DAG using the AI-generated task tree
         if not ctx.obj.get("quiet"):
-            console.print("[cyan]Converting to jj workflow...[/cyan]")
+            console.print("[cyan]Building sequential DAG...[/cyan]")
 
         task_tree = build_task_tree_from_yaml(dag_name, dag_yaml)
         dag_yaml = build_dag_yaml(
@@ -3015,124 +2928,74 @@ def dag_dashboard(
 
 @main.group()
 def cleanup() -> None:
-    """Cleanup workspaces, containers, and branches."""
+    """Cleanup containers, branches, and DAGs."""
     pass
 
 
 @cleanup.command("containers")
 @click.option("--dry-run", "-n", is_flag=True, help="Show what would be cleaned without doing it")
-@click.option("--all", is_flag=True, help="Cleanup all specs (ignore current spec)")
 @click.pass_context
-def cleanup_containers(ctx: click.Context, dry_run: bool, all: bool) -> None:
-    """Stop and remove all devcontainer instances for workspaces.
+def cleanup_containers(ctx: click.Context, dry_run: bool) -> None:
+    """Stop and remove devcontainer instances for the current repo.
 
-    Auto-detects spec from git branch, or use --spec to specify, or --all for all specs.
-
-    This finds all containers created by devcontainer up for arborist workspaces,
-    stops them, and removes them. Containers are identified by the
-    devcontainer.local_folder label.
+    Finds containers created by devcontainer up for this repo,
+    stops them, and removes them.
     """
-    # Get spec from context unless --all is specified
-    spec = None if all else ctx.obj.get("spec_id")
+    try:
+        git_root = get_git_root()
+    except Exception:
+        console.print("[red]Error:[/red] Not in a git repository")
+        return
+
+    # Find containers with devcontainer label for this repo
+    label_filter = f"label=devcontainer.local_folder={git_root}"
 
     try:
-        workspace_base = get_workspace_base_dir()
-        git_root = get_git_root()
-        repo_name = git_root.name
-        workspaces_dir = workspace_base / repo_name
-    except Exception:
-        console.print("[dim]No workspaces directory found[/dim]")
-        return
+        result = subprocess.run(
+            ["docker", "ps", "-a", "-q", "--filter", label_filter],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
 
-    if not workspaces_dir.exists():
-        console.print("[dim]No workspaces directory found[/dim]")
-        return
+        if result.returncode != 0:
+            console.print("[yellow]Warning:[/yellow] Failed to list containers")
+            return
 
-    # Find all workspace paths
-    workspace_paths = []
-    if spec:
-        spec_dir = workspaces_dir / spec
-        if spec_dir.exists():
-            for task_dir in spec_dir.iterdir():
-                if task_dir.is_dir():
-                    workspace_paths.append(task_dir)
-    else:
-        for spec_dir in workspaces_dir.iterdir():
-            if spec_dir.is_dir():
-                for task_dir in spec_dir.iterdir():
-                    if task_dir.is_dir():
-                        workspace_paths.append(task_dir)
+        container_ids = [cid for cid in result.stdout.strip().split("\n") if cid]
 
-    if not workspace_paths:
-        console.print("[dim]No workspaces found[/dim]")
-        return
+        if not container_ids:
+            console.print("[dim]No containers found for this repo[/dim]")
+            return
 
-    console.print(f"[cyan]Found {len(workspace_paths)} workspace(s)[/cyan]")
+        console.print(f"[cyan]Found {len(container_ids)} container(s)[/cyan]")
 
-    stopped_count = 0
-    for workspace_path in workspace_paths:
-        # Find containers with this workspace's label
-        label_filter = f"label=devcontainer.local_folder={workspace_path}"
-
-        try:
-            # List containers with this label
-            result = subprocess.run(
-                ["docker", "ps", "-q", "--filter", label_filter],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-
-            if result.returncode != 0:
-                console.print(f"[yellow]Warning:[/yellow] Failed to list containers for {workspace_path.name}")
-                continue
-
-            container_ids = result.stdout.strip().split("\n")
-            container_ids = [cid for cid in container_ids if cid]
-
-            if not container_ids:
-                continue
-
-            for container_id in container_ids:
-                if dry_run:
-                    console.print(f"[dim]Would stop and remove container {container_id[:12]} for {workspace_path.name}[/dim]")
+        stopped_count = 0
+        for container_id in container_ids:
+            if dry_run:
+                console.print(f"[dim]Would stop and remove container {container_id[:12]}[/dim]")
+            else:
+                stop_result = subprocess.run(
+                    ["docker", "rm", "-f", container_id],
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                )
+                if stop_result.returncode == 0:
+                    console.print(f"[green]✓[/green] Removed container {container_id[:12]}")
+                    stopped_count += 1
                 else:
-                    # Stop the container
-                    stop_result = subprocess.run(
-                        ["docker", "stop", container_id],
-                        capture_output=True,
-                        text=True,
-                        timeout=60,
-                    )
+                    console.print(f"[red]✗[/red] Failed to remove container {container_id[:12]}")
 
-                    if stop_result.returncode == 0:
-                        console.print(f"[green]✓[/green] Stopped container {container_id[:12]} for {workspace_path.name}")
+        if dry_run:
+            console.print(f"\n[dim]Dry run complete[/dim]")
+        else:
+            console.print(f"\n[green]Removed {stopped_count} container(s)[/green]")
 
-                        # Remove the container
-                        rm_result = subprocess.run(
-                            ["docker", "rm", container_id],
-                            capture_output=True,
-                            text=True,
-                            timeout=30,
-                        )
-
-                        if rm_result.returncode == 0:
-                            console.print(f"[green]✓[/green] Removed container {container_id[:12]}")
-                            stopped_count += 1
-                        else:
-                            console.print(f"[yellow]⚠[/yellow] Stopped but failed to remove container {container_id[:12]}")
-                    else:
-                        console.print(f"[red]✗[/red] Failed to stop container {container_id[:12]}")
-
-        except subprocess.TimeoutExpired:
-            console.print(f"[yellow]Warning:[/yellow] Timeout checking containers for {workspace_path.name}")
-        except Exception as e:
-            console.print(f"[yellow]Warning:[/yellow] Error processing {workspace_path.name}: {e}")
-
-    if dry_run:
-        console.print(f"\n[dim]Dry run complete - no containers were actually stopped or removed[/dim]")
-    else:
-        console.print(f"\n[green]Stopped and removed {stopped_count} container(s)[/green]")
+    except subprocess.TimeoutExpired:
+        console.print("[yellow]Warning:[/yellow] Timeout")
+    except Exception as e:
+        console.print(f"[yellow]Warning:[/yellow] Error: {e}")
 
 
 @cleanup.command("dags")
@@ -3254,13 +3117,13 @@ def cleanup_logs(ctx: click.Context, dry_run: bool, all: bool) -> None:
 
 
 @cleanup.command("branches")
-@click.option("--force", "-f", is_flag=True, help="Force removal of worktrees and branches")
+@click.option("--force", "-f", is_flag=True, help="Force removal of branches")
 @click.pass_context
 def cleanup_branches(ctx: click.Context, force: bool) -> None:
-    """Remove all worktrees and branches for the current spec.
+    """Remove all branches for the current spec.
 
     Auto-detects spec from git branch, or use --spec to specify.
-    Finds branches matching {spec}_a* pattern and jj workspaces in ~/.arborist/workspaces/{repo}/{spec}/.
+    Finds branches matching {spec}_* pattern.
 
     Use --force to force removal even if branches are not fully merged.
     """
@@ -3282,7 +3145,7 @@ def cleanup_branches(ctx: click.Context, force: bool) -> None:
         return
 
     git_root = get_git_root()
-    branch_pattern = f"{spec_id}_a"
+    branch_pattern = f"{spec_id}_"
 
     # Find all branches matching the pattern
     result = subprocess.run(
@@ -3293,73 +3156,18 @@ def cleanup_branches(ctx: click.Context, force: bool) -> None:
     )
     branches = [b.strip().lstrip("*+ ") for b in result.stdout.strip().split("\n") if b.strip()]
 
-    # Find worktrees using git worktree list (more reliable than directory listing)
-    # This catches worktrees even if arborist_home is different or directory structure varies
-    worktree_result = subprocess.run(
-        ["git", "worktree", "list", "--porcelain"],
-        cwd=git_root,
-        capture_output=True,
-        text=True,
-    )
-    worktrees = []
-    current_worktree = None
-    for line in worktree_result.stdout.strip().split("\n"):
-        if line.startswith("worktree "):
-            current_worktree = {"path": Path(line[9:])}
-        elif line.startswith("branch refs/heads/") and current_worktree:
-            branch_name = line[18:]
-            # Check if this worktree's branch matches our pattern
-            if branch_name.startswith(branch_pattern):
-                current_worktree["branch"] = branch_name
-                worktrees.append(current_worktree)
-            current_worktree = None
-        elif line == "" and current_worktree:
-            current_worktree = None
-
-    # Also find workspaces directory for this spec (for cleanup)
-    try:
-        workspace_base = get_workspace_base_dir()
-        repo_name = git_root.name
-        workspaces_dir = workspace_base / repo_name / spec_id
-    except Exception:
-        workspaces_dir = None
-
-    if not branches and not worktrees:
-        console.print(f"[dim]No branches or worktrees found for spec {spec_id}[/dim]")
+    if not branches:
+        console.print(f"[dim]No branches found for spec {spec_id}[/dim]")
         return
 
     if not ctx.obj.get("quiet"):
         console.print(f"[cyan]Cleaning up for spec {spec_id}...[/cyan]")
-        if branches:
-            console.print(f"[dim]Found {len(branches)} branches matching {branch_pattern}*[/dim]")
-        if worktrees:
-            console.print(f"[dim]Found {len(worktrees)} worktrees[/dim]")
+        console.print(f"[dim]Found {len(branches)} branches matching {branch_pattern}*[/dim]")
         if force:
             console.print(f"[yellow]Force mode enabled[/yellow]")
 
     cleaned = []
     errors = []
-
-    # Remove worktrees first (must be done before deleting branches)
-    for worktree_info in worktrees:
-        worktree_path = worktree_info["path"]
-        if not ctx.obj.get("quiet"):
-            console.print(f"[dim]Removing worktree {worktree_path.name}...[/dim]")
-        try:
-            cmd = ["git", "worktree", "remove", str(worktree_path)]
-            if force:
-                cmd.append("--force")
-            subprocess.run(cmd, cwd=git_root, check=True, capture_output=True)
-            cleaned.append(f"worktree:{worktree_path.name}")
-        except subprocess.CalledProcessError as e:
-            errors.append(f"worktree {worktree_path.name}: {e.stderr.strip() if e.stderr else str(e)}")
-
-    # Clean up empty workspaces directory
-    if workspaces_dir and workspaces_dir.exists():
-        try:
-            workspaces_dir.rmdir()  # Only removes if empty
-        except OSError:
-            pass  # Not empty, that's fine
 
     # Delete branches (longer names first to delete children before parents)
     for branch in sorted(branches, key=len, reverse=True):

@@ -1,18 +1,14 @@
-"""DAG builder for DAGU task execution using Jujutsu (jj).
+"""Sequential DAG builder for DAGU task execution.
 
-This module generates DAGU YAML for parallel task execution using
-merge-based rollup (not squash-based).
+This module generates DAGU YAML for sequential task execution.
+All tasks execute one at a time, with hierarchy expressed via subdags.
 
 Key features:
-- Uses jj workspaces for parallel execution
-- Merge commits for parent tasks (one commit per task)
-- Recursive tree structure with ROOT as final merge
-- Each task produces exactly one commit
-
-The generated DAG has this structure:
-- Root DAG: setup-changes -> sequential root task calls -> ROOT merge -> finalize
-- Parent subdags: parallel children -> create-merge -> run -> run-test -> complete
-- Leaf subdags: pre-sync -> container-up -> run -> run-test -> complete
+- Sequential execution only (no parallelism)
+- Subdags for logical grouping (phases, task groups)
+- Hooks and tests at any level in the hierarchy
+- Plain git commits (no jj, no workspaces)
+- Container mode: auto, enabled, or disabled
 """
 
 from dataclasses import dataclass, field
@@ -25,8 +21,6 @@ from agent_arborist.container_runner import (
     ContainerMode,
     should_use_container,
 )
-from agent_arborist.home import get_arborist_home
-from agent_arborist.task_spec import TaskSpec
 from agent_arborist.task_state import TaskTree
 
 
@@ -39,7 +33,6 @@ class SubDagStep:
     call: str | None = None  # Subdag name to call (None if command step)
     depends: list[str] = field(default_factory=list)
     output: str | dict | None = None  # Dagu output: string or {name, key} dict
-    retry: dict | None = None  # DAGU retryPolicy: {limit: int, intervalSec: int}
 
 
 @dataclass
@@ -62,25 +55,12 @@ class DagBundle:
 
 
 @dataclass
-class SimpleTask:
-    """A simple task representation for AI-generated DAGs.
-
-    Used by the DagGenerator when building DAGs from AI output.
-    """
-    id: str
-    description: str = ""
-    depends_on: list[str] = field(default_factory=list)
-    parallel_with: list[str] = field(default_factory=list)
-
-
-@dataclass
 class DagConfig:
     """Configuration for DAG generation."""
 
     name: str
     description: str = ""
     spec_id: str = ""
-    # Note: source_rev is set dynamically at dag run time via ARBORIST_SOURCE_REV
     container_mode: ContainerMode = ContainerMode.AUTO
     repo_path: Path | None = None  # For devcontainer detection
     runner: str | None = None  # AI runner to use
@@ -89,21 +69,9 @@ class DagConfig:
     arborist_home: Path | None = None  # For hooks
 
     def get_step_runner_model(self, step: str) -> tuple[str | None, str | None]:
-        """Get runner/model for a specific step.
-
-        If arborist_config is set, uses step-specific config resolution.
-        The runner/model fields on DagConfig act as CLI overrides.
-        Otherwise falls back to the runner/model fields directly.
-
-        Args:
-            step: Step name (e.g., "run", "post-merge")
-
-        Returns:
-            Tuple of (runner, model) - may be None if not configured
-        """
+        """Get runner/model for a specific step."""
         if self.arborist_config is not None:
             from agent_arborist.config import get_step_runner_model
-            # Pass runner/model as CLI overrides (highest precedence)
             return get_step_runner_model(
                 self.arborist_config,
                 step,
@@ -118,39 +86,23 @@ def build_arborist_command(task_id: str, subcommand: str) -> str:
 
     Args:
         task_id: Task identifier (e.g., "T001")
-        subcommand: Task subcommand (e.g., "run", "complete", "sync-parent")
+        subcommand: Task subcommand (e.g., "run", "run-test")
 
     Returns:
         Command string
-
-    Example:
-        >>> build_arborist_command("T001", "run")
-        "arborist task run T001"
     """
     return f"arborist task {subcommand} {task_id}"
 
 
-class SubDagBuilder:
-    """Builds DAGU DAG with subdags for task execution."""
+class SequentialDagBuilder:
+    """Builds sequential DAGU DAG with subdags for task execution."""
 
     def __init__(self, config: DagConfig):
         self.config = config
         self._task_tree: TaskTree | None = None
         self._use_containers = False
 
-    def build(self, spec: TaskSpec, task_tree: TaskTree) -> DagBundle:
-        """Build a complete DAG bundle from a TaskSpec and TaskTree.
-
-        Args:
-            spec: Parsed task specification (unused, kept for compatibility)
-            task_tree: Task hierarchy with parent/child relationships
-
-        Returns:
-            DagBundle with root DAG and all subdags
-        """
-        return self.build_from_tree(task_tree)
-
-    def build_from_tree(self, task_tree: TaskTree) -> DagBundle:
+    def build(self, task_tree: TaskTree) -> DagBundle:
         """Build a complete DAG bundle from a TaskTree.
 
         Args:
@@ -167,7 +119,7 @@ class SubDagBuilder:
             self.config.repo_path,
         )
 
-        # Build all subdags
+        # Build all subdags (for tasks with children)
         subdags = self._build_all_subdags(task_tree)
 
         # Build root DAG
@@ -176,106 +128,60 @@ class SubDagBuilder:
         return DagBundle(root=root, subdags=subdags)
 
     def _build_root_dag(self, task_tree: TaskTree) -> SubDag:
-        """Build the root DAG with setup, task calls, ROOT merge, and finalize.
-
-        The ROOT task is special - it merges all root-level tasks and handles
-        final integration before exporting to git.
+        """Build the root DAG that calls root tasks sequentially.
 
         Structure:
-        1. setup-changes: Create leaf changes only
-        2. Sequential root task calls
-        3. create-merge ROOT: Merge all root tasks
-        4. run ROOT: Final integration work
-        5. run-test ROOT: Full test suite
-        6. finalize: Bookmark + git export
-        7. complete ROOT: Mark done
+        1. setup: Create feature branch if needed
+        2. Sequential calls to root tasks (each depends on previous)
+        3. finalize: Push to remote
         """
         steps: list[SubDagStep] = []
 
-        # First step: setup-changes (creates leaf changes only)
+        # Setup step (creates branch if needed)
         steps.append(SubDagStep(
-            name="setup-changes",
-            command="arborist task setup-spec",
+            name="setup",
+            command="arborist spec setup",
         ))
 
-        # If using containers, start the merge container
-        if self._use_containers:
-            steps.append(SubDagStep(
-                name="merge-container-up",
-                command="arborist spec merge-container-up",
-                depends=["setup-changes"],
-            ))
-            setup_step = "merge-container-up"
-        else:
-            setup_step = "setup-changes"
+        prev_step = "setup"
 
-        # Root tasks: parallel by default, but honor depends_on for sequential deps
+        # Root tasks: execute sequentially
         root_task_ids = sorted(task_tree.root_tasks)
         for task_id in root_task_ids:
             task = task_tree.get_task(task_id)
+            if not task:
+                continue
 
-            # Build depends list - always depends on setup
-            depends = [setup_step]
+            # If task has children, call its subdag
+            # Otherwise, run the task directly
+            if task.children:
+                step = SubDagStep(
+                    name=f"c-{task_id}",
+                    call=task_id,
+                    depends=[prev_step],
+                )
+            else:
+                step = SubDagStep(
+                    name=task_id,
+                    command=build_arborist_command(task_id, "run"),
+                    depends=[prev_step],
+                )
+            steps.append(step)
+            prev_step = step.name
 
-            # If task has depends_on (sequential dependencies), add those too
-            if task and task.depends_on:
-                for dep_id in task.depends_on:
-                    if dep_id in root_task_ids:
-                        depends.append(f"c-{dep_id}")
-
-            steps.append(SubDagStep(
-                name=f"c-{task_id}",
-                call=task_id,
-                depends=depends,
-            ))
-
-        # Collect all root task call names for ROOT merge dependency
-        root_call_names = [f"c-{tid}" for tid in root_task_ids]
-
-        # ROOT merge: combine all root task merges
-        steps.append(SubDagStep(
-            name="create-merge",
-            command="arborist task create-merge ROOT",
-            depends=root_call_names if root_call_names else [prev_step],
-        ))
-
-        # ROOT's own work (final integration)
-        steps.append(SubDagStep(
-            name="run",
-            command="arborist task run ROOT",
-            depends=["create-merge"],
-        ))
-
-        # Full test suite
-        steps.append(SubDagStep(
-            name="run-test",
-            command="arborist task run-test ROOT",
-            depends=["run"],
-        ))
-
-        # Finalize: bookmark + git export
+        # Finalize: push to remote
         steps.append(SubDagStep(
             name="finalize",
             command="arborist spec finalize",
-            depends=["run-test"],
-        ))
-
-        # Complete ROOT
-        steps.append(SubDagStep(
-            name="complete",
-            command="arborist task complete ROOT",
-            depends=["finalize"],
+            depends=[prev_step],
         ))
 
         # Environment variables
         spec_id = self.config.spec_id or self.config.name
         env = [
             f"ARBORIST_SPEC_ID={spec_id}",
-            "ARBORIST_TASK_PATH=ROOT",
             "ARBORIST_CONTAINER_MODE=${ARBORIST_CONTAINER_MODE}",
             "ARBORIST_SOURCE_REV=${ARBORIST_SOURCE_REV}",
-            # ROOT runs after create-merge, so AI needs merge-aware prompt
-            "ARBORIST_POST_MERGE=true",
         ]
 
         return SubDag(
@@ -286,263 +192,85 @@ class SubDagBuilder:
             is_root=True,
         )
 
-    def _compute_task_paths(self, task_tree: TaskTree) -> dict[str, list[str]]:
-        """Compute hierarchical paths for all tasks.
-
-        Returns:
-            Dict mapping task_id to its full path (e.g., {"T6": ["T1", "T2", "T6"]})
-        """
-        paths: dict[str, list[str]] = {}
-
-        def compute_path(task_id: str) -> list[str]:
-            if task_id in paths:
-                return paths[task_id]
-
-            task = task_tree.get_task(task_id)
-            if not task or not task.parent_id:
-                # Root task
-                paths[task_id] = [task_id]
-            else:
-                # Child task - parent path + this task
-                parent_path = compute_path(task.parent_id)
-                paths[task_id] = parent_path + [task_id]
-
-            return paths[task_id]
-
-        for task_id in task_tree.tasks:
-            compute_path(task_id)
-
-        return paths
-
     def _build_all_subdags(self, task_tree: TaskTree) -> list[SubDag]:
-        """Build subdags for all tasks."""
+        """Build subdags for all tasks that have children."""
         subdags: list[SubDag] = []
 
-        # Compute hierarchical paths for all tasks
-        task_paths = self._compute_task_paths(task_tree)
-
-        task_ids = sorted(task_tree.tasks.keys())
-
-        for task_id in task_ids:
+        for task_id in sorted(task_tree.tasks.keys()):
             task = task_tree.get_task(task_id)
-            if not task:
+            if not task or not task.children:
+                # Skip leaf tasks - they're called directly
                 continue
 
-            task_path = task_paths.get(task_id, [task_id])
-
-            # Get predecessor if this task has depends_on (last one wins)
-            predecessor = task.depends_on[-1] if task.depends_on else None
-
-            if task_tree.is_leaf(task_id):
-                subdag = self._build_leaf_subdag(task_id, task_path, predecessor)
-            else:
-                subdag = self._build_parent_subdag(task_id, task_tree, task_path, predecessor)
-
+            subdag = self._build_parent_subdag(task_id, task_tree)
             subdags.append(subdag)
 
         return subdags
 
-    def _build_leaf_subdag(self, task_id: str, task_path: list[str], predecessor: str | None = None) -> SubDag:
-        """Build a leaf subdag for jj workflow.
+    def _build_parent_subdag(self, task_id: str, task_tree: TaskTree) -> SubDag:
+        """Build a subdag for a parent task (task with children).
 
-        Leaf subdags produce a single commit with the task's work:
-        - pre-sync: Setup workspace (creates change from predecessor or source_rev)
-        - container-up: Start container (if enabled)
-        - run: Execute AI runner
-        - run-test: Run tests
-        - complete: Mark [DONE] (no squash - commit stays as-is)
-        - container-down: Stop container (if enabled)
-        - cleanup: Remove workspace
+        The subdag executes children sequentially, then runs tests/hooks.
 
-        The leaf's commit becomes a parent of its parent task's merge commit.
-
-        Args:
-            task_id: Task identifier
-            task_path: Hierarchical path to this task
-            predecessor: If set, this task should be created from the predecessor's merge
+        Structure:
+        1. Sequential child execution (each depends on previous)
+        2. Phase-level tests (if any)
+        3. Phase-level hooks (if any)
         """
-
-        def output_var(step: str) -> dict:
-            """Generate output config for a step."""
-            var_name = f"{task_id}_{step.upper().replace('-', '_')}_RESULT"
-            return {"name": var_name, "key": var_name}
-
         steps: list[SubDagStep] = []
-
-        # Pre-sync (creates workspace, rebases onto parent's completed merge)
-        steps.append(SubDagStep(
-            name="pre-sync",
-            command=build_arborist_command(task_id, "pre-sync"),
-            output=output_var("pre-sync"),
-        ))
-
-        # Container lifecycle
-        if self._use_containers:
-            steps.append(SubDagStep(
-                name="container-up",
-                command=build_arborist_command(task_id, "container-up"),
-                depends=["pre-sync"],
-            ))
-
-        # Run (AI does the task's work)
-        steps.append(SubDagStep(
-            name="run",
-            command=build_arborist_command(task_id, "run"),
-            depends=["container-up"] if self._use_containers else ["pre-sync"],
-            output=output_var("run"),
-        ))
-
-        # Run-test
-        steps.append(SubDagStep(
-            name="run-test",
-            command=build_arborist_command(task_id, "run-test"),
-            depends=["run"],
-            output=output_var("run-test"),
-        ))
-
-        # Complete (just marks [DONE], no squash)
-        steps.append(SubDagStep(
-            name="complete",
-            command=build_arborist_command(task_id, "complete"),
-            depends=["run-test"],
-            output=output_var("complete"),
-        ))
-
-        # Container down
-        if self._use_containers:
-            steps.append(SubDagStep(
-                name="container-down",
-                command=build_arborist_command(task_id, "container-stop"),
-                depends=["complete"],
-            ))
-
-        # Cleanup workspace
-        steps.append(SubDagStep(
-            name="cleanup",
-            command=build_arborist_command(task_id, "cleanup"),
-            depends=["container-down"] if self._use_containers else ["complete"],
-            output=output_var("cleanup"),
-        ))
-
-        # Environment
-        spec_id = self.config.spec_id or self.config.name
-        task_path_str = ":".join(task_path)  # e.g., "T1:T2:T6"
-        env_vars = [
-            f"ARBORIST_SPEC_ID={spec_id}",
-            f"ARBORIST_TASK_ID={task_id}",
-            f"ARBORIST_TASK_PATH={task_path_str}",
-            "ARBORIST_CONTAINER_MODE=${ARBORIST_CONTAINER_MODE}",
-            "ARBORIST_SOURCE_REV=${ARBORIST_SOURCE_REV}",
-        ]
-
-        # If this task depends on a predecessor, add ARBORIST_PREDECESSOR
-        # This tells pre-sync to create the change from the predecessor's merge
-        if predecessor:
-            env_vars.append(f"ARBORIST_PREDECESSOR={predecessor}")
-
-        return SubDag(name=task_id, steps=steps, env=env_vars)
-
-    def _build_parent_subdag(self, task_id: str, task_tree: TaskTree, task_path: list[str], predecessor: str | None = None) -> SubDag:
-        """Build a parent subdag that calls child subdags and creates a merge.
-
-        Parent subdags produce a merge commit that combines all children's work
-        plus the parent's own work:
-
-        1. Children run in parallel (no dependencies between them)
-        2. create-merge: After ALL children complete, create merge commit
-        3. run: Parent does its OWN work in the merge commit
-        4. run-test: Integration tests
-        5. complete: Mark [DONE]
-        6. cleanup: Remove workspace
-
-        The merge commit has all completed children as parents.
-        """
-
-        def output_var(step: str) -> dict:
-            """Generate output config for a step."""
-            var_name = f"{task_id}_{step.upper().replace('-', '_')}_RESULT"
-            return {"name": var_name, "key": var_name}
-
-        steps: list[SubDagStep] = []
-
-        # Get children sorted
         task = task_tree.get_task(task_id)
+
         if not task:
             return SubDag(name=task_id, steps=steps)
 
         child_ids = sorted(task.children)
+        prev_step: str | None = None
 
-        # Children run in PARALLEL (no dependencies between them)
-        child_call_names = []
         for child_id in child_ids:
-            call_name = f"c-{child_id}"
-            child_call_names.append(call_name)
+            child = task_tree.get_task(child_id)
+            if not child:
+                continue
+
+            # If child has children, call its subdag
+            # Otherwise, run the task directly
+            if child.children:
+                step = SubDagStep(
+                    name=f"c-{child_id}",
+                    call=child_id,
+                    depends=[prev_step] if prev_step else [],
+                )
+            else:
+                step = SubDagStep(
+                    name=child_id,
+                    command=build_arborist_command(child_id, "run"),
+                    depends=[prev_step] if prev_step else [],
+                )
+            steps.append(step)
+            prev_step = step.name
+
+        # Add phase-level test step if this is a phase (has description)
+        if prev_step and task.description:
             steps.append(SubDagStep(
-                name=call_name,
-                call=child_id,
-                # No depends - children are independent
+                name="phase-tests",
+                command=f"arborist task run-test {task_id}",
+                depends=[prev_step],
             ))
-
-        # Create merge: After ALL children complete
-        # This creates a merge commit with all children as parents
-        steps.append(SubDagStep(
-            name="create-merge",
-            command=build_arborist_command(task_id, "create-merge"),
-            depends=child_call_names,  # Wait for ALL children
-            output=output_var("create-merge"),
-        ))
-
-        # Parent's OWN work (in the merge commit's working copy)
-        steps.append(SubDagStep(
-            name="run",
-            command=build_arborist_command(task_id, "run"),
-            depends=["create-merge"],
-            output=output_var("run"),
-        ))
-
-        # Run integration tests
-        steps.append(SubDagStep(
-            name="run-test",
-            command=build_arborist_command(task_id, "run-test"),
-            depends=["run"],
-            output=output_var("run-test"),
-        ))
-
-        # Complete (just marks [DONE], no squash)
-        steps.append(SubDagStep(
-            name="complete",
-            command=build_arborist_command(task_id, "complete"),
-            depends=["run-test"],
-            output=output_var("complete"),
-        ))
-
-        # Cleanup workspace
-        steps.append(SubDagStep(
-            name="cleanup",
-            command=build_arborist_command(task_id, "cleanup"),
-            depends=["complete"],
-            output=output_var("cleanup"),
-        ))
 
         # Environment
         spec_id = self.config.spec_id or self.config.name
-        task_path_str = ":".join(task_path)  # e.g., "T1:T2"
-        env_vars = [
+        env = [
             f"ARBORIST_SPEC_ID={spec_id}",
             f"ARBORIST_TASK_ID={task_id}",
-            f"ARBORIST_TASK_PATH={task_path_str}",
             "ARBORIST_CONTAINER_MODE=${ARBORIST_CONTAINER_MODE}",
             "ARBORIST_SOURCE_REV=${ARBORIST_SOURCE_REV}",
-            # Parent tasks run after create-merge, so AI needs merge-aware prompt
-            "ARBORIST_POST_MERGE=true",
         ]
 
-        # If this task depends on a predecessor, add ARBORIST_PREDECESSOR
-        # This tells pre-sync to create the change from the predecessor's merge
-        if predecessor:
-            env_vars.append(f"ARBORIST_PREDECESSOR={predecessor}")
-
-        return SubDag(name=task_id, steps=steps, env=env_vars)
+        return SubDag(
+            name=task_id,
+            description=task.description,
+            env=env,
+            steps=steps,
+        )
 
     def _step_to_dict(self, step: SubDagStep) -> dict[str, Any]:
         """Convert a SubDagStep to a dictionary for YAML serialization."""
@@ -556,7 +284,6 @@ class SubDagBuilder:
             d["depends"] = step.depends
         if step.output is not None:
             d["output"] = step.output
-        # Note: No retryPolicy for jj - operations are atomic
 
         return d
 
@@ -573,9 +300,9 @@ class SubDagBuilder:
 
         return d
 
-    def build_yaml(self, spec: TaskSpec, task_tree: TaskTree) -> str:
-        """Build multi-document DAGU YAML string from a TaskSpec."""
-        bundle = self.build(spec, task_tree)
+    def build_yaml(self, task_tree: TaskTree) -> str:
+        """Build multi-document DAGU YAML string from a TaskTree."""
+        bundle = self.build(task_tree)
         return self._serialize_bundle(bundle)
 
     def _serialize_bundle(self, bundle: DagBundle) -> str:
@@ -621,16 +348,18 @@ class SubDagBuilder:
         return "---\n".join(documents)
 
 
-def _build_dag_yaml_from_tree(
+def build_dag_yaml(
     task_tree: TaskTree,
-    dag_name: str,
+    dag_name: str = "",
     description: str = "",
     container_mode: ContainerMode = ContainerMode.AUTO,
     repo_path: Path | None = None,
+    arborist_config: Any = None,
+    arborist_home: Path | None = None,
 ) -> str:
-    """Build jj DAG YAML from a TaskTree.
+    """Build sequential DAG YAML from a TaskTree.
 
-    This is the main entry point for generating jj-based DAGs.
+    This is the main entry point for generating sequential DAGs.
 
     Args:
         task_tree: Task hierarchy
@@ -638,13 +367,11 @@ def _build_dag_yaml_from_tree(
         description: DAG description
         container_mode: Container execution mode
         repo_path: Path to repo for devcontainer detection
+        arborist_config: Arborist configuration
+        arborist_home: Arborist home directory
 
     Returns:
         Multi-document YAML string
-
-    Note:
-        ARBORIST_SOURCE_REV is set dynamically at dag run time,
-        not baked into the DAG YAML.
     """
     config = DagConfig(
         name=dag_name.replace("-", "_"),
@@ -652,11 +379,12 @@ def _build_dag_yaml_from_tree(
         spec_id=dag_name,
         container_mode=container_mode,
         repo_path=repo_path,
+        arborist_config=arborist_config,
+        arborist_home=arborist_home,
     )
 
-    builder = SubDagBuilder(config)
-    bundle = builder.build_from_tree(task_tree)
-    return builder._serialize_bundle(bundle)
+    builder = SequentialDagBuilder(config)
+    return builder.build_yaml(task_tree)
 
 
 def parse_yaml_to_bundle(yaml_content: str) -> DagBundle:
@@ -737,77 +465,3 @@ def is_task_dag(yaml_content: str) -> bool:
         return any(e.startswith("ARBORIST_SPEC_ID=") for e in env)
     except Exception:
         return False
-
-
-def build_dag_yaml(
-    task_tree: TaskTree | None = None,
-    dag_name: str = "",
-    description: str = "",
-    container_mode: ContainerMode = ContainerMode.AUTO,
-    repo_path: Path | None = None,
-    tasks: list[SimpleTask] | None = None,
-    arborist_config: Any = None,
-    arborist_home: Path | None = None,
-) -> str:
-    """Build DAG YAML from either a TaskTree or a list of SimpleTask.
-
-    This is a unified entry point that supports both:
-    - TaskTree (from task specs)
-    - list[SimpleTask] (from AI generator)
-
-    Args:
-        task_tree: Task hierarchy (mutually exclusive with tasks)
-        dag_name: Name for the DAG
-        description: DAG description
-        container_mode: Container execution mode
-        repo_path: Path to repo for devcontainer detection
-        tasks: List of simple tasks (mutually exclusive with task_tree)
-        arborist_config: Arborist configuration (for step settings)
-        arborist_home: Arborist home directory (for hooks)
-
-    Returns:
-        Multi-document YAML string
-
-    Note:
-        ARBORIST_SOURCE_REV is set dynamically at dag run time,
-        not baked into the DAG YAML.
-    """
-    # If tasks are provided, convert to TaskTree
-    if tasks is not None:
-        from agent_arborist.task_state import TaskTree as TT, TaskNode
-        tree = TT(spec_id=dag_name)
-
-        # Build task lookup and find dependencies
-        for task in tasks:
-            # Determine parent from depends_on (first dependency is parent in jj model)
-            parent_id = task.depends_on[0] if task.depends_on else None
-            tree.tasks[task.id] = TaskNode(
-                task_id=task.id,
-                description=task.description,
-                parent_id=parent_id,
-                children=[],
-            )
-
-        # Build children relationships
-        for task_id, node in tree.tasks.items():
-            if node.parent_id and node.parent_id in tree.tasks:
-                tree.tasks[node.parent_id].children.append(task_id)
-
-        # Find root tasks
-        tree.root_tasks = [
-            tid for tid, t in tree.tasks.items() if t.parent_id is None
-        ]
-
-        task_tree = tree
-
-    if task_tree is None:
-        raise ValueError("Either task_tree or tasks must be provided")
-
-    # Use the jj builder
-    return _build_dag_yaml_from_tree(
-        task_tree=task_tree,
-        dag_name=dag_name,
-        description=description,
-        container_mode=container_mode,
-        repo_path=repo_path,
-    )

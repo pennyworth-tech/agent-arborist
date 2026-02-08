@@ -51,12 +51,14 @@ class RunResult(StepResultBase):
     Captures AI execution metrics and output.
     """
 
+    task_id: str = ""
+    message: str = ""
     files_changed: int = 0
     commit_message: str | None = None
     summary: str = ""
-    runner: str = ""
+    runner: str | None = None
     model: str | None = None
-    duration_seconds: float = 0.0
+    duration_seconds: float | None = None
 
 
 @dataclass
@@ -79,11 +81,14 @@ class RunTestResult(StepResultBase):
     Captures test execution results.
     """
 
+    task_id: str = ""
+    message: str = ""
     test_command: str | None = None
     test_count: int | None = None
     passed: int | None = None
     failed: int | None = None
-    skipped: int | None = None
+    stdout: str | None = None
+    stderr: str | None = None
     output_summary: str = ""
 
 

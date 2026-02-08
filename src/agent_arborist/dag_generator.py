@@ -245,18 +245,17 @@ def validate_and_fix_multi_doc(documents: list[dict]) -> tuple[list[dict], list[
 
 
 @dataclass
-@dataclass
 class TaskInfo:
     """Simple task info from AI analysis.
 
     This is the intermediate format from AI parsing, which gets
-    converted to SimpleTask for the unified DAG builder.
+    converted to TaskTree for the sequential DAG builder.
     """
 
     id: str
     description: str
     depends_on: list[str] = field(default_factory=list)
-    parallel_with: list[str] = field(default_factory=list)
+    parallel_with: list[str] = field(default_factory=list)  # Ignored in sequential model
 
 
 class DagGenerator:
@@ -353,24 +352,27 @@ class DagGenerator:
                 raw_output=result.output,
             )
 
-        # Convert TaskInfo to SimpleTask for unified builder
-        from agent_arborist.dag_builder import SimpleTask, build_dag_yaml
+        # Convert TaskInfo to TaskTree for sequential builder
+        from agent_arborist.dag_builder import build_dag_yaml
+        from agent_arborist.task_state import TaskTree, TaskNode
 
-        simple_tasks = [
-            SimpleTask(
-                id=t.id,
+        task_tree = TaskTree(spec_id=dag_name)
+        for t in tasks:
+            task_tree.tasks[t.id] = TaskNode(
+                task_id=t.id,
                 description=t.description,
+                # depends_on in sequential model = previous phase tasks
                 depends_on=t.depends_on,
-                parallel_with=t.parallel_with,
             )
-            for t in tasks
-        ]
+            # All tasks without dependencies are root tasks
+            if not t.depends_on:
+                task_tree.root_tasks.append(t.id)
 
-        # Step 2-4: Build DAG with hooks via unified builder
+        # Step 2-4: Build DAG with hooks via sequential builder
         description = data.get("description", f"DAG for {dag_name}")
 
         yaml_content = build_dag_yaml(
-            tasks=simple_tasks,
+            task_tree=task_tree,
             dag_name=dag_name,
             description=description,
             arborist_config=self.arborist_config,
@@ -504,7 +506,7 @@ def build_simple_dag(
     tasks: list[dict],
     description: str = "",
 ) -> str:
-    """Build a subdag-based DAG YAML from a list of tasks.
+    """Build a sequential DAG YAML from a list of tasks.
 
     This is a deterministic alternative to AI generation.
 
@@ -514,11 +516,9 @@ def build_simple_dag(
         description: DAG description
 
     Returns:
-        Multi-document YAML string with root DAG and subdags
+        YAML string with sequential DAG
     """
-    from agent_arborist.dag_builder import (
-        SubDagBuilder, DagConfig, SubDag, SubDagStep
-    )
+    from agent_arborist.dag_builder import build_dag_yaml
     from agent_arborist.task_state import TaskTree, TaskNode
 
     dag_name = spec_id.replace("-", "_")
@@ -540,87 +540,9 @@ def build_simple_dag(
         if t.parent_id is None
     ]
 
-    # Build using SubDagBuilder
-    config = DagConfig(name=dag_name, description=description, spec_id=spec_id)
-    builder = SubDagBuilder(config)
-
-    # We need a TaskSpec but we don't have one, so we build manually
-    # Build root DAG using jj setup
-    root_steps: list[SubDagStep] = [
-        SubDagStep(name="setup-changes", command="arborist task setup-spec")
-    ]
-
-    # Linear calls to root tasks
-    prev_step = "setup-changes"
-    for task_id in sorted(tree.root_tasks):
-        root_steps.append(SubDagStep(
-            name=f"c-{task_id}",
-            call=task_id,
-            depends=[prev_step],
-        ))
-        prev_step = f"c-{task_id}"
-
-    root = SubDag(
-        name=dag_name,
+    # Build using sequential builder
+    return build_dag_yaml(
+        task_tree=tree,
+        dag_name=dag_name,
         description=description or f"DAG for {spec_id}",
-        env=[f"ARBORIST_SPEC_ID={spec_id}"],
-        steps=root_steps,
-        is_root=True,
     )
-
-    # Compute task paths for hierarchical descriptions
-    task_paths = builder._compute_task_paths(tree)
-
-    # Build subdags for each task
-    subdags: list[SubDag] = []
-    for task_id in sorted(tree.tasks.keys()):
-        task = tree.get_task(task_id)
-        if not task:
-            continue
-
-        task_path = task_paths.get(task_id, [task_id])
-
-        if tree.is_leaf(task_id):
-            subdag = builder._build_leaf_subdag(task_id, task_path)
-        else:
-            subdag = builder._build_parent_subdag(task_id, tree, task_path)
-
-        subdags.append(subdag)
-
-    # Render to multi-document YAML
-    import yaml
-
-    class CustomDumper(yaml.SafeDumper):
-        pass
-
-    def represent_list(dumper, data):
-        if all(isinstance(item, str) for item in data):
-            return dumper.represent_sequence(
-                "tag:yaml.org,2002:seq", data, flow_style=True
-            )
-        return dumper.represent_sequence("tag:yaml.org,2002:seq", data)
-
-    def represent_str(dumper, data):
-        if "\n" in data:
-            return dumper.represent_scalar("tag:yaml.org,2002:str", data, style="|")
-        return dumper.represent_scalar("tag:yaml.org,2002:str", data)
-
-    CustomDumper.add_representer(list, represent_list)
-    CustomDumper.add_representer(str, represent_str)
-
-    documents = []
-
-    # Root DAG
-    root_dict = builder._subdag_to_dict(root)
-    documents.append(yaml.dump(
-        root_dict, Dumper=CustomDumper, default_flow_style=False, sort_keys=False
-    ))
-
-    # Subdags
-    for subdag in subdags:
-        subdag_dict = builder._subdag_to_dict(subdag)
-        documents.append(yaml.dump(
-            subdag_dict, Dumper=CustomDumper, default_flow_style=False, sort_keys=False
-        ))
-
-    return "---\n".join(documents)

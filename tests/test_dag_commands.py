@@ -68,6 +68,14 @@ def repo_with_dag(initialized_repo, fixtures_dir):
     shutil.copy(fixtures_dir / "dag-simple.yaml", dags_dir / "simple-test.yaml")
     shutil.copy(fixtures_dir / "dag-simple.json", dags_dir / "simple-test.json")
 
+    # Create and checkout a feature branch (dag run requires non-main branch)
+    subprocess.run(
+        ["git", "checkout", "-b", "simple-test"],
+        capture_output=True,
+        check=True,
+        cwd=initialized_repo,
+    )
+
     return initialized_repo
 
 
@@ -78,6 +86,14 @@ def repo_with_parallel_dag(initialized_repo, fixtures_dir):
 
     shutil.copy(fixtures_dir / "dag-parallel.yaml", dags_dir / "parallel-test.yaml")
     shutil.copy(fixtures_dir / "dag-parallel.json", dags_dir / "parallel-test.json")
+
+    # Create and checkout a feature branch (dag run requires non-main branch)
+    subprocess.run(
+        ["git", "checkout", "-b", "parallel-test"],
+        capture_output=True,
+        check=True,
+        cwd=initialized_repo,
+    )
 
     return initialized_repo
 
