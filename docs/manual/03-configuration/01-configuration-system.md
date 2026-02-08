@@ -423,10 +423,10 @@ cat .arborist/task-state/001-feature.json
 ls .arborist/dagu/data/dags/001-feature/
 cat .arborist/dagu/data/dags/001-feature/latest/stdout.log
 
-# Inspect worktree
-ls -la .arborist/worktrees/001-feature/T003/
-cd .arborist/worktrees/001-feature/T003/
-git log --oneline
+# Inspect workspace (stored outside repo)
+ls -la ~/.arborist/workspaces/my-project/001-feature/T003/
+cd ~/.arborist/workspaces/my-project/001-feature/T003/
+jj log --oneline
 ```
 
 ### Retry Failed Tasks
@@ -439,11 +439,10 @@ arborist dag run 001-feature
 ### Manual Fixes
 
 ```bash
-# Go to the worktree and fix code manually
-cd .arborist/worktrees/001-feature/T003/
+# Go to the workspace and fix code manually
+cd ~/.arborist/workspaces/my-project/001-feature/T003/
 # Edit files...
-git add .
-git commit -m "Fix: Manual fix for failed task"
+jj describe -m "Fix: Manual fix for failed task"
 
 # Retry
 cd /path/to/project
@@ -460,8 +459,8 @@ rm -rf .arborist
 git checkout main
 git branch -D main_a main_a_T001 main_a_T002 main_a_T003
 
-# Prune orphaned worktrees
-git worktree prune
+# Forget jj workspaces
+jj workspace forget --all
 ```
 
 ### Reset Specific Spec
@@ -470,7 +469,7 @@ git worktree prune
 # Remove specific spec and its branches
 rm -rf .arborist/specs/001-feature
 rm -rf .arborist/dagu/dags/001-feature*
-rm -rf .arborist/worktrees/001-feature
+rm -rf ~/.arborist/workspaces/my-project/001-feature
 rm -f .arborist/task-state/001-feature.json
 
 # Remove branches

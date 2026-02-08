@@ -371,12 +371,12 @@ For development/testing:
 
 ```bash
 # Keep container running (manual mode)
-devcontainer up --workspace-folder .arborist/worktrees/spec1/T001
+devcontainer up --workspace-folder ~/.arborist/workspaces/repo/spec1/T001
 
 # Your work here...
 
 # Stop when done
-docker stop $(docker ps -q --filter label=devcontainer.local_folder=$(pwd)/.arborist/worktrees/spec1/T001)
+docker stop $(docker ps -q --filter label=devcontainer.local_folder=$HOME/.arborist/workspaces/repo/spec1/T001)
 ```
 
 ---
@@ -1408,16 +1408,16 @@ docker ps
 devcontainer --version
 
 # Try manual start
-devcontainer up --workspace-folder .arborist/worktrees/spec1/T001
+devcontainer up --workspace-folder ~/.arborist/workspaces/repo/spec1/T001
 ```
 
-### .devcontainer not accessible in worktree
+### .devcontainer not accessible in workspace
 
-Arborist creates a symlink from worktree to repo root's `.devcontainer/`. If this fails:
+Arborist creates a symlink from workspace to repo root's `.devcontainer/`. If this fails:
 
 ```bash
 # Manual symlink
-ln -s /path/to/target/.devcontainer .arborist/worktrees/spec1/T001/.devcontainer
+ln -s /path/to/target/.devcontainer ~/.arborist/workspaces/repo/spec1/T001/.devcontainer
 ```
 
 ---

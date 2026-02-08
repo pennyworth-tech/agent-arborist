@@ -584,10 +584,14 @@ class TestScenario6IntegrityFailWorktreeDeleted:
         # Run DAG to completion
         run_id, success = run_dag_sync(dagu_home, spec_id)
 
-        # Delete worktree directory if it exists
-        worktrees_dir = arborist_home / "worktrees" / spec_id
-        if worktrees_dir.exists():
-            shutil.rmtree(worktrees_dir)
+        # Delete workspace directory if it exists
+        from agent_arborist.tasks import get_workspace_base_dir
+        workspace_base = get_workspace_base_dir()
+        git_root = arborist_home.parent  # arborist_home is {git_root}/.arborist
+        repo_name = git_root.name
+        workspaces_dir = workspace_base / repo_name / spec_id
+        if workspaces_dir.exists():
+            shutil.rmtree(workspaces_dir)
 
         # Restart (should detect integrity failure)
         env_vars = {"DAGU_HOME": str(dagu_home)}

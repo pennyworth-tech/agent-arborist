@@ -122,25 +122,25 @@ T001 SUBDAG
 ├── pre-sync (runs on HOST)
 │   │
 │   │   # Create worktree for T001's branch
-│   │   mkdir -p .arborist/worktrees/spec-123/T001
-│   │   git worktree add .arborist/worktrees/spec-123/T001 main_a_T001
+│   │   mkdir -p ~/.arborist/workspaces/repo/spec-123/T001
+│   │   git worktree add ~/.arborist/workspaces/repo/spec-123/T001 main_a_T001
 │   │
 │   │   # Sync with parent branch
-│   │   cd .arborist/worktrees/spec-123/T001
+│   │   cd ~/.arborist/workspaces/repo/spec-123/T001
 │   │   git merge main_a --no-edit
 │   │
 │   │   # Copy credentials
 │   │   cp .devcontainer/.env → worktree/.devcontainer/.env
 │   │
-│   └── ✓ Worktree ready at .arborist/worktrees/spec-123/T001
+│   └── ✓ Worktree ready at ~/.arborist/workspaces/repo/spec-123/T001
 │
 ├── container-up (if container_mode enabled)
 │   │
 │   │   # Start devcontainer for THIS worktree (isolated from others)
-│   │   devcontainer up --workspace-folder .arborist/worktrees/spec-123/T001
+│   │   devcontainer up --workspace-folder ~/.arborist/workspaces/repo/spec-123/T001
 │   │
 │   │   # Container now running with:
-│   │   #   - Mount: .arborist/worktrees/spec-123/T001 → /workspace
+│   │   #   - Mount: ~/.arborist/workspaces/repo/spec-123/T001 → /workspace
 │   │   #   - .env loaded (API keys, etc)
 │   │   #   - Docker-in-Docker available
 │   │
@@ -150,7 +150,7 @@ T001 SUBDAG
 │   │
 │   │   # Execute AI runner INSIDE the container
 │   │   devcontainer exec \
-│   │     --workspace-folder .arborist/worktrees/spec-123/T001 \
+│   │     --workspace-folder ~/.arborist/workspaces/repo/spec-123/T001 \
 │   │     arborist task run T001
 │   │
 │   │   # Inside container, arborist invokes the AI runner:
@@ -163,7 +163,7 @@ T001 SUBDAG
 ├── commit
 │   │
 │   │   # Commit changes in worktree
-│   │   cd .arborist/worktrees/spec-123/T001
+│   │   cd ~/.arborist/workspaces/repo/spec-123/T001
 │   │   git add -A
 │   │   git commit -m "T001: implement feature X"
 │   │
@@ -173,7 +173,7 @@ T001 SUBDAG
 │   │
 │   │   # Run tests INSIDE container
 │   │   devcontainer exec \
-│   │     --workspace-folder .arborist/worktrees/spec-123/T001 \
+│   │     --workspace-folder ~/.arborist/workspaces/repo/spec-123/T001 \
 │   │     pytest
 │   │
 │   └── ✓ Tests pass
@@ -197,7 +197,7 @@ T001 SUBDAG
 ├── container-down
 │   │
 │   │   # Stop T001's container (but not the merge container)
-│   │   docker stop $(docker ps -q --filter label=devcontainer.local_folder=".arborist/worktrees/spec-123/T001")
+│   │   docker stop $(docker ps -q --filter label=devcontainer.local_folder="~/.arborist/workspaces/repo/spec-123/T001")
 │   │
 │   └── ✓ T001 container stopped
 │
@@ -212,8 +212,8 @@ T002 SUBDAG (depends on T001)
 ├── pre-sync
 │   │
 │   │   # Create worktree for T002
-│   │   git worktree add .arborist/worktrees/spec-123/T002 main_a_T002
-│   │   cd .arborist/worktrees/spec-123/T002
+│   │   git worktree add ~/.arborist/workspaces/repo/spec-123/T002 main_a_T002
+│   │   cd ~/.arborist/workspaces/repo/spec-123/T002
 │   │   git merge main_a --no-edit   # Gets T001's changes!
 │   │
 │   │   # T002 worktree stays checked out while children run
@@ -272,7 +272,7 @@ T002 SUBDAG (depends on T001)
 │   │
 │   │   # Run integration tests in T002 worktree
 │   │   # Now contains: T001 base + T003 + T004 + T005 merged
-│   │   cd .arborist/worktrees/spec-123/T002
+│   │   cd ~/.arborist/workspaces/repo/spec-123/T002
 │   │   pytest
 │   │
 │   └── ✓ Integration tests pass
@@ -293,7 +293,7 @@ T002 SUBDAG (depends on T001)
 ├── post-cleanup
 │   │
 │   │   # Now safe to remove T002 worktree
-│   │   git worktree remove .arborist/worktrees/spec-123/T002 --force
+│   │   git worktree remove ~/.arborist/workspaces/repo/spec-123/T002 --force
 │   │
 │   └── ✓ Cleanup complete
 │
@@ -804,7 +804,7 @@ Instead of creating a branch for each task, create a change:
 ```bash
 # Old way (git)
 git checkout -b main_a_T001 main
-git worktree add .arborist/worktrees/spec/T001 main_a_T001
+git worktree add ~/.arborist/workspaces/repo/spec/T001 main_a_T001
 
 # Jujutsu way
 jj new main -m "spec:T001 - Implement feature X"

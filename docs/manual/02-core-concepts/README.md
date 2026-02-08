@@ -15,5 +15,5 @@ Fundamental concepts for using Agent Arborist.
 |---------|-------------|----------|
 | Specs | Markdown task definitions | `.arborist/specs/{spec_id}/tasks.md` |
 | DAGs | Dagu workflow files | `.arborist/dagu/{spec_id}/` |
-| Worktrees | Isolated Git workspaces | `.arborist/worktrees/{spec_id}/{task_id}/` |
+| Workspaces | Isolated jj workspaces | `~/.arborist/workspaces/{repo}/{spec_id}/{task_id}/` |
 | Configs | JSON configuration | Global: `~/.arborist_config.json`, Project: `.arborist/config.json` |

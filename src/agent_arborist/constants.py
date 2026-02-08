@@ -107,9 +107,10 @@ def generate_gitignore_content(add_header: bool = True) -> str:
 
     # Ignore specific subdirectories that should not be tracked
     # Note: We do NOT ignore .arborist/ itself so we can track specific files
+    # Worktrees are stored outside the repo (in ~/.arborist/workspaces by default)
     lines.append(f"{ARBORIST_DIR_NAME}/dagu/data/")
     lines.append(f"{ARBORIST_DIR_NAME}/prompts/")
-    lines.append(f"{ARBORIST_DIR_NAME}/worktrees/")
+    lines.append(f"{ARBORIST_DIR_NAME}/restart-contexts/")
     lines.append(f"{ARBORIST_DIR_NAME}/*.log")
 
     return "\n".join(lines) + "\n"
@@ -140,7 +141,7 @@ def parse_gitignore_content(content: str) -> dict:
     expected_ignores = [
         f"{ARBORIST_DIR_NAME}/dagu/data/",
         f"{ARBORIST_DIR_NAME}/prompts/",
-        f"{ARBORIST_DIR_NAME}/worktrees/",
+        f"{ARBORIST_DIR_NAME}/restart-contexts/",
     ]
 
     found_ignores = []

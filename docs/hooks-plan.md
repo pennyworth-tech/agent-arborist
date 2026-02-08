@@ -205,7 +205,7 @@ Variables use `{{variable_name}}` syntax and are substituted at injection time:
 |----------|-------------|---------|
 | `{{task_id}}` | Current task ID | `T001` |
 | `{{spec_id}}` | Spec identifier | `002-my-feature` |
-| `{{worktree_path}}` | Absolute path to task worktree | `/home/.arborist/worktrees/002/T001` |
+| `{{worktree_path}}` | Absolute path to task workspace | `~/.arborist/workspaces/repo/002/T001` |
 | `{{branch_name}}` | Git branch for task | `002-my-feature_T001` |
 | `{{parent_branch}}` | Parent branch name | `002-my-feature` or `main` |
 | `{{arborist_home}}` | Path to .arborist directory | `/home/user/.arborist` |

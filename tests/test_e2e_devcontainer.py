@@ -278,16 +278,19 @@ class TestE2EDevContainer:
         # Check run status (it might fail but we want to see what happened)
         # Don't assert success yet, just verify the command ran
 
-        # Step 4: Check for worktrees
-        # Worktrees should be created in .arborist/worktrees/
-        worktree_dir = e2e_project / ".arborist" / "worktrees"
-        if worktree_dir.exists():
-            worktrees = list(worktree_dir.iterdir())
-            print(f"\\n=== Found {len(worktrees)} worktrees ===")
-            for wt in worktrees:
-                print(f"  - {wt.name}")
+        # Step 4: Check for workspaces
+        # Workspaces are created in ~/.arborist/workspaces/{repo_name}/
+        from agent_arborist.tasks import get_workspace_base_dir
+        workspace_base = get_workspace_base_dir()
+        repo_name = e2e_project.name
+        workspace_dir = workspace_base / repo_name
+        if workspace_dir.exists():
+            workspaces = list(workspace_dir.iterdir())
+            print(f"\\n=== Found {len(workspaces)} workspaces ===")
+            for ws in workspaces:
+                print(f"  - {ws.name}")
         else:
-            print("\\n=== No worktrees directory found ===")
+            print("\\n=== No workspaces directory found ===")
 
         # Step 5: Check DAG run status
         status_result = subprocess.run(

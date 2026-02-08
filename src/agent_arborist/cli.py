@@ -46,6 +46,7 @@ from agent_arborist.container_context import (
 from agent_arborist import dagu_runs
 from agent_arborist.tasks import (
     get_workspace_path,
+    get_workspace_base_dir,
     detect_test_command,
     run_tests,
     is_jj_repo,
@@ -669,11 +670,11 @@ def init(
             gitignore = result["gitignore"]
             if gitignore.get("added"):
                 console.print("  [green]✓[/green] Added .gitignore rules for arborist")
-                console.print(f"    - Ignored: dagu/data/, prompts/, worktrees/")
+                console.print(f"    - Ignored: dagu/data/, prompts/, restart-contexts/")
                 console.print(f"    - Tracked: config.json, dagu/dags/")
             elif gitignore.get("updated"):
                 console.print("  [green]✓[/green] Updated .gitignore to new format")
-                console.print(f"    - Ignored: dagu/data/, prompts/, worktrees/")
+                console.print(f"    - Ignored: dagu/data/, prompts/, restart-contexts/")
                 console.print(f"    - Tracked: config.json, dagu/dags/")
             else:
                 console.print("  [dim]✓ Gitignore already configured[/dim]")
@@ -2999,7 +3000,7 @@ def dag_dashboard(
 
 @main.group()
 def cleanup() -> None:
-    """Cleanup worktrees, containers, and branches."""
+    """Cleanup workspaces, containers, and branches."""
     pass
 
 
@@ -3008,55 +3009,55 @@ def cleanup() -> None:
 @click.option("--all", is_flag=True, help="Cleanup all specs (ignore current spec)")
 @click.pass_context
 def cleanup_containers(ctx: click.Context, dry_run: bool, all: bool) -> None:
-    """Stop and remove all devcontainer instances for worktrees.
+    """Stop and remove all devcontainer instances for workspaces.
 
     Auto-detects spec from git branch, or use --spec to specify, or --all for all specs.
 
-    This finds all containers created by devcontainer up for arborist worktrees,
+    This finds all containers created by devcontainer up for arborist workspaces,
     stops them, and removes them. Containers are identified by the
     devcontainer.local_folder label.
     """
-    arborist_home = ctx.obj.get("arborist_home")
-
-    if not arborist_home:
-        console.print("[red]Error:[/red] Arborist not initialized")
-        console.print("Run 'arborist init' first")
-        raise SystemExit(1)
-
     # Get spec from context unless --all is specified
     spec = None if all else ctx.obj.get("spec_id")
 
-    worktrees_dir = arborist_home / "worktrees"
-
-    if not worktrees_dir.exists():
-        console.print("[dim]No worktrees directory found[/dim]")
+    try:
+        workspace_base = get_workspace_base_dir()
+        git_root = get_git_root()
+        repo_name = git_root.name
+        workspaces_dir = workspace_base / repo_name
+    except Exception:
+        console.print("[dim]No workspaces directory found[/dim]")
         return
 
-    # Find all worktree paths
-    worktree_paths = []
+    if not workspaces_dir.exists():
+        console.print("[dim]No workspaces directory found[/dim]")
+        return
+
+    # Find all workspace paths
+    workspace_paths = []
     if spec:
-        spec_dir = worktrees_dir / spec
+        spec_dir = workspaces_dir / spec
         if spec_dir.exists():
             for task_dir in spec_dir.iterdir():
                 if task_dir.is_dir():
-                    worktree_paths.append(task_dir)
+                    workspace_paths.append(task_dir)
     else:
-        for spec_dir in worktrees_dir.iterdir():
+        for spec_dir in workspaces_dir.iterdir():
             if spec_dir.is_dir():
                 for task_dir in spec_dir.iterdir():
                     if task_dir.is_dir():
-                        worktree_paths.append(task_dir)
+                        workspace_paths.append(task_dir)
 
-    if not worktree_paths:
-        console.print("[dim]No worktrees found[/dim]")
+    if not workspace_paths:
+        console.print("[dim]No workspaces found[/dim]")
         return
 
-    console.print(f"[cyan]Found {len(worktree_paths)} worktree(s)[/cyan]")
+    console.print(f"[cyan]Found {len(workspace_paths)} workspace(s)[/cyan]")
 
     stopped_count = 0
-    for worktree_path in worktree_paths:
-        # Find containers with this worktree's label
-        label_filter = f"label=devcontainer.local_folder={worktree_path}"
+    for workspace_path in workspace_paths:
+        # Find containers with this workspace's label
+        label_filter = f"label=devcontainer.local_folder={workspace_path}"
 
         try:
             # List containers with this label
@@ -3068,7 +3069,7 @@ def cleanup_containers(ctx: click.Context, dry_run: bool, all: bool) -> None:
             )
 
             if result.returncode != 0:
-                console.print(f"[yellow]Warning:[/yellow] Failed to list containers for {worktree_path.name}")
+                console.print(f"[yellow]Warning:[/yellow] Failed to list containers for {workspace_path.name}")
                 continue
 
             container_ids = result.stdout.strip().split("\n")
@@ -3079,7 +3080,7 @@ def cleanup_containers(ctx: click.Context, dry_run: bool, all: bool) -> None:
 
             for container_id in container_ids:
                 if dry_run:
-                    console.print(f"[dim]Would stop and remove container {container_id[:12]} for {worktree_path.name}[/dim]")
+                    console.print(f"[dim]Would stop and remove container {container_id[:12]} for {workspace_path.name}[/dim]")
                 else:
                     # Stop the container
                     stop_result = subprocess.run(
@@ -3090,7 +3091,7 @@ def cleanup_containers(ctx: click.Context, dry_run: bool, all: bool) -> None:
                     )
 
                     if stop_result.returncode == 0:
-                        console.print(f"[green]✓[/green] Stopped container {container_id[:12]} for {worktree_path.name}")
+                        console.print(f"[green]✓[/green] Stopped container {container_id[:12]} for {workspace_path.name}")
 
                         # Remove the container
                         rm_result = subprocess.run(
@@ -3109,9 +3110,9 @@ def cleanup_containers(ctx: click.Context, dry_run: bool, all: bool) -> None:
                         console.print(f"[red]✗[/red] Failed to stop container {container_id[:12]}")
 
         except subprocess.TimeoutExpired:
-            console.print(f"[yellow]Warning:[/yellow] Timeout checking containers for {worktree_path.name}")
+            console.print(f"[yellow]Warning:[/yellow] Timeout checking containers for {workspace_path.name}")
         except Exception as e:
-            console.print(f"[yellow]Warning:[/yellow] Error processing {worktree_path.name}: {e}")
+            console.print(f"[yellow]Warning:[/yellow] Error processing {workspace_path.name}: {e}")
 
     if dry_run:
         console.print(f"\n[dim]Dry run complete - no containers were actually stopped or removed[/dim]")
@@ -3244,7 +3245,7 @@ def cleanup_branches(ctx: click.Context, force: bool) -> None:
     """Remove all worktrees and branches for the current spec.
 
     Auto-detects spec from git branch, or use --spec to specify.
-    Finds branches matching {spec}_a* pattern and worktrees in .arborist/worktrees/{spec}/.
+    Finds branches matching {spec}_a* pattern and jj workspaces in ~/.arborist/workspaces/{repo}/{spec}/.
 
     Use --force to force removal even if branches are not fully merged.
     """
@@ -3300,12 +3301,13 @@ def cleanup_branches(ctx: click.Context, force: bool) -> None:
         elif line == "" and current_worktree:
             current_worktree = None
 
-    # Also find worktrees directory for this spec (for cleanup)
+    # Also find workspaces directory for this spec (for cleanup)
     try:
-        arborist_home = get_arborist_home()
-        worktrees_dir = arborist_home / "worktrees" / spec_id
-    except ArboristHomeError:
-        worktrees_dir = None
+        workspace_base = get_workspace_base_dir()
+        repo_name = git_root.name
+        workspaces_dir = workspace_base / repo_name / spec_id
+    except Exception:
+        workspaces_dir = None
 
     if not branches and not worktrees:
         console.print(f"[dim]No branches or worktrees found for spec {spec_id}[/dim]")
@@ -3337,10 +3339,10 @@ def cleanup_branches(ctx: click.Context, force: bool) -> None:
         except subprocess.CalledProcessError as e:
             errors.append(f"worktree {worktree_path.name}: {e.stderr.strip() if e.stderr else str(e)}")
 
-    # Clean up empty worktrees directory
-    if worktrees_dir and worktrees_dir.exists():
+    # Clean up empty workspaces directory
+    if workspaces_dir and workspaces_dir.exists():
         try:
-            worktrees_dir.rmdir()  # Only removes if empty
+            workspaces_dir.rmdir()  # Only removes if empty
         except OSError:
             pass  # Not empty, that's fine
 
