@@ -246,6 +246,74 @@ def get_description(revset: str = "@", cwd: Path | None = None) -> str:
     return result.stdout.strip()
 
 
+def get_changed_files(revset: str = "@", cwd: Path | None = None) -> list[str]:
+    """Get list of files changed by a commit.
+
+    Args:
+        revset: Jujutsu revset expression
+        cwd: Working directory
+
+    Returns:
+        List of file paths that were modified
+    """
+    result = run_jj(
+        "diff", "-r", revset, "--summary",
+        cwd=cwd,
+        check=False,
+    )
+    if result.returncode != 0:
+        return []
+
+    files = []
+    for line in result.stdout.strip().split("\n"):
+        if line.strip():
+            # Format is "M path/to/file" or "A path/to/file" etc.
+            parts = line.split(maxsplit=1)
+            if len(parts) == 2:
+                files.append(parts[1])
+    return files
+
+
+@dataclass
+class ChildTaskInfo:
+    """Information about a completed child task."""
+    task_id: str
+    change_id: str
+    description: str
+    files_changed: list[str]
+
+
+def get_child_task_info(
+    change_id: str,
+    cwd: Path | None = None,
+) -> ChildTaskInfo:
+    """Get detailed info about a child task change.
+
+    Args:
+        change_id: The jj change ID
+        cwd: Working directory
+
+    Returns:
+        ChildTaskInfo with description and files changed
+    """
+    desc = get_description(change_id, cwd=cwd)
+    files = get_changed_files(change_id, cwd=cwd)
+
+    # Extract task_id from description (format: "spec_id:task_path [DONE]")
+    task_id = ""
+    if ":" in desc:
+        parts = desc.split(":")
+        if len(parts) >= 2:
+            task_id = parts[-1].split()[0]  # Last part before any tags
+
+    return ChildTaskInfo(
+        task_id=task_id,
+        change_id=change_id,
+        description=desc,
+        files_changed=files,
+    )
+
+
 def has_conflicts(revset: str = "@", cwd: Path | None = None) -> bool:
     """Check if a change has conflicts.
 
