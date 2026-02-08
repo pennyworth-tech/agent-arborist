@@ -1569,6 +1569,21 @@ def spec_finalize(ctx: click.Context) -> None:
         else:
             console.print(f"[yellow]Warning:[/yellow] Git export issue: {result.stderr}")
 
+        # Checkout the branch so HEAD is not detached
+        if git_exported:
+            import subprocess
+            checkout_result = subprocess.run(
+                ["git", "checkout", source_rev],
+                cwd=git_root,
+                capture_output=True,
+                text=True,
+            )
+            if checkout_result.returncode == 0:
+                if not ctx.obj.get("quiet"):
+                    console.print(f"[green]OK:[/green] Checked out branch '{source_rev}'")
+            else:
+                console.print(f"[yellow]Warning:[/yellow] Could not checkout branch: {checkout_result.stderr}")
+
         step_result = FinalizeResult(
             success=bookmark_created and git_exported,
             spec_id=spec_id,
