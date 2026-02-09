@@ -136,17 +136,10 @@ class SequentialDagBuilder:
         3. finalize: Push to remote
         """
         steps: list[SubDagStep] = []
-
-        # Setup step (creates branch if needed)
-        steps.append(SubDagStep(
-            name="setup",
-            command="arborist spec setup",
-        ))
-
-        prev_step = "setup"
+        prev_step: str | None = None
 
         # Root tasks: execute sequentially
-        root_task_ids = sorted(task_tree.root_tasks)
+        root_task_ids = task_tree.root_tasks
         for task_id in root_task_ids:
             task = task_tree.get_task(task_id)
             if not task:
@@ -158,13 +151,13 @@ class SequentialDagBuilder:
                 step = SubDagStep(
                     name=f"c-{task_id}",
                     call=task_id,
-                    depends=[prev_step],
+                    depends=[prev_step] if prev_step else [],
                 )
             else:
                 step = SubDagStep(
                     name=task_id,
                     command=build_arborist_command(task_id, "run"),
-                    depends=[prev_step],
+                    depends=[prev_step] if prev_step else [],
                 )
             steps.append(step)
             prev_step = step.name
@@ -173,7 +166,7 @@ class SequentialDagBuilder:
         steps.append(SubDagStep(
             name="finalize",
             command="arborist spec finalize",
-            depends=[prev_step],
+            depends=[prev_step] if prev_step else [],
         ))
 
         # Environment variables
@@ -196,7 +189,7 @@ class SequentialDagBuilder:
         """Build subdags for all tasks that have children."""
         subdags: list[SubDag] = []
 
-        for task_id in sorted(task_tree.tasks.keys()):
+        for task_id in task_tree.tasks.keys():
             task = task_tree.get_task(task_id)
             if not task or not task.children:
                 # Skip leaf tasks - they're called directly
@@ -223,7 +216,7 @@ class SequentialDagBuilder:
         if not task:
             return SubDag(name=task_id, steps=steps)
 
-        child_ids = sorted(task.children)
+        child_ids = task.children
         prev_step: str | None = None
 
         for child_id in child_ids:
