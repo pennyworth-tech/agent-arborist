@@ -171,18 +171,24 @@ def run(
         ctx.exit(1)
 
     # Get runner configuration
+    # Priority: CLI flag > ARBORIST_RUNNER/MODEL env > config > defaults
     from agent_arborist.config import get_config, get_step_runner_model
     from agent_arborist.home import get_arborist_home
+
+    env_runner = os.environ.get("ARBORIST_RUNNER")
+    env_model = os.environ.get("ARBORIST_MODEL")
 
     try:
         arborist_home = get_arborist_home()
         config = get_config(arborist_home)
         resolved_runner, resolved_model = get_step_runner_model(
-            config, "run", cli_runner=runner, cli_model=model
+            config, "run",
+            cli_runner=runner or env_runner,
+            cli_model=model or env_model,
         )
     except Exception:
-        resolved_runner = runner or "claude"
-        resolved_model = model or "sonnet"
+        resolved_runner = runner or env_runner or "claude"
+        resolved_model = model or env_model or "sonnet"
 
     # Build task prompt
     # TODO: Get task description from DAG or spec
