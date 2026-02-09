@@ -175,8 +175,8 @@ def run(
     from agent_arborist.config import get_config, get_step_runner_model
     from agent_arborist.home import get_arborist_home
 
-    env_runner = os.environ.get("ARBORIST_RUNNER")
-    env_model = os.environ.get("ARBORIST_MODEL")
+    env_runner = os.environ.get("ARBORIST_RUNNER") or None  # Convert "" to None
+    env_model = os.environ.get("ARBORIST_MODEL") or None    # Convert "" to None
 
     try:
         arborist_home = get_arborist_home()
