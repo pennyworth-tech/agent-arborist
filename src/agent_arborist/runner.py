@@ -24,6 +24,48 @@ DAG_DEFAULT_RUNNER: RunnerType = "claude"
 DAG_DEFAULT_MODEL: str = "opus"
 
 
+# Conversational filler patterns to skip when extracting commit summaries
+_FILLER_PREFIXES = (
+    "perfect", "excellent", "great", "done", "complete", "success",
+    "i've", "i have", "let me", "here's", "here is", "now let",
+    "task t", "t0", "files changed", "**t", "**task",
+)
+
+
+def _extract_commit_summary(output: str) -> str | None:
+    """Extract a meaningful commit summary from AI output.
+
+    Skips conversational filler and looks for substantive content
+    that describes what was actually done.
+
+    Args:
+        output: Raw AI output text
+
+    Returns:
+        A meaningful summary line, or None if not found
+    """
+    lines = output.strip().split("\n")
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        # Skip markdown headers
+        if line.startswith("#"):
+            continue
+        # Skip conversational filler
+        lower = line.lower()
+        if any(lower.startswith(prefix) for prefix in _FILLER_PREFIXES):
+            continue
+        # Skip lines that are just task references
+        if lower.startswith("t0") and len(line) < 20:
+            continue
+        # Found a substantive line
+        return line[:500]
+
+    return None
+
+
 def _get_default_runner() -> RunnerType:
     """Get default runner from environment or fallback to task default."""
     env_runner = os.environ.get(ARBORIST_DEFAULT_RUNNER_ENV_VAR, "").lower()
@@ -342,13 +384,8 @@ def run_ai_task(
         duration = time.time() - start_time
 
         if result.success:
-            # Try to extract a summary from the output (first non-empty line)
-            summary = None
-            for line in result.output.split("\n"):
-                line = line.strip()
-                if line and not line.startswith("#"):
-                    summary = line[:200]  # Truncate long summaries
-                    break
+            # Extract a meaningful summary, skipping conversational filler
+            summary = _extract_commit_summary(result.output)
 
             return AITaskResult(
                 success=True,

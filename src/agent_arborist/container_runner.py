@@ -129,6 +129,18 @@ def check_docker() -> tuple[bool, str]:
 # These generate shell commands that DAGU will execute
 
 
+def get_devcontainer_exec_prefix(workspace_folder: Path) -> list[str]:
+    """Get the devcontainer exec command prefix for running commands in container.
+
+    Args:
+        workspace_folder: Path to the workspace folder
+
+    Returns:
+        Command prefix as list of strings for subprocess
+    """
+    return ["devcontainer", "exec", "--workspace-folder", str(workspace_folder)]
+
+
 def devcontainer_up_command(worktree_env_var: str = "${ARBORIST_WORKTREE}") -> str:
     """Generate shell command for container-up step.
 
