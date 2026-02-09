@@ -175,6 +175,8 @@ class SequentialDagBuilder:
             f"ARBORIST_SPEC_ID={spec_id}",
             "ARBORIST_CONTAINER_MODE=${ARBORIST_CONTAINER_MODE}",
             "ARBORIST_SOURCE_REV=${ARBORIST_SOURCE_REV}",
+            "ARBORIST_RUNNER=${ARBORIST_RUNNER}",
+            "ARBORIST_MODEL=${ARBORIST_MODEL}",
         ]
 
         return SubDag(
@@ -256,6 +258,8 @@ class SequentialDagBuilder:
             f"ARBORIST_TASK_ID={task_id}",
             "ARBORIST_CONTAINER_MODE=${ARBORIST_CONTAINER_MODE}",
             "ARBORIST_SOURCE_REV=${ARBORIST_SOURCE_REV}",
+            "ARBORIST_RUNNER=${ARBORIST_RUNNER}",
+            "ARBORIST_MODEL=${ARBORIST_MODEL}",
         ]
 
         return SubDag(
