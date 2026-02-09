@@ -30,53 +30,78 @@ class GenerationResult:
     raw_output: str | None = None
 
 
-# Step 1: AI analyzes spec and outputs simple task structure
-TASK_ANALYSIS_PROMPT = '''Extract and structure ALL tasks from the task specification files.
+# AI analyzes spec and outputs hierarchical task tree
+TASK_ANALYSIS_PROMPT = '''Extract the COMPLETE task tree from the task specification files.
 
 TASK SPECIFICATION DIRECTORY: {spec_dir}
 
-INSTRUCTIONS:
-1. Read ALL markdown files in the directory
-2. Extract EVERY task entry - do not summarize, group, or skip tasks
-3. Preserve the original structure and ordering
-4. Identify task identifiers in whatever format they appear (T001, 1., letter codes, or generate sequential IDs if none exist)
-5. Identify groupings, phases, or hierarchies in the spec
-6. Parse dependencies from any notation used (arrows →, "depends on", indentation, or implied groupings)
+Read ALL markdown files and extract the FULL TREE of tasks WITH their natural groupings.
 
-OUTPUT FORMAT - JSON only:
+DETECTING HIERARCHY:
+Look for natural groupings in the spec such as:
+- Markdown headers (## Phase 1, ### User Story 1)
+- Numbered sections (1. Setup, 2. Implementation)
+- Named groups (Phase 1:, Story 1:, Step 1:)
+- Indentation showing nesting
+
+These groupings become PARENT TASKS with child tasks beneath them.
+
+OUTPUT FORMAT - JSON:
 {{
   "description": "Brief Project Description",
-  "total_tasks_found": <INTEGER - count ALL tasks you extracted>,
+  "total_tasks_found": <INTEGER - count ALL tasks including parent groupings>,
   "tasks": [
     {{
+      "id": "Phase1",
+      "description": "Phase 1: Setup",
+      "children": ["T001", "T002", "T003"]
+    }},
+    {{
       "id": "T001",
-      "description": "Full task description as written",
-      "grouping": "Phase 1: Setup",
-      "depends_on": ["T002"],
-      "parallel_with": ["T003"],
-      "line_number": 12
+      "description": "Create directory structure",
+      "parent": "Phase1"
+    }},
+    {{
+      "id": "T002",
+      "description": "Create config file",
+      "parent": "Phase1"
+    }},
+    {{
+      "id": "Phase2",
+      "description": "Phase 2: Implementation",
+      "children": ["T004", "T005"]
+    }},
+    {{
+      "id": "T004",
+      "description": "Implement feature",
+      "parent": "Phase2"
     }}
   ]
 }}
 
-CRITICAL RULES:
+TREE STRUCTURE:
+1. Groupings (phases, stories, sections) become parent tasks with "children" array
+2. Leaf tasks have "parent" pointing to their containing group
+3. Top-level groupings have NO parent (they are root tasks)
+4. Leaf tasks have NO children
+
+EXTRACTION RULES:
 1. Extract EVERY single task - count must match all task items in the spec
 2. Preserve original descriptions exactly as written
 3. Handle flexible ID formats: if no IDs exist, generate sequential ones (T001, T002, ...)
-4. Support various markdown patterns:
+4. For groupings without IDs, generate: Phase1, Phase2, Story1, etc.
+5. Support various markdown patterns:
    - Checkbox lists: "- [ ] description"
    - Numbered lists: "1. description"
    - Plain lists: "- description"
    - Labeled items: "T001: description"
-5. If dependencies are unclear, infer from:
-   - Explicit dependency sections
-   - Sequential order within groups
-   - Arrow notation (→)
+6. Infer hierarchy from:
+   - Markdown header levels (## > ###)
    - Indentation levels
-6. Tasks with [P] or "parallel" markers should be marked parallel_with siblings
-7. Output ONLY valid JSON. No markdown fences. No explanation. Start with {{ on line 1.
+   - Explicit "Phase X" or "Story X" labels
+   - Section boundaries
 
-Remember: Your job is EXTRACTION and STRUCTURING, not generation. Keep all tasks intact.
+OUTPUT ONLY valid JSON. Start with {{ on line 1. No markdown fences.
 '''
 
 
@@ -244,20 +269,6 @@ def validate_and_fix_multi_doc(documents: list[dict]) -> tuple[list[dict], list[
     return fixed_docs, all_fixes
 
 
-@dataclass
-class TaskInfo:
-    """Simple task info from AI analysis.
-
-    This is the intermediate format from AI parsing, which gets
-    converted to TaskTree for the sequential DAG builder.
-    """
-
-    id: str
-    description: str
-    depends_on: list[str] = field(default_factory=list)
-    parallel_with: list[str] = field(default_factory=list)  # Ignored in sequential model
-
-
 class DagGenerator:
     """Generates DAGU DAGs using AI inference."""
 
@@ -333,40 +344,35 @@ class DagGenerator:
                 raw_output=result.output,
             )
 
-        # Convert to TaskInfo objects
-        tasks = []
+        # Build TaskTree from hierarchical JSON
+        from agent_arborist.dag_builder import build_dag_yaml
+        from agent_arborist.task_state import TaskTree, TaskNode
+
+        task_tree = TaskTree(spec_id=dag_name)
+
+        # Create all task nodes with parent/children relationships
         for t in data["tasks"]:
             if "id" not in t:
                 continue
-            tasks.append(TaskInfo(
-                id=t["id"],
+            task_tree.tasks[t["id"]] = TaskNode(
+                task_id=t["id"],
                 description=t.get("description", t["id"]),
-                depends_on=t.get("depends_on", []),
-                parallel_with=t.get("parallel_with", []),
-            ))
+                parent_id=t.get("parent"),
+                children=t.get("children", []),
+            )
 
-        if not tasks:
+        if not task_tree.tasks:
             return GenerationResult(
                 success=False,
                 error="No valid tasks found in JSON",
                 raw_output=result.output,
             )
 
-        # Convert TaskInfo to TaskTree for sequential builder
-        from agent_arborist.dag_builder import build_dag_yaml
-        from agent_arborist.task_state import TaskTree, TaskNode
-
-        task_tree = TaskTree(spec_id=dag_name)
-        for t in tasks:
-            task_tree.tasks[t.id] = TaskNode(
-                task_id=t.id,
-                description=t.description,
-                # depends_on in sequential model = previous phase tasks
-                depends_on=t.depends_on,
-            )
-            # All tasks without dependencies are root tasks
-            if not t.depends_on:
-                task_tree.root_tasks.append(t.id)
+        # Root tasks = those with no parent (preserve order from spec)
+        task_tree.root_tasks = [
+            tid for tid, task in task_tree.tasks.items()
+            if task.parent_id is None
+        ]
 
         # Step 2-4: Build DAG with hooks via sequential builder
         description = data.get("description", f"DAG for {dag_name}")

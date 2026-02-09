@@ -1768,19 +1768,6 @@ def spec_dag_build(
         if not ctx.obj.get("quiet"):
             console.print("[green]OK:[/green] DAG generated successfully")
 
-        # Rebuild the DAG using the AI-generated task tree
-        if not ctx.obj.get("quiet"):
-            console.print("[cyan]Building sequential DAG...[/cyan]")
-
-        task_tree = build_task_tree_from_yaml(dag_name, dag_yaml)
-        dag_yaml = build_dag_yaml(
-            task_tree=task_tree,
-            dag_name=dag_name,
-            description=result.yaml_content.split("\n")[1].replace("description: ", "") if "description:" in result.yaml_content else "",
-            container_mode=container_mode_enum,
-            repo_path=repo_path,
-        )
-
     if dry_run:
         console.print(dag_yaml)
         return
