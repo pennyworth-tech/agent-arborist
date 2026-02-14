@@ -16,7 +16,7 @@ from agent_arborist.git.repo import (
 from agent_arborist.git.state import scan_completed_tasks, TaskState, get_task_trailers, task_state_from_trailers
 from agent_arborist.tree.model import TaskTree
 from agent_arborist.tree.spec_parser import parse_spec
-from agent_arborist.worker.garden import garden, find_next_task
+from agent_arborist.worker.garden import garden as garden_fn, find_next_task
 from agent_arborist.worker.gardener import gardener
 from agent_arborist.runner import RunResult
 
@@ -96,7 +96,7 @@ class TestGardenCommitHistory:
         tree = _small_tree()
         runner = _MockRunner(implement_ok=True, review_ok=True)
 
-        garden(tree, git_repo, runner, base_branch="main")
+        garden_fn(tree, git_repo, runner, base_branch="main")
 
         # Check commit history on the phase branch
         log = git_log("feature/test/phase1", "%s", git_repo, n=10)
@@ -111,7 +111,7 @@ class TestGardenCommitHistory:
         tree = _small_tree()
         runner = _MockRunner(implement_ok=True, review_ok=True)
 
-        garden(tree, git_repo, runner, base_branch="main")
+        garden_fn(tree, git_repo, runner, base_branch="main")
 
         # The most recent task(T001) commit should be the "complete" one
         trailers = get_task_trailers("feature/test/phase1", "T001", git_repo)
@@ -123,7 +123,7 @@ class TestGardenCommitHistory:
         tree = _small_tree()
         runner = _MockRunner(implement_ok=True, review_ok=True)
 
-        garden(tree, git_repo, runner, base_branch="main")
+        garden_fn(tree, git_repo, runner, base_branch="main")
 
         # Switch to phase branch to see the report
         subprocess.run(["git", "checkout", "feature/test/phase1"],
@@ -138,7 +138,7 @@ class TestGardenCommitHistory:
         tree = _small_tree()
         runner = _MockRunner(implement_ok=True, review_ok=True)
 
-        garden(tree, git_repo, runner, base_branch="main")
+        garden_fn(tree, git_repo, runner, base_branch="main")
         assert git_current_branch(git_repo) == "main"
 
 
@@ -257,6 +257,87 @@ class TestGardenerFullLoop:
 
         # The dev-file.txt should still exist (we branched from develop)
         assert (git_repo / "dev-file.txt").exists()
+
+
+# ---------------------------------------------------------------------------
+# 4. garden() called repeatedly == gardener()
+# ---------------------------------------------------------------------------
+
+class TestGardenRepeatedEquivalence:
+    """Calling garden() in a loop must produce the same result as gardener()."""
+
+    def test_repeated_garden_completes_all_tasks(self, git_repo):
+        """Calling garden() twice completes both tasks, same as gardener()."""
+        tree = _two_task_tree()
+        runner = _MockRunner(implement_ok=True, review_ok=True)
+
+        r1 = garden_fn(tree, git_repo, runner, base_branch="main")
+        assert r1.success
+        assert r1.task_id == "T001"
+
+        r2 = garden_fn(tree, git_repo, runner, base_branch="main")
+        assert r2.success
+        assert r2.task_id == "T002"
+
+        # Both tasks complete
+        completed = scan_completed_tasks(tree, git_repo)
+        assert completed == {"T001", "T002"}
+
+    def test_repeated_garden_merges_phase(self, git_repo):
+        """garden() merges the phase branch when the last sibling completes."""
+        tree = _two_task_tree()
+        runner = _MockRunner(implement_ok=True, review_ok=True)
+
+        garden_fn(tree, git_repo, runner, base_branch="main")
+        garden_fn(tree, git_repo, runner, base_branch="main")
+
+        # Phase should be merged to main
+        main_log = git_log("main", "%s", git_repo, n=5)
+        assert "merge" in main_log.lower()
+        assert "phase1" in main_log.lower()
+
+    def test_repeated_garden_returns_to_base(self, git_repo):
+        """Each garden() call returns to the base branch."""
+        tree = _two_task_tree()
+        runner = _MockRunner(implement_ok=True, review_ok=True)
+
+        garden_fn(tree, git_repo, runner, base_branch="main")
+        assert git_current_branch(git_repo) == "main"
+
+        garden_fn(tree, git_repo, runner, base_branch="main")
+        assert git_current_branch(git_repo) == "main"
+
+    def test_repeated_garden_no_task_returns_gracefully(self, git_repo):
+        """garden() returns no-ready-task when all tasks are done."""
+        tree = _two_task_tree()
+        runner = _MockRunner(implement_ok=True, review_ok=True)
+
+        garden_fn(tree, git_repo, runner, base_branch="main")
+        garden_fn(tree, git_repo, runner, base_branch="main")
+
+        r3 = garden_fn(tree, git_repo, runner, base_branch="main")
+        assert not r3.success
+        assert "no ready task" in r3.error
+
+    def test_repeated_garden_multi_phase(self, git_repo):
+        """Two phases, each with one task — garden() called twice merges both."""
+        from agent_arborist.tree.model import TaskNode
+        tree = TaskTree(spec_id="test", namespace="feature")
+        tree.root_ids = ["phase1", "phase2"]
+        tree.nodes["phase1"] = TaskNode(id="phase1", name="P1", children=["T001"])
+        tree.nodes["T001"] = TaskNode(id="T001", name="Task 1", parent="phase1", description="Do 1")
+        tree.nodes["phase2"] = TaskNode(id="phase2", name="P2", children=["T002"])
+        tree.nodes["T002"] = TaskNode(id="T002", name="Task 2", parent="phase2", description="Do 2")
+        tree.compute_execution_order()
+
+        runner = _MockRunner(implement_ok=True, review_ok=True)
+        garden_fn(tree, git_repo, runner, base_branch="main")
+        garden_fn(tree, git_repo, runner, base_branch="main")
+
+        assert git_current_branch(git_repo) == "main"
+        main_log = git_log("main", "%s", git_repo, n=10)
+        assert "phase1" in main_log
+        assert "phase2" in main_log
 
 
 # ---------------------------------------------------------------------------

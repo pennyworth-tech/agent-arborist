@@ -22,6 +22,7 @@ from agent_arborist.git.repo import (
     git_commit,
     git_current_branch,
     git_diff,
+    git_merge,
 )
 from agent_arborist.git.state import scan_completed_tasks, TaskState
 from agent_arborist.tree.model import TaskNode, TaskTree
@@ -59,6 +60,22 @@ def _commit_with_trailers(
     trailer_block = _build_trailers(**trailers)
     message = f"task({task_id}): {subject}\n\n{trailer_block}"
     return git_commit(message, cwd, allow_empty=True)
+
+
+def _merge_phase_if_complete(
+    tree: TaskTree, task_id: str, cwd: Path, base_branch: str
+) -> bool:
+    """If all siblings of task_id's phase are complete, merge phase branch to base."""
+    node = tree.nodes[task_id]
+    if not node.parent:
+        return False
+    parent = tree.nodes[node.parent]
+    completed = scan_completed_tasks(tree, cwd)
+    if all(c in completed for c in parent.children):
+        phase_branch = tree.branch_name(node.parent)
+        git_merge(phase_branch, cwd, message=f"merge: {phase_branch} complete")
+        return True
+    return False
 
 
 def garden(
@@ -161,6 +178,7 @@ def garden(
         )
 
         git_checkout(base_branch, cwd)
+        _merge_phase_if_complete(tree, task.id, cwd, base_branch)
         return GardenResult(task_id=task.id, success=True)
 
     # --- exhausted retries ---
