@@ -51,40 +51,64 @@ Every module follows strict RED/GREEN TDD:
 
 **jj Test Helper** (`tests/conftest.py`):
 
-All jj tests run against isolated temp directories. Since jj colocates with git, every
-test repo starts with a `git init` + `jj git init --colocate` so the repo is valid for
-both jj operations and git-compatible remotes.
+> **CRITICAL: Test Repo Isolation**
+>
+> Tests MUST NEVER run against the agent-arborist project repo. Every test that
+> touches git or jj creates a **completely separate, disposable repository** under
+> `/tmp` via pytest's `tmp_path`. No test should `os.chdir()` into or operate on
+> the working tree at `/Users/.../agent-arborist`. The `jj_repo` fixture enforces
+> this — all jj/git wrapper calls receive an explicit `cwd=tmp_path` argument.
+> Any function that defaults `cwd` to the current directory is a bug.
 
 ```python
+import os
 import subprocess
 from pathlib import Path
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
+# Safety guard: abort if any test accidentally runs in the project repo
+PROJECT_ROOT = Path(__file__).parent.parent
+
+@pytest.fixture(autouse=True)
+def _guard_project_repo(tmp_path, monkeypatch):
+    """Prevent tests from accidentally modifying the project repo.
+
+    Sets CWD to tmp_path for every test. Any jj/git operation that omits
+    the cwd argument will hit the temp dir, not the project.
+    """
+    monkeypatch.chdir(tmp_path)
+
 @pytest.fixture
 def jj_repo(tmp_path):
-    """Create a fresh git+jj colocated repo in a temp directory.
+    """Create a fresh git+jj colocated repo in an isolated temp directory.
 
-    Uses tmp_path (pytest built-in) → always under /tmp or platform equivalent.
-    Fully isolated — no interaction with the real working tree.
+    - Lives under /tmp (pytest tmp_path) — completely separate from project repo
+    - Initializes both git and jj so colocated operations work
+    - Sets dummy git identity for commits
+    - All downstream code MUST pass cwd=jj_repo to every jj/git call
     """
-    subprocess.run(["git", "init", str(tmp_path)], check=True,
+    repo_dir = tmp_path / "test-repo"
+    repo_dir.mkdir()
+    subprocess.run(["git", "init", str(repo_dir)], check=True,
                    capture_output=True)
-    subprocess.run(["jj", "git", "init", "--colocate"], cwd=tmp_path,
+    subprocess.run(["jj", "git", "init", "--colocate"], cwd=repo_dir,
                    check=True, capture_output=True)
-    # Set git identity for commits (required in CI / clean environments)
     subprocess.run(["git", "config", "user.email", "test@test.com"],
-                   cwd=tmp_path, check=True, capture_output=True)
+                   cwd=repo_dir, check=True, capture_output=True)
     subprocess.run(["git", "config", "user.name", "Test"],
-                   cwd=tmp_path, check=True, capture_output=True)
-    return tmp_path
+                   cwd=repo_dir, check=True, capture_output=True)
+    # Sanity: confirm this is NOT the project repo
+    assert str(repo_dir) != str(PROJECT_ROOT)
+    assert not (repo_dir / "pyproject.toml").exists()
+    return repo_dir
 
 @pytest.fixture
 def jj_repo_with_bookmarks(jj_repo):
     """jj repo pre-populated with a hello-world bookmark tree.
 
     Parses tests/fixtures/tasks-hello-world.md and materializes the full
-    bookmark hierarchy so controller/step tests have a realistic starting point.
+    bookmark hierarchy into the ISOLATED jj_repo (not the project repo).
     """
     tree = parse_spec(FIXTURES / "tasks-hello-world.md", spec_id="hello-world")
     materialize(tree, cwd=jj_repo)
@@ -106,9 +130,13 @@ def mock_runner_always_reject():
     return MockRunner(implement_ok=True, review_ok=False)
 ```
 
-**Why git init first**: jj's `--colocate` mode requires an existing git repo. This also
-ensures that all git operations (trailers, log queries) work identically to production.
-Every `jj_repo` fixture is completely disposable — pytest's `tmp_path` handles cleanup.
+**Isolation guarantees:**
+1. `tmp_path` → pytest creates a unique `/tmp/pytest-XXXX/` dir per test, auto-cleaned
+2. `jj_repo` creates `test-repo/` *inside* `tmp_path` — double-nested, no ambiguity
+3. `_guard_project_repo` (autouse) → `monkeypatch.chdir(tmp_path)` so even code that
+   forgets `cwd=` hits the temp dir, not the project
+4. Assertion in `jj_repo` explicitly verifies the path is not the project root
+5. All `jj/repo.py` wrapper functions take a **required** `cwd` parameter (not optional)
 
 ---
 
@@ -155,16 +183,18 @@ Thin subprocess wrapper around jj CLI:
 - `jj_diff(revision)` — show diff
 - `jj_squash(from_rev, into_rev)` — squash changes
 
-All functions take an optional `cwd` for the target repo.
+All functions take a **required** `cwd` parameter — never default to the current directory. This prevents accidental operations against the project repo during tests.
 
 **RED** (`tests/jj/test_repo.py`):
 ```python
 def test_init_creates_jj_repo(tmp_path):
-    """Start from bare tmp_path, init git + jj colocated."""
-    subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True)
-    jj_init(tmp_path)  # should run jj git init --colocate
-    assert (tmp_path / ".jj").exists()
-    assert (tmp_path / ".git").exists()
+    """Start from bare temp dir, init git + jj colocated."""
+    repo = tmp_path / "fresh-repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
+    jj_init(cwd=repo)  # should run jj git init --colocate
+    assert (repo / ".jj").exists()
+    assert (repo / ".git").exists()
 
 def test_bookmark_roundtrip(jj_repo):
     jj_new(message="initial", cwd=jj_repo)
