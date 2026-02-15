@@ -84,3 +84,24 @@ def mock_runner_reject_then_pass():
 @pytest.fixture
 def mock_runner_always_reject():
     return MockRunner(implement_ok=True, review_ok=False)
+
+
+@dataclass
+class CrashingRunner:
+    """Runner that raises after N successful run() calls."""
+    crash_after: int = 1
+    _call_count: int = 0
+    name: str = "crashing"
+    command: str = "mock"
+
+    def run(self, prompt, timeout=60, cwd=None, container_cmd_prefix=None):
+        from agent_arborist.runner import RunResult
+        self._call_count += 1
+        if self._call_count > self.crash_after:
+            raise RuntimeError(f"CrashingRunner: boom on call {self._call_count}")
+        if "Review" in prompt or "review" in prompt:
+            return RunResult(success=True, output="APPROVED")
+        return RunResult(success=True, output="Implementation complete")
+
+    def is_available(self):
+        return True

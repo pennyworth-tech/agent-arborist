@@ -101,92 +101,101 @@ def garden(
     else:
         git_checkout(phase_branch, cwd)
 
-    for attempt in range(max_retries):
-        retry_trailer = str(attempt)
+    try:
+        for attempt in range(max_retries):
+            retry_trailer = str(attempt)
 
-        # --- implement ---
-        prompt = (
-            f"Implement task {task.id}: {task.name}\n\n"
-            f"Description: {task.description}\n\n"
-            f"Work in the current directory. Make all necessary file changes."
-        )
-        result = runner.run(prompt, cwd=cwd)
-        if not result.success:
+            # --- implement ---
+            prompt = (
+                f"Implement task {task.id}: {task.name}\n\n"
+                f"Description: {task.description}\n\n"
+                f"Work in the current directory. Make all necessary file changes."
+            )
+            result = runner.run(prompt, cwd=cwd)
+            if not result.success:
+                _commit_with_trailers(
+                    task.id, "implement (failed)", cwd,
+                    **{TRAILER_STEP: "implement", TRAILER_RESULT: "fail", TRAILER_RETRY: retry_trailer},
+                )
+                continue
+
             _commit_with_trailers(
-                task.id, "implement (failed)", cwd,
-                **{TRAILER_STEP: "implement", TRAILER_RESULT: "fail", TRAILER_RETRY: retry_trailer},
+                task.id, "implement", cwd,
+                **{TRAILER_STEP: "implement", TRAILER_RESULT: "pass", TRAILER_RETRY: retry_trailer},
             )
-            continue
 
-        _commit_with_trailers(
-            task.id, "implement", cwd,
-            **{TRAILER_STEP: "implement", TRAILER_RESULT: "pass", TRAILER_RETRY: retry_trailer},
-        )
+            # --- test ---
+            try:
+                test_result = subprocess.run(
+                    test_command, shell=True, cwd=cwd,
+                    capture_output=True, text=True, timeout=300,
+                )
+                test_passed = test_result.returncode == 0
+            except subprocess.TimeoutExpired:
+                test_passed = False
 
-        # --- test ---
-        try:
-            test_result = subprocess.run(
-                test_command, shell=True, cwd=cwd,
-                capture_output=True, text=True, timeout=300,
+            test_val = "pass" if test_passed else "fail"
+            _commit_with_trailers(
+                task.id, f"test ({test_val})", cwd,
+                **{TRAILER_STEP: "test", TRAILER_TEST: test_val, TRAILER_RETRY: retry_trailer},
             )
-            test_passed = test_result.returncode == 0
-        except subprocess.TimeoutExpired:
-            test_passed = False
 
-        test_val = "pass" if test_passed else "fail"
+            if not test_passed:
+                continue
+
+            # --- review ---
+            try:
+                diff = git_diff(base_branch, "HEAD", cwd)
+            except Exception:
+                diff = "(no diff available)"
+
+            review_prompt = (
+                f"Review the changes for task {task.id}: {task.name}\n\n"
+                f"Diff:\n{diff[:8000]}\n\n"
+                f"Reply APPROVED if the code is correct, or REJECTED with reasons."
+            )
+            review_result = runner.run(review_prompt, cwd=cwd)
+            approved = review_result.success and "APPROVED" in review_result.output.upper()
+
+            review_val = "approved" if approved else "rejected"
+            _commit_with_trailers(
+                task.id, f"review ({review_val})", cwd,
+                **{TRAILER_STEP: "review", TRAILER_REVIEW: review_val, TRAILER_RETRY: retry_trailer},
+            )
+
+            if not approved:
+                continue
+
+            # --- complete (success) ---
+            report_path = f"spec/reports/{task.id}.json"
+            report_dir = cwd / "spec" / "reports"
+            report_dir.mkdir(parents=True, exist_ok=True)
+            (report_dir / f"{task.id}.json").write_text(
+                json.dumps({"task_id": task.id, "result": "pass", "retries": attempt}, indent=2)
+            )
+
+            _commit_with_trailers(
+                task.id, "complete", cwd,
+                **{TRAILER_STEP: "complete", TRAILER_RESULT: "pass", TRAILER_REPORT: report_path},
+            )
+
+            git_checkout(base_branch, cwd)
+            _merge_phase_if_complete(tree, task.id, cwd, base_branch)
+            return GardenResult(task_id=task.id, success=True)
+
+        # --- exhausted retries ---
         _commit_with_trailers(
-            task.id, f"test ({test_val})", cwd,
-            **{TRAILER_STEP: "test", TRAILER_TEST: test_val, TRAILER_RETRY: retry_trailer},
-        )
-
-        if not test_passed:
-            continue
-
-        # --- review ---
-        try:
-            diff = git_diff(base_branch, "HEAD", cwd)
-        except Exception:
-            diff = "(no diff available)"
-
-        review_prompt = (
-            f"Review the changes for task {task.id}: {task.name}\n\n"
-            f"Diff:\n{diff[:8000]}\n\n"
-            f"Reply APPROVED if the code is correct, or REJECTED with reasons."
-        )
-        review_result = runner.run(review_prompt, cwd=cwd)
-        approved = review_result.success and "APPROVED" in review_result.output.upper()
-
-        review_val = "approved" if approved else "rejected"
-        _commit_with_trailers(
-            task.id, f"review ({review_val})", cwd,
-            **{TRAILER_STEP: "review", TRAILER_REVIEW: review_val, TRAILER_RETRY: retry_trailer},
-        )
-
-        if not approved:
-            continue
-
-        # --- complete (success) ---
-        report_path = f"spec/reports/{task.id}.json"
-        report_dir = cwd / "spec" / "reports"
-        report_dir.mkdir(parents=True, exist_ok=True)
-        (report_dir / f"{task.id}.json").write_text(
-            json.dumps({"task_id": task.id, "result": "pass", "retries": attempt}, indent=2)
-        )
-
-        _commit_with_trailers(
-            task.id, "complete", cwd,
-            **{TRAILER_STEP: "complete", TRAILER_RESULT: "pass", TRAILER_REPORT: report_path},
+            task.id, "complete (failed)", cwd,
+            **{TRAILER_STEP: "complete", TRAILER_RESULT: "fail"},
         )
 
         git_checkout(base_branch, cwd)
-        _merge_phase_if_complete(tree, task.id, cwd, base_branch)
-        return GardenResult(task_id=task.id, success=True)
+        return GardenResult(task_id=task.id, success=False, error=f"failed after {max_retries} retries")
 
-    # --- exhausted retries ---
-    _commit_with_trailers(
-        task.id, "complete (failed)", cwd,
-        **{TRAILER_STEP: "complete", TRAILER_RESULT: "fail"},
-    )
-
-    git_checkout(base_branch, cwd)
-    return GardenResult(task_id=task.id, success=False, error=f"failed after {max_retries} retries")
+    except Exception:
+        # Ensure we return to base branch on unexpected errors
+        try:
+            git_checkout(base_branch, cwd)
+        except Exception:
+            pass
+        raise
