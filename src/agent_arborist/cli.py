@@ -12,7 +12,7 @@ from rich.console import Console
 from rich.tree import Tree as RichTree
 
 from agent_arborist.constants import DEFAULT_NAMESPACE, DEFAULT_MAX_RETRIES
-from agent_arborist.git.repo import git_toplevel
+from agent_arborist.git.repo import git_current_branch, git_toplevel
 
 
 console = Console()
@@ -102,13 +102,15 @@ def build(spec_dir, output, namespace, spec_id, no_ai, runner, model):
 @click.option("--max-retries", default=DEFAULT_MAX_RETRIES, type=int)
 @click.option("--test-command", default="true")
 @click.option("--target-repo", type=click.Path(path_type=Path), default=None)
-@click.option("--base-branch", default="main")
+@click.option("--base-branch", default=None, help="Base branch (default: current branch)")
 def garden(tree_path, runner, model, max_retries, test_command, target_repo, base_branch):
     """Execute a single task."""
     from agent_arborist.runner import get_runner
     from agent_arborist.worker.garden import garden as garden_fn
 
     target = target_repo.resolve() if target_repo else Path(_default_repo()).resolve()
+    if base_branch is None:
+        base_branch = git_current_branch(target)
     tree = _load_tree(tree_path)
 
     runner_instance = get_runner(runner, model)
@@ -134,13 +136,15 @@ def garden(tree_path, runner, model, max_retries, test_command, target_repo, bas
 @click.option("--max-retries", default=DEFAULT_MAX_RETRIES, type=int)
 @click.option("--test-command", default="true")
 @click.option("--target-repo", type=click.Path(path_type=Path), default=None)
-@click.option("--base-branch", default="main")
+@click.option("--base-branch", default=None, help="Base branch (default: current branch)")
 def gardener(tree_path, runner, model, max_retries, test_command, target_repo, base_branch):
     """Run the gardener loop to execute all tasks."""
     from agent_arborist.runner import get_runner
     from agent_arborist.worker.gardener import gardener as gardener_fn
 
     target = target_repo.resolve() if target_repo else Path(_default_repo()).resolve()
+    if base_branch is None:
+        base_branch = git_current_branch(target)
     tree = _load_tree(tree_path)
 
     runner_instance = get_runner(runner, model)

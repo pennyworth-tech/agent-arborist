@@ -74,3 +74,73 @@ def test_build_default_uses_ai_planner(tmp_path):
             ])
             assert result.exit_code == 0, result.output
             mock_plan.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# --base-branch default auto-detection
+# ---------------------------------------------------------------------------
+
+class TestBaseBranchDefault:
+    """Verify --base-branch defaults to current branch, not 'main'."""
+
+    def test_garden_help_shows_no_main_default(self):
+        """--base-branch help text should not show 'main' as default."""
+        runner = CliRunner()
+        result = runner.invoke(main, ["garden", "--help"])
+        assert result.exit_code == 0
+        # Should not say default is "main"
+        assert "default: main" not in result.output.lower()
+
+    def test_gardener_help_shows_no_main_default(self):
+        """--base-branch help text for gardener should not show 'main' as default."""
+        runner = CliRunner()
+        result = runner.invoke(main, ["gardener", "--help"])
+        assert result.exit_code == 0
+        assert "default: main" not in result.output.lower()
+
+    def test_garden_auto_detects_current_branch(self, tmp_path):
+        """When --base-branch is omitted, garden() should call git_current_branch."""
+        runner = CliRunner()
+        tree_path = tmp_path / "tree.json"
+        tree_path.write_text(json.dumps({
+            "spec_id": "test", "namespace": "feature",
+            "nodes": {"phase1": {"id": "phase1", "name": "P1", "children": ["T001"]},
+                      "T001": {"id": "T001", "name": "Task", "parent": "phase1", "description": "Do it"}},
+            "execution_order": ["T001"], "spec_files": [],
+        }))
+
+        with patch("agent_arborist.cli.git_current_branch", return_value="my-feature") as mock_gcb, \
+             patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)), \
+             patch("agent_arborist.worker.garden.garden") as mock_garden:
+            mock_garden.return_value = MagicMock(success=True, task_id="T001")
+            result = runner.invoke(main, [
+                "garden", "--tree", str(tree_path),
+            ])
+            assert result.exit_code == 0, result.output
+            mock_gcb.assert_called_once()
+            # garden_fn should have been called with base_branch="my-feature"
+            _, kwargs = mock_garden.call_args
+            assert kwargs["base_branch"] == "my-feature"
+
+    def test_garden_explicit_base_branch_skips_detection(self, tmp_path):
+        """When --base-branch is given explicitly, git_current_branch is NOT called."""
+        runner = CliRunner()
+        tree_path = tmp_path / "tree.json"
+        tree_path.write_text(json.dumps({
+            "spec_id": "test", "namespace": "feature",
+            "nodes": {"phase1": {"id": "phase1", "name": "P1", "children": ["T001"]},
+                      "T001": {"id": "T001", "name": "Task", "parent": "phase1", "description": "Do it"}},
+            "execution_order": ["T001"], "spec_files": [],
+        }))
+
+        with patch("agent_arborist.cli.git_current_branch") as mock_gcb, \
+             patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)), \
+             patch("agent_arborist.worker.garden.garden") as mock_garden:
+            mock_garden.return_value = MagicMock(success=True, task_id="T001")
+            result = runner.invoke(main, [
+                "garden", "--tree", str(tree_path), "--base-branch", "develop",
+            ])
+            assert result.exit_code == 0, result.output
+            mock_gcb.assert_not_called()
+            _, kwargs = mock_garden.call_args
+            assert kwargs["base_branch"] == "develop"

@@ -386,6 +386,47 @@ class TestDeepTreeIntegration:
 
 
 # ---------------------------------------------------------------------------
+# 6. Base branch auto-detection integration
+# ---------------------------------------------------------------------------
+
+class TestBaseBranchAutoDetect:
+    """Verify garden works relative to current branch when --base-branch is omitted."""
+
+    def test_garden_from_non_main_branch(self, git_repo):
+        """garden() on a feature branch creates phase branch from it and returns to it."""
+        from agent_arborist.git.repo import git_checkout, git_add_all, git_commit
+
+        # Create and switch to a non-main branch
+        git_checkout("my-feature", git_repo, create=True)
+        (git_repo / "feature-file.txt").write_text("on my-feature\n")
+        git_add_all(git_repo)
+        git_commit("feature commit", git_repo)
+
+        assert git_current_branch(git_repo) == "my-feature"
+
+        tree = _small_tree()
+        runner = _MockRunner(implement_ok=True, review_ok=True)
+
+        # Use base_branch=current branch (simulating CLI auto-detection)
+        result = garden_fn(tree, git_repo, runner, base_branch="my-feature")
+
+        assert result.success
+        assert result.task_id == "T001"
+
+        # Should return to my-feature, not main
+        assert git_current_branch(git_repo) == "my-feature"
+
+        # Phase branch should exist
+        assert git_branch_exists("feature/test/phase1", git_repo)
+
+        # feature-file.txt should be accessible from the phase branch
+        # (since it branched from my-feature)
+        subprocess.run(["git", "checkout", "feature/test/phase1"],
+                       cwd=git_repo, capture_output=True, check=True)
+        assert (git_repo / "feature-file.txt").exists()
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
