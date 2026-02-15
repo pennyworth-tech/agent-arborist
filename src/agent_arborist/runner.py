@@ -1,5 +1,6 @@
 """Runner abstraction for executing prompts via CLI tools."""
 
+import logging
 import os
 import subprocess
 import shutil
@@ -7,6 +8,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
+
+logger = logging.getLogger(__name__)
 
 RunnerType = Literal["claude", "opencode", "gemini"]
 
@@ -136,6 +139,8 @@ def _execute_command(
     Returns:
         RunResult with success status, output, and error details
     """
+    logger.info("Running %s (timeout=%ds)", cmd[0], timeout)
+    logger.debug("Full command: %s", cmd)
     # Apply container prefix if provided
     if container_cmd_prefix:
         cmd = container_cmd_prefix + cmd
@@ -151,6 +156,7 @@ def _execute_command(
             cwd=cwd,
         )
 
+        logger.debug("Command output length: %d chars", len(result.stdout))
         return RunResult(
             success=result.returncode == 0,
             output=result.stdout.strip(),
@@ -159,6 +165,7 @@ def _execute_command(
         )
 
     except subprocess.TimeoutExpired:
+        logger.warning("Command timed out after %ds: %s", timeout, cmd[0])
         return RunResult(
             success=False,
             output="",
@@ -166,6 +173,7 @@ def _execute_command(
             exit_code=-1,
         )
     except Exception as e:
+        logger.warning("Command error: %s", e)
         return RunResult(
             success=False,
             output="",

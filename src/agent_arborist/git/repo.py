@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 import subprocess
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 class GitError(Exception):
@@ -12,6 +15,7 @@ class GitError(Exception):
 
 def _run(args: list[str], cwd: Path) -> str:
     """Run a git command and return stdout."""
+    logger.debug("git %s", " ".join(args))
     try:
         result = subprocess.run(
             ["git"] + args,

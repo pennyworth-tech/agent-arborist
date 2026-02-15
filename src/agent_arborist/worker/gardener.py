@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from agent_arborist.git.state import scan_completed_tasks
 from agent_arborist.tree.model import TaskTree
@@ -35,6 +38,7 @@ def gardener(
 
     while True:
         completed = scan_completed_tasks(tree, cwd)
+        logger.debug("Completed tasks: %s", completed)
 
         # All done?
         if all_leaves <= completed:
@@ -44,9 +48,11 @@ def gardener(
         # Any ready task?
         next_task = find_next_task(tree, cwd)
         if next_task is None:
+            logger.info("Stalled: no ready tasks")
             result.error = "stalled: no ready tasks"
             return result
 
+        logger.info("[%d/%d] Running task %s", result.tasks_completed + 1, len(all_leaves), next_task.id)
         gr = garden(
             tree, cwd, runner,
             test_command=test_command,
@@ -59,6 +65,7 @@ def gardener(
             result.order.append(gr.task_id)
         else:
             failures += 1
+            logger.info("Task %s failed (%d failures so far)", gr.task_id, failures)
             if failures >= max_failures:
                 result.error = f"too many failures ({failures})"
                 return result

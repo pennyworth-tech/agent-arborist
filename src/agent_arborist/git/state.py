@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 from enum import Enum
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from agent_arborist.constants import (
     TRAILER_STEP,
@@ -41,6 +44,7 @@ def get_task_trailers(branch: str, task_id: str, cwd: Path) -> dict[str, str]:
     if not out.strip():
         return {}
 
+    logger.debug("Parsing trailers for %s on %s", task_id, branch)
     # Parse trailers from the most recent matching commit
     trailers: dict[str, str] = {}
     for line in out.split("\n"):
@@ -84,4 +88,5 @@ def scan_completed_tasks(tree, cwd: Path) -> set[str]:
                 completed.add(node.id)
         except GitError:
             pass
+    logger.debug("Scan found %d completed tasks", len(completed))
     return completed

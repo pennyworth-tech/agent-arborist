@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from pathlib import Path
 
@@ -26,9 +27,18 @@ def _default_repo() -> str:
 
 
 @click.group()
-def main():
+@click.option(
+    "--log-level",
+    type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR"], case_sensitive=False),
+    default="WARNING",
+    help="Set logging verbosity",
+)
+def main(log_level):
     """Agent Arborist - Git-native task tree orchestration."""
-    pass
+    logging.basicConfig(
+        level=log_level.upper(),
+        format="%(levelname)s %(name)s: %(message)s",
+    )
 
 
 @main.command()

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from agent_arborist.constants import (
     TRAILER_STEP,
@@ -93,17 +96,21 @@ def garden(
     if task is None:
         return GardenResult(task_id="", success=False, error="no ready task")
 
+    logger.info("Starting task %s: %s", task.id, task.name)
     phase_branch = tree.branch_name(task.id)
 
     # Lazy branch creation
     if not git_branch_exists(phase_branch, cwd):
+        logger.debug("Creating branch %s from %s", phase_branch, base_branch)
         git_checkout(phase_branch, cwd, create=True, start_point=base_branch)
     else:
+        logger.debug("Checking out existing branch %s", phase_branch)
         git_checkout(phase_branch, cwd)
 
     try:
         for attempt in range(max_retries):
             retry_trailer = str(attempt)
+            logger.info("Task %s attempt %d/%d", task.id, attempt + 1, max_retries)
 
             # --- implement ---
             prompt = (
@@ -111,14 +118,17 @@ def garden(
                 f"Description: {task.description}\n\n"
                 f"Work in the current directory. Make all necessary file changes."
             )
+            logger.debug("Implement prompt: %.200s", prompt)
             result = runner.run(prompt, cwd=cwd)
             if not result.success:
+                logger.info("Task %s implement failed", task.id)
                 _commit_with_trailers(
                     task.id, "implement (failed)", cwd,
                     **{TRAILER_STEP: "implement", TRAILER_RESULT: "fail", TRAILER_RETRY: retry_trailer},
                 )
                 continue
 
+            logger.info("Task %s implement passed", task.id)
             _commit_with_trailers(
                 task.id, "implement", cwd,
                 **{TRAILER_STEP: "implement", TRAILER_RESULT: "pass", TRAILER_RETRY: retry_trailer},
@@ -135,6 +145,7 @@ def garden(
                 test_passed = False
 
             test_val = "pass" if test_passed else "fail"
+            logger.info("Task %s test %s", task.id, test_val)
             _commit_with_trailers(
                 task.id, f"test ({test_val})", cwd,
                 **{TRAILER_STEP: "test", TRAILER_TEST: test_val, TRAILER_RETRY: retry_trailer},
@@ -157,6 +168,7 @@ def garden(
             review_result = runner.run(review_prompt, cwd=cwd)
             approved = review_result.success and "APPROVED" in review_result.output.upper()
 
+            logger.info("Task %s review %s", task.id, "approved" if approved else "rejected")
             review_val = "approved" if approved else "rejected"
             _commit_with_trailers(
                 task.id, f"review ({review_val})", cwd,
@@ -179,10 +191,14 @@ def garden(
                 **{TRAILER_STEP: "complete", TRAILER_RESULT: "pass", TRAILER_REPORT: report_path},
             )
 
+            logger.info("Task %s complete", task.id)
             git_checkout(base_branch, cwd)
-            _merge_phase_if_complete(tree, task.id, cwd, base_branch)
+            merged = _merge_phase_if_complete(tree, task.id, cwd, base_branch)
+            if merged:
+                logger.info("Phase merge completed for %s", task.id)
             return GardenResult(task_id=task.id, success=True)
 
+        logger.info("Task %s failed after %d retries", task.id, max_retries)
         # --- exhausted retries ---
         _commit_with_trailers(
             task.id, "complete (failed)", cwd,

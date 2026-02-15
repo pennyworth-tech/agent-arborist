@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from agent_arborist.tree.model import TaskNode, TaskTree
 
@@ -70,6 +73,7 @@ def parse_spec(path: Path, spec_id: str, namespace: str = "feature") -> TaskTree
             phase_name = match.group(2).strip()
             phase_id = f"phase{phase_num}"
 
+            logger.debug("Phase %s: %s", phase_id, phase_name)
             tree.nodes[phase_id] = TaskNode(
                 id=phase_id,
                 name=phase_name,
@@ -119,6 +123,7 @@ def parse_spec(path: Path, spec_id: str, namespace: str = "feature") -> TaskTree
                 source_line=line_idx + 1,
             )
 
+            logger.debug("Task %s: %s (parent=%s)", task_id, description, parent_id)
             tree.nodes[task_id] = node
 
             if parent_id and parent_id in tree.nodes:
@@ -128,6 +133,8 @@ def parse_spec(path: Path, spec_id: str, namespace: str = "feature") -> TaskTree
     # Parse dependencies
     _parse_dependencies(dep_lines, tree)
 
+    logger.info("Parsed spec: %d nodes from %s", len(tree.nodes), path.name)
+    logger.debug("Root IDs: %s", tree.root_ids)
     return tree
 
 

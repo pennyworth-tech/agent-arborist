@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from agent_arborist.runner import Runner, get_runner, RunnerType, DAG_DEFAULT_RUNNER, DAG_DEFAULT_MODEL
 from agent_arborist.tree.model import TaskNode, TaskTree
@@ -115,11 +118,14 @@ def plan_tree(
     """Use AI to generate a TaskTree from a spec directory."""
     runner_instance = runner or get_runner(runner_type, model)
 
+    spec_files = list(spec_dir.glob("*.md"))
+    logger.info("Planning tree from %d spec files in %s", len(spec_files), spec_dir)
     spec_contents = _read_spec_contents(spec_dir)
     prompt = TASK_ANALYSIS_PROMPT.format(
         spec_dir=spec_dir.resolve(),
         spec_contents=spec_contents,
     )
+    logger.debug("Prompt length: %d chars", len(prompt))
     result = runner_instance.run(prompt, timeout=timeout, cwd=spec_dir)
 
     if not result.success:
@@ -129,6 +135,7 @@ def plan_tree(
             raw_output=result.output,
         )
 
+    logger.debug("Extracting JSON from output")
     task_json = _extract_json(result.output)
     if not task_json:
         return PlanResult(
@@ -161,6 +168,7 @@ def plan_tree(
             raw_output=result.output,
         )
 
+    logger.info("Planning complete: %d nodes", len(tree.nodes))
     return PlanResult(success=True, tree=tree, raw_output=result.output)
 
 
