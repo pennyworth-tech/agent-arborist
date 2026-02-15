@@ -15,7 +15,7 @@ from agent_arborist.config import (
     get_config, get_step_runner_model, ArboristConfig,
     VALID_RUNNERS, generate_config_template,
 )
-from agent_arborist.constants import DEFAULT_NAMESPACE, DEFAULT_MAX_RETRIES
+from agent_arborist.constants import DEFAULT_NAMESPACE
 from agent_arborist.git.repo import git_current_branch, git_toplevel
 
 
@@ -213,7 +213,7 @@ def build(spec_dir, output, namespace, spec_id, no_ai, runner, model):
               help="Path to task-tree.json")
 @click.option("--runner-type", "runner", default=None, help="Runner type (default: from config or 'claude')")
 @click.option("--model", default=None, help="Model name (default: from config or 'sonnet')")
-@click.option("--max-retries", default=DEFAULT_MAX_RETRIES, type=int)
+@click.option("--max-retries", default=None, type=int, help="Max retries per task (default: from config or 3)")
 @click.option("--test-command", default=None, help="Test command (default: from config or 'true')")
 @click.option("--target-repo", type=click.Path(path_type=Path), default=None)
 @click.option("--base-branch", default=None, help="Base branch (default: current branch)")
@@ -230,6 +230,7 @@ def garden(tree_path, runner, model, max_retries, test_command, target_repo, bas
     impl_runner_name, impl_model = get_step_runner_model(cfg, "implement", runner, model, fallback_step="run")
     rev_runner_name, rev_model = get_step_runner_model(cfg, "review", runner, model, fallback_step="run")
     resolved_test_command = test_command or cfg.test.command or "true"
+    resolved_max_retries = max_retries if max_retries is not None else cfg.defaults.max_retries
 
     target = target_repo.resolve() if target_repo else Path(_default_repo()).resolve()
     if base_branch is None:
@@ -248,10 +249,11 @@ def garden(tree_path, runner, model, max_retries, test_command, target_repo, bas
         implement_runner=impl_runner_instance,
         review_runner=rev_runner_instance,
         test_command=resolved_test_command,
-        max_retries=max_retries,
+        max_retries=resolved_max_retries,
         base_branch=base_branch,
         report_dir=Path(report_dir).resolve(),
         log_dir=Path(log_dir).resolve(),
+        runner_timeout=cfg.timeouts.runner_timeout,
     )
 
     if result.success:
@@ -266,7 +268,7 @@ def garden(tree_path, runner, model, max_retries, test_command, target_repo, bas
               help="Path to task-tree.json")
 @click.option("--runner-type", "runner", default=None, help="Runner type (default: from config or 'claude')")
 @click.option("--model", default=None, help="Model name (default: from config or 'sonnet')")
-@click.option("--max-retries", default=DEFAULT_MAX_RETRIES, type=int)
+@click.option("--max-retries", default=None, type=int, help="Max retries per task (default: from config or 3)")
 @click.option("--test-command", default=None, help="Test command (default: from config or 'true')")
 @click.option("--target-repo", type=click.Path(path_type=Path), default=None)
 @click.option("--base-branch", default=None, help="Base branch (default: current branch)")
@@ -283,6 +285,7 @@ def gardener(tree_path, runner, model, max_retries, test_command, target_repo, b
     impl_runner_name, impl_model = get_step_runner_model(cfg, "implement", runner, model, fallback_step="run")
     rev_runner_name, rev_model = get_step_runner_model(cfg, "review", runner, model, fallback_step="run")
     resolved_test_command = test_command or cfg.test.command or "true"
+    resolved_max_retries = max_retries if max_retries is not None else cfg.defaults.max_retries
 
     target = target_repo.resolve() if target_repo else Path(_default_repo()).resolve()
     if base_branch is None:
@@ -301,10 +304,11 @@ def gardener(tree_path, runner, model, max_retries, test_command, target_repo, b
         implement_runner=impl_runner_instance,
         review_runner=rev_runner_instance,
         test_command=resolved_test_command,
-        max_retries=max_retries,
+        max_retries=resolved_max_retries,
         base_branch=base_branch,
         report_dir=Path(report_dir).resolve(),
         log_dir=Path(log_dir).resolve(),
+        runner_timeout=cfg.timeouts.runner_timeout,
     )
 
     if result.success:

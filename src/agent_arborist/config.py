@@ -41,6 +41,8 @@ ENV_TIMEOUT_TASK_RUN = "ARBORIST_TIMEOUT_TASK_RUN"
 ENV_TIMEOUT_POST_MERGE = "ARBORIST_TIMEOUT_POST_MERGE"
 ENV_TEST_COMMAND = "ARBORIST_TEST_COMMAND"
 ENV_TEST_TIMEOUT = "ARBORIST_TEST_TIMEOUT"
+ENV_RUNNER_TIMEOUT = "ARBORIST_RUNNER_TIMEOUT"
+ENV_MAX_RETRIES = "ARBORIST_MAX_RETRIES"
 
 # Step-specific env var pattern
 ENV_STEP_RUNNER_TEMPLATE = "ARBORIST_STEP_{step}_RUNNER"
@@ -68,6 +70,7 @@ class DefaultsConfig:
     output_format: str = "json"
     container_mode: str = "auto"
     quiet: bool = False
+    max_retries: int = 3
 
     def validate(self) -> None:
         """Validate configuration values."""
@@ -86,6 +89,10 @@ class DefaultsConfig:
                 f"Invalid container_mode '{self.container_mode}'. "
                 f"Valid values: {', '.join(VALID_CONTAINER_MODES)}"
             )
+        if self.max_retries <= 0:
+            raise ConfigValidationError(
+                f"max_retries must be positive, got {self.max_retries}"
+            )
 
     def to_dict(self, exclude_none: bool = False) -> dict[str, Any]:
         """Convert to dictionary."""
@@ -95,6 +102,7 @@ class DefaultsConfig:
             "output_format": self.output_format,
             "container_mode": self.container_mode,
             "quiet": self.quiet,
+            "max_retries": self.max_retries,
         }
         if exclude_none:
             return {k: v for k, v in result.items() if v is not None}
@@ -119,6 +127,7 @@ class DefaultsConfig:
             output_format=data.get("output_format", "json"),
             container_mode=data.get("container_mode", "auto"),
             quiet=data.get("quiet", False),
+            max_retries=data.get("max_retries", 3),
         )
 
 
@@ -129,6 +138,7 @@ class TimeoutConfig:
     task_run: int = 1800
     task_post_merge: int = 300
     test_command: int | None = None
+    runner_timeout: int = 600
 
     def validate(self) -> None:
         """Validate timeout values."""
@@ -144,6 +154,10 @@ class TimeoutConfig:
             raise ConfigValidationError(
                 f"test_command timeout must be positive, got {self.test_command}"
             )
+        if self.runner_timeout <= 0:
+            raise ConfigValidationError(
+                f"runner_timeout must be positive, got {self.runner_timeout}"
+            )
 
     def to_dict(self, exclude_none: bool = False) -> dict[str, Any]:
         """Convert to dictionary."""
@@ -151,6 +165,7 @@ class TimeoutConfig:
             "task_run": self.task_run,
             "task_post_merge": self.task_post_merge,
             "test_command": self.test_command,
+            "runner_timeout": self.runner_timeout,
         }
         if exclude_none:
             return {k: v for k, v in result.items() if v is not None}
@@ -173,6 +188,7 @@ class TimeoutConfig:
             task_run=data.get("task_run", 1800),
             task_post_merge=data.get("task_post_merge", 300),
             test_command=data.get("test_command"),
+            runner_timeout=data.get("runner_timeout", 600),
         )
 
 
@@ -221,14 +237,12 @@ class RunnerConfig:
 
     default_model: str | None = None
     models: dict[str, str] = field(default_factory=dict)
-    timeout: int | None = None
 
     def to_dict(self, exclude_none: bool = False) -> dict[str, Any]:
         """Convert to dictionary."""
         result = {
             "default_model": self.default_model,
             "models": self.models,
-            "timeout": self.timeout,
         }
         if exclude_none:
             return {k: v for k, v in result.items() if v is not None}
@@ -248,7 +262,6 @@ class RunnerConfig:
         return cls(
             default_model=data.get("default_model"),
             models=data.get("models", {}),
-            timeout=data.get("timeout"),
         )
 
 
@@ -834,6 +847,8 @@ def merge_configs(*configs: ArboristConfig) -> ArboristConfig:
             result.defaults.container_mode = config.defaults.container_mode
         if config.defaults.quiet:  # non-default
             result.defaults.quiet = config.defaults.quiet
+        if config.defaults.max_retries != 3:  # non-default
+            result.defaults.max_retries = config.defaults.max_retries
 
         # Merge timeouts (only non-default values)
         if config.timeouts.task_run != 1800:
@@ -842,6 +857,8 @@ def merge_configs(*configs: ArboristConfig) -> ArboristConfig:
             result.timeouts.task_post_merge = config.timeouts.task_post_merge
         if config.timeouts.test_command is not None:
             result.timeouts.test_command = config.timeouts.test_command
+        if config.timeouts.runner_timeout != 600:
+            result.timeouts.runner_timeout = config.timeouts.runner_timeout
 
         # Merge steps (only non-None values)
         for step_name, step_config in config.steps.items():
@@ -872,8 +889,6 @@ def merge_configs(*configs: ArboristConfig) -> ArboristConfig:
                 result.runners[runner_name].default_model = runner_config.default_model
             if runner_config.models:
                 result.runners[runner_name].models.update(runner_config.models)
-            if runner_config.timeout is not None:
-                result.runners[runner_name].timeout = runner_config.timeout
 
         # Merge hooks
         if config.hooks.enabled:
@@ -924,6 +939,14 @@ def apply_env_overrides(config: ArboristConfig) -> ArboristConfig:
     if quiet := os.environ.get(ENV_QUIET):
         result.defaults.quiet = quiet.lower() in ("true", "1", "yes")
 
+    if max_retries_str := os.environ.get(ENV_MAX_RETRIES):
+        try:
+            result.defaults.max_retries = int(max_retries_str)
+        except ValueError:
+            raise ConfigValidationError(
+                f"{ENV_MAX_RETRIES} must be an integer, got '{max_retries_str}'"
+            )
+
     # Timeout overrides
     if task_run_str := os.environ.get(ENV_TIMEOUT_TASK_RUN):
         try:
@@ -939,6 +962,14 @@ def apply_env_overrides(config: ArboristConfig) -> ArboristConfig:
         except ValueError:
             raise ConfigValidationError(
                 f"{ENV_TIMEOUT_POST_MERGE} must be an integer, got '{post_merge_str}'"
+            )
+
+    if runner_timeout_str := os.environ.get(ENV_RUNNER_TIMEOUT):
+        try:
+            result.timeouts.runner_timeout = int(runner_timeout_str)
+        except ValueError:
+            raise ConfigValidationError(
+                f"{ENV_RUNNER_TIMEOUT} must be an integer, got '{runner_timeout_str}'"
             )
 
     # Test config overrides
@@ -1108,6 +1139,8 @@ def generate_config_template() -> dict[str, Any]:
             "_comment_container_mode": f"Container mode. Valid: {', '.join(VALID_CONTAINER_MODES)}",
             "quiet": False,
             "_comment_quiet": "Suppress non-essential output",
+            "max_retries": 3,
+            "_comment_max_retries": "Max retries per task on failure (default: 3)",
         },
         "timeouts": {
             "task_run": 1800,
@@ -1116,6 +1149,8 @@ def generate_config_template() -> dict[str, Any]:
             "_comment_task_post_merge": "Timeout for post-merge in seconds (default: 5 min)",
             "test_command": None,
             "_comment_test_command": "Timeout for test command in seconds",
+            "runner_timeout": 600,
+            "_comment_runner_timeout": "Timeout for each runner invocation in seconds (default: 10 min)",
         },
         "steps": {
             "run": {

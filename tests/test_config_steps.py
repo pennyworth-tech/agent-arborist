@@ -8,6 +8,8 @@ import pytest
 from agent_arborist.config import (
     VALID_STEPS,
     ArboristConfig,
+    DefaultsConfig,
+    RunnerConfig,
     StepConfig,
     get_step_runner_model,
     generate_config_template,
@@ -116,6 +118,61 @@ def test_cli_overrides_all_steps():
 
     assert impl_r == "claude"
     assert rev_r == "claude"
+
+
+def test_runner_timeout_default():
+    cfg = ArboristConfig()
+    assert cfg.timeouts.runner_timeout == 600
+
+
+def test_runner_timeout_env_override(monkeypatch):
+    monkeypatch.setenv("ARBORIST_RUNNER_TIMEOUT", "120")
+    from agent_arborist.config import apply_env_overrides
+    cfg = apply_env_overrides(ArboristConfig())
+    assert cfg.timeouts.runner_timeout == 120
+
+
+def test_runner_timeout_from_dict():
+    cfg = ArboristConfig.from_dict({"timeouts": {"runner_timeout": 300}})
+    assert cfg.timeouts.runner_timeout == 300
+
+
+def test_max_retries_default():
+    cfg = ArboristConfig()
+    assert cfg.defaults.max_retries == 3
+
+
+def test_max_retries_from_dict():
+    cfg = ArboristConfig.from_dict({"defaults": {"max_retries": 5}})
+    assert cfg.defaults.max_retries == 5
+
+
+def test_max_retries_roundtrip():
+    cfg = ArboristConfig()
+    cfg.defaults.max_retries = 7
+    data = cfg.to_dict()
+    restored = ArboristConfig.from_dict(data)
+    assert restored.defaults.max_retries == 7
+
+
+def test_max_retries_env_override(monkeypatch):
+    monkeypatch.setenv("ARBORIST_MAX_RETRIES", "5")
+    from agent_arborist.config import apply_env_overrides
+    cfg = apply_env_overrides(ArboristConfig())
+    assert cfg.defaults.max_retries == 5
+
+
+def test_max_retries_validation():
+    from agent_arborist.config import ConfigValidationError
+    cfg = ArboristConfig()
+    cfg.defaults.max_retries = 0
+    with pytest.raises(ConfigValidationError):
+        cfg.validate()
+
+
+def test_runner_config_no_timeout_field():
+    """RunnerConfig should not have a timeout field."""
+    assert not hasattr(RunnerConfig(), "timeout")
 
 
 def test_fallback_chain():
