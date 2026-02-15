@@ -99,12 +99,18 @@ def _two_task_tree() -> TaskTree:
 
 @pytest.mark.integration
 @pytest.mark.parametrize("runner_type,model,cli_binary", PLANNER_CONFIGS)
-def test_ai_builds_valid_tree(runner_type, model, cli_binary):
+def test_ai_builds_valid_tree(tmp_path, runner_type, model, cli_binary):
     """AI reads hello-world spec and produces a structurally valid TaskTree."""
     _skip_if_missing(cli_binary)
 
+    # Copy only the hello-world spec into an isolated directory
+    import shutil as _shutil
+    spec_dir = tmp_path / "spec"
+    spec_dir.mkdir()
+    _shutil.copy(FIXTURES / "tasks-hello-world.md", spec_dir / "tasks-hello-world.md")
+
     result = plan_tree(
-        spec_dir=FIXTURES,
+        spec_dir=spec_dir,
         spec_id="hello",
         namespace="feature",
         runner_type=runner_type,
