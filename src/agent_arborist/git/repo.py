@@ -25,6 +25,11 @@ def _run(args: list[str], cwd: Path) -> str:
         raise GitError(f"git {' '.join(args)}: {e.stderr.strip()}") from e
 
 
+def git_toplevel(cwd: Path | None = None) -> Path:
+    """Return the root of the git repository containing cwd."""
+    return Path(_run(["rev-parse", "--show-toplevel"], cwd or Path.cwd()))
+
+
 def git_init(cwd: Path) -> None:
     _run(["init"], cwd)
     _run(["config", "user.email", "arborist@test.com"], cwd)
