@@ -55,13 +55,33 @@ def _build_trailers(**kwargs: str) -> str:
     return "\n".join(f"{k}: {v}" for k, v in kwargs.items())
 
 
+def _truncate_output(text: str | None, max_chars: int = 2000) -> str:
+    """Keep the last max_chars of text (tail), since errors are usually at the end."""
+    if not text:
+        return ""
+    if len(text) <= max_chars:
+        return text
+    return "[...truncated]\n" + text[-max_chars:]
+
+
+def _truncate_name(name: str, max_len: int = 50) -> str:
+    if len(name) <= max_len:
+        return name
+    return name[: max_len - 3] + "..."
+
+
 def _commit_with_trailers(
-    task_id: str, subject: str, cwd: Path, **trailers: str
+    task_id: str, subject: str, cwd: Path,
+    body: str | None = None, **trailers: str,
 ) -> str:
     """Stage all and commit with trailers."""
     git_add_all(cwd)
     trailer_block = _build_trailers(**trailers)
-    message = f"task({task_id}): {subject}\n\n{trailer_block}"
+    parts = [f"task({task_id}): {subject}"]
+    if body:
+        parts.append(body)
+    parts.append(trailer_block)
+    message = "\n\n".join(parts)
     return git_commit(message, cwd, allow_empty=True)
 
 
@@ -120,17 +140,22 @@ def garden(
             )
             logger.debug("Implement prompt: %.200s", prompt)
             result = runner.run(prompt, cwd=cwd)
+            tname = _truncate_name(task.name)
             if not result.success:
                 logger.info("Task %s implement failed", task.id)
+                body = f"Runner error:\n{_truncate_output(result.error or result.output)}"
                 _commit_with_trailers(
-                    task.id, "implement (failed)", cwd,
+                    task.id,
+                    f'implement "{tname}" (failed, attempt {attempt + 1}/{max_retries})',
+                    cwd, body=body,
                     **{TRAILER_STEP: "implement", TRAILER_RESULT: "fail", TRAILER_RETRY: retry_trailer},
                 )
                 continue
 
             logger.info("Task %s implement passed", task.id)
+            body = f"Runner output (truncated to 2000 chars):\n{_truncate_output(result.output)}"
             _commit_with_trailers(
-                task.id, "implement", cwd,
+                task.id, f'implement "{tname}"', cwd, body=body,
                 **{TRAILER_STEP: "implement", TRAILER_RESULT: "pass", TRAILER_RETRY: retry_trailer},
             )
 
@@ -141,13 +166,28 @@ def garden(
                     capture_output=True, text=True, timeout=300,
                 )
                 test_passed = test_result.returncode == 0
+                test_stdout = test_result.stdout or ""
+                test_stderr = test_result.stderr or ""
             except subprocess.TimeoutExpired:
                 test_passed = False
+                test_stdout = ""
+                test_stderr = "Test timed out after 300s"
 
             test_val = "pass" if test_passed else "fail"
             logger.info("Task %s test %s", task.id, test_val)
+
+            test_body_parts = []
+            if not test_passed and test_stderr:
+                test_body_parts.append(f"Test stderr (last 1000 chars):\n{_truncate_output(test_stderr, 1000)}")
+            if test_stdout:
+                test_body_parts.append(f"Test stdout (last 1000 chars):\n{_truncate_output(test_stdout, 1000)}")
+            test_body = "\n\n".join(test_body_parts) or None
+
+            test_subject = f'tests {test_val} for "{tname}"'
+            if not test_passed:
+                test_subject += f" (attempt {attempt + 1}/{max_retries})"
             _commit_with_trailers(
-                task.id, f"test ({test_val})", cwd,
+                task.id, test_subject, cwd, body=test_body,
                 **{TRAILER_STEP: "test", TRAILER_TEST: test_val, TRAILER_RETRY: retry_trailer},
             )
 
@@ -170,8 +210,12 @@ def garden(
 
             logger.info("Task %s review %s", task.id, "approved" if approved else "rejected")
             review_val = "approved" if approved else "rejected"
+            review_body = f"Review:\n{_truncate_output(review_result.output)}"
+            review_subject = f'review {review_val} for "{tname}"'
+            if not approved:
+                review_subject += f" (attempt {attempt + 1}/{max_retries})"
             _commit_with_trailers(
-                task.id, f"review ({review_val})", cwd,
+                task.id, review_subject, cwd, body=review_body,
                 **{TRAILER_STEP: "review", TRAILER_REVIEW: review_val, TRAILER_RETRY: retry_trailer},
             )
 
@@ -186,8 +230,9 @@ def garden(
                 json.dumps({"task_id": task.id, "result": "pass", "retries": attempt}, indent=2)
             )
 
+            complete_body = f"Completed after {attempt + 1} attempt(s). Report: {report_path}"
             _commit_with_trailers(
-                task.id, "complete", cwd,
+                task.id, f'complete "{tname}"', cwd, body=complete_body,
                 **{TRAILER_STEP: "complete", TRAILER_RESULT: "pass", TRAILER_REPORT: report_path},
             )
 
@@ -201,7 +246,7 @@ def garden(
         logger.info("Task %s failed after %d retries", task.id, max_retries)
         # --- exhausted retries ---
         _commit_with_trailers(
-            task.id, "complete (failed)", cwd,
+            task.id, f'failed "{_truncate_name(task.name)}" after {max_retries} retries', cwd,
             **{TRAILER_STEP: "complete", TRAILER_RESULT: "fail"},
         )
 
