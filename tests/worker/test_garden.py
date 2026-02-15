@@ -62,15 +62,14 @@ def test_garden_marks_task_complete(git_repo, mock_runner_all_pass):
     assert is_task_complete("feature/test/phase1", "T001", git_repo)
 
 
-def test_garden_writes_report(git_repo, mock_runner_all_pass):
+def test_garden_writes_report(git_repo, mock_runner_all_pass, tmp_path):
     tree = _make_tree()
-    garden(tree, git_repo, mock_runner_all_pass, base_branch="main")
+    report_dir = tmp_path / "reports"
+    garden(tree, git_repo, mock_runner_all_pass, base_branch="main", report_dir=report_dir)
 
-    # Report should be on the phase branch
-    from agent_arborist.git.repo import git_checkout
-    git_checkout("feature/test/phase1", git_repo)
-    report = git_repo / "spec" / "reports" / "T001.json"
-    assert report.exists()
+    # Report should be written to report_dir
+    reports = list(report_dir.glob("T001_run_*.json"))
+    assert len(reports) == 1
 
 
 def test_garden_retries_on_test_failure(git_repo, mock_runner_all_pass):

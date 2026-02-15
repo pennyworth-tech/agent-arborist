@@ -102,6 +102,23 @@ def _merge_phase_if_complete(
     return False
 
 
+def _write_log(log_dir: Path | None, task_id: str, step: str, result) -> None:
+    """Write runner stdout/stderr to a log file."""
+    if log_dir is None:
+        return
+    from datetime import datetime, timezone
+    log_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+    log_file = log_dir / f"{task_id}_{step}_{ts}.log"
+    parts = []
+    if result.output:
+        parts.append(f"=== stdout ===\n{result.output}")
+    if result.error:
+        parts.append(f"=== stderr ===\n{result.error}")
+    if parts:
+        log_file.write_text("\n".join(parts))
+
+
 def garden(
     tree: TaskTree,
     cwd: Path,
@@ -110,6 +127,8 @@ def garden(
     test_command: str = "true",
     max_retries: int = 3,
     base_branch: str = "main",
+    report_dir: Path | None = None,
+    log_dir: Path | None = None,
 ) -> GardenResult:
     """Execute one task through the implement → test → review pipeline."""
     task = find_next_task(tree, cwd)
@@ -140,6 +159,7 @@ def garden(
             )
             logger.debug("Implement prompt: %.200s", prompt)
             result = runner.run(prompt, cwd=cwd)
+            _write_log(log_dir, task.id, "implement", result)
             tname = _truncate_name(task.name)
             if not result.success:
                 logger.info("Task %s implement failed", task.id)
@@ -206,6 +226,7 @@ def garden(
                 f"Reply APPROVED if the code is correct, or REJECTED with reasons."
             )
             review_result = runner.run(review_prompt, cwd=cwd)
+            _write_log(log_dir, task.id, "review", review_result)
             approved = review_result.success and "APPROVED" in review_result.output.upper()
 
             logger.info("Task %s review %s", task.id, "approved" if approved else "rejected")
@@ -223,12 +244,19 @@ def garden(
                 continue
 
             # --- complete (success) ---
-            report_path = f"spec/reports/{task.id}.json"
-            report_dir = cwd / "spec" / "reports"
-            report_dir.mkdir(parents=True, exist_ok=True)
-            (report_dir / f"{task.id}.json").write_text(
+            from datetime import datetime, timezone
+            ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+            effective_report_dir = report_dir if report_dir is not None else cwd / "spec" / "reports"
+            effective_report_dir.mkdir(parents=True, exist_ok=True)
+            report_filename = f"{task.id}_run_{ts}.json"
+            (effective_report_dir / report_filename).write_text(
                 json.dumps({"task_id": task.id, "result": "pass", "retries": attempt}, indent=2)
             )
+            abs_report = effective_report_dir / report_filename
+            try:
+                report_path = str(abs_report.relative_to(cwd))
+            except ValueError:
+                report_path = str(abs_report)
 
             complete_body = f"Completed after {attempt + 1} attempt(s). Report: {report_path}"
             _commit_with_trailers(

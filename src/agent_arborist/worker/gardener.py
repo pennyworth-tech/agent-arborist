@@ -29,6 +29,8 @@ def gardener(
     test_command: str = "true",
     max_retries: int = 3,
     base_branch: str = "main",
+    report_dir: Path | None = None,
+    log_dir: Path | None = None,
 ) -> GardenerResult:
     """Run tasks in order until all complete or stalled."""
     result = GardenerResult(success=False)
@@ -58,6 +60,8 @@ def gardener(
             test_command=test_command,
             max_retries=max_retries,
             base_branch=base_branch,
+            report_dir=report_dir,
+            log_dir=log_dir,
         )
 
         if gr.success:

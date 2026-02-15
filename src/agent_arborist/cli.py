@@ -120,7 +120,11 @@ def build(spec_dir, output, namespace, spec_id, no_ai, runner, model):
 @click.option("--test-command", default=None, help="Test command (default: from config or 'true')")
 @click.option("--target-repo", type=click.Path(path_type=Path), default=None)
 @click.option("--base-branch", default=None, help="Base branch (default: current branch)")
-def garden(tree_path, runner, model, max_retries, test_command, target_repo, base_branch):
+@click.option("--report-dir", type=click.Path(path_type=Path), default=None,
+              help="Directory for report JSON files (default: next to task tree)")
+@click.option("--log-dir", type=click.Path(path_type=Path), default=None,
+              help="Directory for runner log files (default: .arborist/logs)")
+def garden(tree_path, runner, model, max_retries, test_command, target_repo, base_branch, report_dir, log_dir):
     """Execute a single task."""
     from agent_arborist.runner import get_runner
     from agent_arborist.worker.garden import garden as garden_fn
@@ -134,12 +138,19 @@ def garden(tree_path, runner, model, max_retries, test_command, target_repo, bas
         base_branch = git_current_branch(target)
     tree = _load_tree(tree_path)
 
+    if report_dir is None:
+        report_dir = tree_path.resolve().parent / "reports"
+    if log_dir is None:
+        log_dir = target / ".arborist" / "logs"
+
     runner_instance = get_runner(resolved_runner, resolved_model)
     result = garden_fn(
         tree, target, runner_instance,
         test_command=resolved_test_command,
         max_retries=max_retries,
         base_branch=base_branch,
+        report_dir=Path(report_dir).resolve(),
+        log_dir=Path(log_dir).resolve(),
     )
 
     if result.success:
@@ -158,7 +169,11 @@ def garden(tree_path, runner, model, max_retries, test_command, target_repo, bas
 @click.option("--test-command", default=None, help="Test command (default: from config or 'true')")
 @click.option("--target-repo", type=click.Path(path_type=Path), default=None)
 @click.option("--base-branch", default=None, help="Base branch (default: current branch)")
-def gardener(tree_path, runner, model, max_retries, test_command, target_repo, base_branch):
+@click.option("--report-dir", type=click.Path(path_type=Path), default=None,
+              help="Directory for report JSON files (default: next to task tree)")
+@click.option("--log-dir", type=click.Path(path_type=Path), default=None,
+              help="Directory for runner log files (default: .arborist/logs)")
+def gardener(tree_path, runner, model, max_retries, test_command, target_repo, base_branch, report_dir, log_dir):
     """Run the gardener loop to execute all tasks."""
     from agent_arborist.runner import get_runner
     from agent_arborist.worker.gardener import gardener as gardener_fn
@@ -172,12 +187,19 @@ def gardener(tree_path, runner, model, max_retries, test_command, target_repo, b
         base_branch = git_current_branch(target)
     tree = _load_tree(tree_path)
 
+    if report_dir is None:
+        report_dir = tree_path.resolve().parent / "reports"
+    if log_dir is None:
+        log_dir = target / ".arborist" / "logs"
+
     runner_instance = get_runner(resolved_runner, resolved_model)
     result = gardener_fn(
         tree, target, runner_instance,
         test_command=resolved_test_command,
         max_retries=max_retries,
         base_branch=base_branch,
+        report_dir=Path(report_dir).resolve(),
+        log_dir=Path(log_dir).resolve(),
     )
 
     if result.success:

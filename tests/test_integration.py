@@ -107,11 +107,12 @@ class TestGardenCommitHistory:
         assert any("task(T001): review" in s for s in subjects)
         assert any("task(T001): complete" in s for s in subjects)
 
-    def test_trailers_present_on_commits(self, git_repo):
+    def test_trailers_present_on_commits(self, git_repo, tmp_path):
         tree = _small_tree()
         runner = _MockRunner(implement_ok=True, review_ok=True)
+        report_dir = tmp_path / "reports"
 
-        garden_fn(tree, git_repo, runner, base_branch="main")
+        garden_fn(tree, git_repo, runner, base_branch="main", report_dir=report_dir)
 
         # The most recent task(T001) commit should be the "complete" one
         trailers = get_task_trailers("feature/test/phase1", "T001", git_repo)
@@ -119,18 +120,16 @@ class TestGardenCommitHistory:
         assert trailers["Arborist-Result"] == "pass"
         assert "Arborist-Report" in trailers
 
-    def test_report_file_written(self, git_repo):
+    def test_report_file_written(self, git_repo, tmp_path):
         tree = _small_tree()
         runner = _MockRunner(implement_ok=True, review_ok=True)
+        report_dir = tmp_path / "reports"
 
-        garden_fn(tree, git_repo, runner, base_branch="main")
+        garden_fn(tree, git_repo, runner, base_branch="main", report_dir=report_dir)
 
-        # Switch to phase branch to see the report
-        subprocess.run(["git", "checkout", "feature/test/phase1"],
-                       cwd=git_repo, capture_output=True, check=True)
-        report_path = git_repo / "spec" / "reports" / "T001.json"
-        assert report_path.exists()
-        report = json.loads(report_path.read_text())
+        reports = list(report_dir.glob("T001_run_*.json"))
+        assert len(reports) == 1
+        report = json.loads(reports[0].read_text())
         assert report["task_id"] == "T001"
         assert report["result"] == "pass"
 
