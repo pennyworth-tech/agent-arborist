@@ -48,6 +48,7 @@ class MockRunner:
     review_sequence: list[bool] = field(default_factory=list)
     _review_call: int = 0
     name: str = "mock"
+    model: str = "mock-model"
     command: str = "mock"
 
     def run(self, prompt, timeout=60, cwd=None, container_cmd_prefix=None):
@@ -87,11 +88,34 @@ def mock_runner_always_reject():
 
 
 @dataclass
+class TrackingRunner:
+    """Runner that records all prompts it receives."""
+    implement_ok: bool = True
+    review_ok: bool = True
+    prompts: list = field(default_factory=list)
+    name: str = "tracking"
+    model: str = "mock-model"
+    command: str = "mock"
+
+    def run(self, prompt, timeout=60, cwd=None, container_cmd_prefix=None):
+        from agent_arborist.runner import RunResult
+        self.prompts.append(prompt)
+        if "review" in prompt.lower():
+            ok = self.review_ok
+            return RunResult(success=ok, output="APPROVED" if ok else "REJECTED: needs work")
+        return RunResult(success=self.implement_ok, output="Implementation complete")
+
+    def is_available(self):
+        return True
+
+
+@dataclass
 class CrashingRunner:
     """Runner that raises after N successful run() calls."""
     crash_after: int = 1
     _call_count: int = 0
     name: str = "crashing"
+    model: str = "mock-model"
     command: str = "mock"
 
     def run(self, prompt, timeout=60, cwd=None, container_cmd_prefix=None):

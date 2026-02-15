@@ -122,8 +122,10 @@ def _write_log(log_dir: Path | None, task_id: str, step: str, result) -> None:
 def garden(
     tree: TaskTree,
     cwd: Path,
-    runner,
+    runner=None,
     *,
+    implement_runner=None,
+    review_runner=None,
     test_command: str = "true",
     max_retries: int = 3,
     base_branch: str = "main",
@@ -131,11 +133,20 @@ def garden(
     log_dir: Path | None = None,
 ) -> GardenResult:
     """Execute one task through the implement → test → review pipeline."""
+    # Resolve runners: explicit implement/review runners take precedence,
+    # then fall back to the single `runner` param for backward compatibility.
+    if implement_runner is None:
+        implement_runner = runner
+    if review_runner is None:
+        review_runner = runner
+
     task = find_next_task(tree, cwd)
     if task is None:
         return GardenResult(task_id="", success=False, error="no ready task")
 
-    logger.info("Starting task %s: %s", task.id, task.name)
+    _impl_id = f"{getattr(implement_runner, 'name', '?')}/{getattr(implement_runner, 'model', '?')}"
+    _rev_id = f"{getattr(review_runner, 'name', '?')}/{getattr(review_runner, 'model', '?')}"
+    logger.info("Starting task %s: %s (implement=%s, review=%s)", task.id, task.name, _impl_id, _rev_id)
     phase_branch = tree.branch_name(task.id)
 
     # Lazy branch creation
@@ -158,11 +169,11 @@ def garden(
                 f"Work in the current directory. Make all necessary file changes."
             )
             logger.debug("Implement prompt: %.200s", prompt)
-            result = runner.run(prompt, cwd=cwd)
+            result = implement_runner.run(prompt, cwd=cwd)
             _write_log(log_dir, task.id, "implement", result)
             tname = _truncate_name(task.name)
             if not result.success:
-                logger.info("Task %s implement failed", task.id)
+                logger.info("Task %s implement failed (%s)", task.id, _impl_id)
                 body = f"Runner error:\n{_truncate_output(result.error or result.output)}"
                 _commit_with_trailers(
                     task.id,
@@ -172,7 +183,7 @@ def garden(
                 )
                 continue
 
-            logger.info("Task %s implement passed", task.id)
+            logger.info("Task %s implement passed (%s)", task.id, _impl_id)
             body = f"Runner output (truncated to 2000 chars):\n{_truncate_output(result.output)}"
             _commit_with_trailers(
                 task.id, f'implement "{tname}"', cwd, body=body,
@@ -225,11 +236,11 @@ def garden(
                 f"Diff:\n{diff[:8000]}\n\n"
                 f"Reply APPROVED if the code is correct, or REJECTED with reasons."
             )
-            review_result = runner.run(review_prompt, cwd=cwd)
+            review_result = review_runner.run(review_prompt, cwd=cwd)
             _write_log(log_dir, task.id, "review", review_result)
             approved = review_result.success and "APPROVED" in review_result.output.upper()
 
-            logger.info("Task %s review %s", task.id, "approved" if approved else "rejected")
+            logger.info("Task %s review %s (%s)", task.id, "approved" if approved else "rejected", _rev_id)
             review_val = "approved" if approved else "rejected"
             review_body = f"Review:\n{_truncate_output(review_result.output)}"
             review_subject = f'review {review_val} for "{tname}"'

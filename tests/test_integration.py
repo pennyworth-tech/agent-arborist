@@ -29,6 +29,7 @@ class _MockRunner:
         self.implement_ok = implement_ok
         self.review_ok = review_ok
         self.name = "mock"
+        self.model = "mock-model"
 
     def run(self, prompt, timeout=60, cwd=None, container_cmd_prefix=None):
         if "review" in prompt.lower():
@@ -423,6 +424,59 @@ class TestBaseBranchAutoDetect:
         subprocess.run(["git", "checkout", "feature/test/phase1"],
                        cwd=git_repo, capture_output=True, check=True)
         assert (git_repo / "feature-file.txt").exists()
+
+
+# ---------------------------------------------------------------------------
+# 7. Separate implement/review runners — dispatch routing
+# ---------------------------------------------------------------------------
+
+class TestSeparateRunnerDispatch:
+    """Verify implement prompts go to implement_runner, review prompts to review_runner."""
+
+    def test_garden_uses_separate_runners(self, git_repo):
+        """Different TrackingRunners for implement vs review — no cross-contamination."""
+        from tests.conftest import TrackingRunner
+
+        tree = _small_tree()
+        impl_runner = TrackingRunner(name="claude", model="sonnet")
+        rev_runner = TrackingRunner(name="gemini", model="pro")
+
+        result = garden_fn(
+            tree, git_repo,
+            implement_runner=impl_runner,
+            review_runner=rev_runner,
+            base_branch="main",
+        )
+
+        assert result.success
+        assert any("Implement" in p for p in impl_runner.prompts)
+        assert not any("Review" in p for p in impl_runner.prompts)
+        assert any("Review" in p for p in rev_runner.prompts)
+        assert not any("Implement" in p for p in rev_runner.prompts)
+
+    def test_gardener_uses_separate_runners(self, git_repo):
+        """Full gardener loop with separate runners, all tasks complete with correct dispatch."""
+        from tests.conftest import TrackingRunner
+
+        tree = _two_task_tree()
+        impl_runner = TrackingRunner(name="claude", model="sonnet")
+        rev_runner = TrackingRunner(name="gemini", model="pro")
+
+        result = gardener(
+            tree, git_repo,
+            implement_runner=impl_runner,
+            review_runner=rev_runner,
+            base_branch="main",
+        )
+
+        assert result.success
+        assert result.tasks_completed == 2
+        impl_prompts = [p for p in impl_runner.prompts if "Implement" in p]
+        assert len(impl_prompts) == 2
+        rev_prompts = [p for p in rev_runner.prompts if "Review" in p]
+        assert len(rev_prompts) == 2
+        assert not any("Review" in p for p in impl_runner.prompts)
+        assert not any("Implement" in p for p in rev_runner.prompts)
 
 
 # ---------------------------------------------------------------------------

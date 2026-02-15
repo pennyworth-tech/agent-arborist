@@ -24,8 +24,10 @@ class GardenerResult:
 def gardener(
     tree: TaskTree,
     cwd: Path,
-    runner,
+    runner=None,
     *,
+    implement_runner=None,
+    review_runner=None,
     test_command: str = "true",
     max_retries: int = 3,
     base_branch: str = "main",
@@ -57,6 +59,8 @@ def gardener(
         logger.info("[%d/%d] Running task %s", result.tasks_completed + 1, len(all_leaves), next_task.id)
         gr = garden(
             tree, cwd, runner,
+            implement_runner=implement_runner,
+            review_runner=review_runner,
             test_command=test_command,
             max_retries=max_retries,
             base_branch=base_branch,

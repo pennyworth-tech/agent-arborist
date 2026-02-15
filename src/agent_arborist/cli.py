@@ -130,7 +130,8 @@ def garden(tree_path, runner, model, max_retries, test_command, target_repo, bas
     from agent_arborist.worker.garden import garden as garden_fn
 
     cfg = _load_config()
-    resolved_runner, resolved_model = get_step_runner_model(cfg, "run", runner, model)
+    impl_runner_name, impl_model = get_step_runner_model(cfg, "implement", runner, model, fallback_step="run")
+    rev_runner_name, rev_model = get_step_runner_model(cfg, "review", runner, model, fallback_step="run")
     resolved_test_command = test_command or cfg.test.command or "true"
 
     target = target_repo.resolve() if target_repo else Path(_default_repo()).resolve()
@@ -143,9 +144,12 @@ def garden(tree_path, runner, model, max_retries, test_command, target_repo, bas
     if log_dir is None:
         log_dir = target / ".arborist" / "logs"
 
-    runner_instance = get_runner(resolved_runner, resolved_model)
+    impl_runner_instance = get_runner(impl_runner_name, impl_model)
+    rev_runner_instance = get_runner(rev_runner_name, rev_model)
     result = garden_fn(
-        tree, target, runner_instance,
+        tree, target,
+        implement_runner=impl_runner_instance,
+        review_runner=rev_runner_instance,
         test_command=resolved_test_command,
         max_retries=max_retries,
         base_branch=base_branch,
@@ -179,7 +183,8 @@ def gardener(tree_path, runner, model, max_retries, test_command, target_repo, b
     from agent_arborist.worker.gardener import gardener as gardener_fn
 
     cfg = _load_config()
-    resolved_runner, resolved_model = get_step_runner_model(cfg, "run", runner, model)
+    impl_runner_name, impl_model = get_step_runner_model(cfg, "implement", runner, model, fallback_step="run")
+    rev_runner_name, rev_model = get_step_runner_model(cfg, "review", runner, model, fallback_step="run")
     resolved_test_command = test_command or cfg.test.command or "true"
 
     target = target_repo.resolve() if target_repo else Path(_default_repo()).resolve()
@@ -192,9 +197,12 @@ def gardener(tree_path, runner, model, max_retries, test_command, target_repo, b
     if log_dir is None:
         log_dir = target / ".arborist" / "logs"
 
-    runner_instance = get_runner(resolved_runner, resolved_model)
+    impl_runner_instance = get_runner(impl_runner_name, impl_model)
+    rev_runner_instance = get_runner(rev_runner_name, rev_model)
     result = gardener_fn(
-        tree, target, runner_instance,
+        tree, target,
+        implement_runner=impl_runner_instance,
+        review_runner=rev_runner_instance,
         test_command=resolved_test_command,
         max_retries=max_retries,
         base_branch=base_branch,
