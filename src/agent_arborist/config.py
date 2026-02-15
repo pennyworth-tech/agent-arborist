@@ -70,7 +70,7 @@ class DefaultsConfig:
     output_format: str = "json"
     container_mode: str = "auto"
     quiet: bool = False
-    max_retries: int = 3
+    max_retries: int = 5
 
     def validate(self) -> None:
         """Validate configuration values."""
@@ -127,7 +127,7 @@ class DefaultsConfig:
             output_format=data.get("output_format", "json"),
             container_mode=data.get("container_mode", "auto"),
             quiet=data.get("quiet", False),
-            max_retries=data.get("max_retries", 3),
+            max_retries=data.get("max_retries", 5),
         )
 
 
@@ -847,7 +847,7 @@ def merge_configs(*configs: ArboristConfig) -> ArboristConfig:
             result.defaults.container_mode = config.defaults.container_mode
         if config.defaults.quiet:  # non-default
             result.defaults.quiet = config.defaults.quiet
-        if config.defaults.max_retries != 3:  # non-default
+        if config.defaults.max_retries != 5:  # non-default
             result.defaults.max_retries = config.defaults.max_retries
 
         # Merge timeouts (only non-default values)
@@ -1139,7 +1139,7 @@ def generate_config_template() -> dict[str, Any]:
             "_comment_container_mode": f"Container mode. Valid: {', '.join(VALID_CONTAINER_MODES)}",
             "quiet": False,
             "_comment_quiet": "Suppress non-essential output",
-            "max_retries": 3,
+            "max_retries": 5,
             "_comment_max_retries": "Max retries per task on failure (default: 3)",
         },
         "timeouts": {

@@ -139,7 +139,7 @@ def test_runner_timeout_from_dict():
 
 def test_max_retries_default():
     cfg = ArboristConfig()
-    assert cfg.defaults.max_retries == 3
+    assert cfg.defaults.max_retries == 5
 
 
 def test_max_retries_from_dict():
