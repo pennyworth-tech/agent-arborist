@@ -17,6 +17,8 @@ from agent_arborist.constants import (
     TRAILER_REVIEW,
     TRAILER_RETRY,
     TRAILER_REPORT,
+    TRAILER_REVIEW_LOG,
+    TRAILER_TEST_LOG,
 )
 from agent_arborist.git.repo import (
     git_add_all,
@@ -25,6 +27,7 @@ from agent_arborist.git.repo import (
     git_commit,
     git_current_branch,
     git_diff,
+    git_log,
     git_merge,
 )
 from agent_arborist.git.state import scan_completed_tasks, TaskState
@@ -102,10 +105,10 @@ def _merge_phase_if_complete(
     return False
 
 
-def _write_log(log_dir: Path | None, task_id: str, step: str, result) -> None:
-    """Write runner stdout/stderr to a log file."""
+def _write_log(log_dir: Path | None, task_id: str, step: str, result) -> Path | None:
+    """Write runner stdout/stderr to a log file. Returns the path written."""
     if log_dir is None:
-        return
+        return None
     from datetime import datetime, timezone
     log_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
@@ -117,6 +120,59 @@ def _write_log(log_dir: Path | None, task_id: str, step: str, result) -> None:
         parts.append(f"=== stderr ===\n{result.error}")
     if parts:
         log_file.write_text("\n".join(parts))
+        return log_file
+    return None
+
+
+def _collect_feedback_from_git(task_id: str, cwd: Path) -> str:
+    """Collect previous review/test feedback from git commit history.
+
+    Reads commit bodies for this task's review-rejected and test-fail commits,
+    so feedback survives process restarts.
+    """
+    sections: list[str] = []
+
+    # Get all commits for this task on the current branch
+    try:
+        raw = git_log(
+            "HEAD", "%B---COMMIT_SEP---", cwd,
+            n=50, grep=f"task({task_id}):", fixed_strings=True,
+        )
+    except Exception:
+        return ""
+
+    for block in raw.split("---COMMIT_SEP---"):
+        block = block.strip()
+        if not block:
+            continue
+        # Review rejections
+        if f"{TRAILER_REVIEW}: rejected" in block:
+            # Extract the body between subject and trailers
+            lines = block.split("\n")
+            body_lines = []
+            for line in lines[1:]:  # skip subject
+                if line.startswith("Arborist-"):
+                    break
+                body_lines.append(line)
+            body = "\n".join(body_lines).strip()
+            if body:
+                sections.append(f"--- Previous review (rejected) ---\n{body}")
+
+        # Test failures
+        if f"{TRAILER_TEST}: fail" in block:
+            lines = block.split("\n")
+            body_lines = []
+            for line in lines[1:]:
+                if line.startswith("Arborist-"):
+                    break
+                body_lines.append(line)
+            body = "\n".join(body_lines).strip()
+            if body:
+                sections.append(f"--- Previous test failure ---\n{body}")
+
+    if not sections:
+        return ""
+    return "\n\nPrevious feedback from failed attempts:\n\n" + "\n\n".join(sections)
 
 
 def garden(
@@ -131,6 +187,7 @@ def garden(
     base_branch: str = "main",
     report_dir: Path | None = None,
     log_dir: Path | None = None,
+    runner_timeout: int | None = None,
 ) -> GardenResult:
     """Execute one task through the implement → test → review pipeline."""
     # Resolve runners: explicit implement/review runners take precedence,
@@ -168,8 +225,15 @@ def garden(
                 f"Description: {task.description}\n\n"
                 f"Work in the current directory. Make all necessary file changes."
             )
+            if attempt > 0:
+                feedback = _collect_feedback_from_git(task.id, cwd)
+                if feedback:
+                    prompt += feedback
             logger.debug("Implement prompt: %.200s", prompt)
-            result = implement_runner.run(prompt, cwd=cwd)
+            run_kwargs = {"cwd": cwd}
+            if runner_timeout is not None:
+                run_kwargs["timeout"] = runner_timeout
+            result = implement_runner.run(prompt, **run_kwargs)
             _write_log(log_dir, task.id, "implement", result)
             tname = _truncate_name(task.name)
             if not result.success:
@@ -217,9 +281,28 @@ def garden(
             test_subject = f'tests {test_val} for "{tname}"'
             if not test_passed:
                 test_subject += f" (attempt {attempt + 1}/{max_retries})"
+
+            # Write test log file and get path for trailer
+            test_log_path = None
+            if not test_passed and log_dir is not None:
+                from datetime import datetime, timezone as _tz
+                log_dir.mkdir(parents=True, exist_ok=True)
+                _ts = datetime.now(_tz.utc).strftime("%Y%m%dT%H%M%S")
+                test_log_file = log_dir / f"{task.id}_test_{_ts}.log"
+                test_log_file.write_text(
+                    f"=== stdout ===\n{test_stdout}\n=== stderr ===\n{test_stderr}"
+                )
+                try:
+                    test_log_path = str(test_log_file.relative_to(cwd))
+                except ValueError:
+                    test_log_path = str(test_log_file)
+
+            test_trailers = {TRAILER_STEP: "test", TRAILER_TEST: test_val, TRAILER_RETRY: retry_trailer}
+            if test_log_path:
+                test_trailers[TRAILER_TEST_LOG] = test_log_path
             _commit_with_trailers(
                 task.id, test_subject, cwd, body=test_body,
-                **{TRAILER_STEP: "test", TRAILER_TEST: test_val, TRAILER_RETRY: retry_trailer},
+                **test_trailers,
             )
 
             if not test_passed:
@@ -236,8 +319,8 @@ def garden(
                 f"Diff:\n{diff[:8000]}\n\n"
                 f"Reply APPROVED if the code is correct, or REJECTED with reasons."
             )
-            review_result = review_runner.run(review_prompt, cwd=cwd)
-            _write_log(log_dir, task.id, "review", review_result)
+            review_result = review_runner.run(review_prompt, **run_kwargs)
+            review_log_file = _write_log(log_dir, task.id, "review", review_result)
             approved = review_result.success and "APPROVED" in review_result.output.upper()
 
             logger.info("Task %s review %s (%s)", task.id, "approved" if approved else "rejected", _rev_id)
@@ -246,9 +329,16 @@ def garden(
             review_subject = f'review {review_val} for "{tname}"'
             if not approved:
                 review_subject += f" (attempt {attempt + 1}/{max_retries})"
+
+            review_trailers = {TRAILER_STEP: "review", TRAILER_REVIEW: review_val, TRAILER_RETRY: retry_trailer}
+            if review_log_file is not None:
+                try:
+                    review_trailers[TRAILER_REVIEW_LOG] = str(review_log_file.relative_to(cwd))
+                except ValueError:
+                    review_trailers[TRAILER_REVIEW_LOG] = str(review_log_file)
             _commit_with_trailers(
                 task.id, review_subject, cwd, body=review_body,
-                **{TRAILER_STEP: "review", TRAILER_REVIEW: review_val, TRAILER_RETRY: retry_trailer},
+                **review_trailers,
             )
 
             if not approved:

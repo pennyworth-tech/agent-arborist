@@ -71,10 +71,12 @@ def git_commit(message: str, cwd: Path, *, allow_empty: bool = False) -> str:
     return _run(["rev-parse", "HEAD"], cwd)
 
 
-def git_log(branch: str, fmt: str, cwd: Path, *, n: int = 1, grep: str | None = None) -> str:
+def git_log(branch: str, fmt: str, cwd: Path, *, n: int = 1, grep: str | None = None, fixed_strings: bool = False) -> str:
     args = ["log", branch, f"--format={fmt}", f"-n{n}"]
     if grep:
         args.extend(["--grep", grep])
+        if fixed_strings:
+            args.append("--fixed-strings")
     return _run(args, cwd)
 
 
