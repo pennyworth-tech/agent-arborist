@@ -187,6 +187,7 @@ def garden(
     base_branch: str = "main",
     report_dir: Path | None = None,
     log_dir: Path | None = None,
+    runner_timeout: int | None = None,
 ) -> GardenResult:
     """Execute one task through the implement → test → review pipeline."""
     # Resolve runners: explicit implement/review runners take precedence,
@@ -229,7 +230,10 @@ def garden(
                 if feedback:
                     prompt += feedback
             logger.debug("Implement prompt: %.200s", prompt)
-            result = implement_runner.run(prompt, cwd=cwd)
+            run_kwargs = {"cwd": cwd}
+            if runner_timeout is not None:
+                run_kwargs["timeout"] = runner_timeout
+            result = implement_runner.run(prompt, **run_kwargs)
             _write_log(log_dir, task.id, "implement", result)
             tname = _truncate_name(task.name)
             if not result.success:
@@ -315,7 +319,7 @@ def garden(
                 f"Diff:\n{diff[:8000]}\n\n"
                 f"Reply APPROVED if the code is correct, or REJECTED with reasons."
             )
-            review_result = review_runner.run(review_prompt, cwd=cwd)
+            review_result = review_runner.run(review_prompt, **run_kwargs)
             review_log_file = _write_log(log_dir, task.id, "review", review_result)
             approved = review_result.success and "APPROVED" in review_result.output.upper()
 

@@ -33,6 +33,7 @@ def gardener(
     base_branch: str = "main",
     report_dir: Path | None = None,
     log_dir: Path | None = None,
+    runner_timeout: int | None = None,
 ) -> GardenerResult:
     """Run tasks in order until all complete or stalled."""
     result = GardenerResult(success=False)
@@ -64,6 +65,7 @@ def gardener(
             base_branch=base_branch,
             report_dir=report_dir,
             log_dir=log_dir,
+            runner_timeout=runner_timeout,
         )
 
         if gr.success:

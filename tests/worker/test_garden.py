@@ -270,6 +270,30 @@ def test_test_failure_feedback_from_git_on_retry(git_repo, tmp_path):
     )
 
 
+def test_runner_timeout_passed_to_runner(git_repo, tmp_path):
+    """When runner_timeout is set, it should be passed to runner.run() calls."""
+    from tests.conftest import TrackingRunner
+
+    tree = _make_tree()
+    runner = TrackingRunner(implement_ok=True, review_ok=True)
+
+    result = garden(tree, git_repo, runner, max_retries=3, base_branch="main", runner_timeout=120)
+    assert result.success
+    assert all(t == 120 for t in runner.timeouts), f"Expected all timeouts to be 120, got {runner.timeouts}"
+
+
+def test_runner_timeout_default_when_none(git_repo, tmp_path):
+    """When runner_timeout is None, runner should use its own default."""
+    from tests.conftest import TrackingRunner
+
+    tree = _make_tree()
+    runner = TrackingRunner(implement_ok=True, review_ok=True)
+
+    result = garden(tree, git_repo, runner, max_retries=3, base_branch="main")
+    assert result.success
+    assert all(t == 600 for t in runner.timeouts), f"Expected default timeout 600, got {runner.timeouts}"
+
+
 def test_no_feedback_on_first_attempt(git_repo, tmp_path):
     """First implement prompt should NOT contain any previous feedback."""
     from tests.conftest import TrackingRunner

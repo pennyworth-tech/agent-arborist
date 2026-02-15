@@ -93,13 +93,15 @@ class TrackingRunner:
     implement_ok: bool = True
     review_ok: bool = True
     prompts: list = field(default_factory=list)
+    timeouts: list = field(default_factory=list)
     name: str = "tracking"
     model: str = "mock-model"
     command: str = "mock"
 
-    def run(self, prompt, timeout=60, cwd=None, container_cmd_prefix=None):
+    def run(self, prompt, timeout=600, cwd=None, container_cmd_prefix=None):
         from agent_arborist.runner import RunResult
         self.prompts.append(prompt)
+        self.timeouts.append(timeout)
         if "review" in prompt.lower():
             ok = self.review_ok
             return RunResult(success=ok, output="APPROVED" if ok else "REJECTED: needs work")
