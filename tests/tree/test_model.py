@@ -102,6 +102,51 @@ def test_to_dict_includes_execution_order():
     assert data["execution_order"] == ["T001", "T002"]
 
 
+def _deep_tree():
+    """Ragged deep tree: phase1 -> group1 -> T001, T002; phase1 -> T003."""
+    tree = TaskTree(spec_id="test", namespace="feature")
+    tree.root_ids = ["phase1"]
+    tree.nodes["phase1"] = TaskNode(
+        id="phase1", name="Setup", children=["group1", "T003"]
+    )
+    tree.nodes["group1"] = TaskNode(
+        id="group1", name="Backend", parent="phase1", children=["T001", "T002"]
+    )
+    tree.nodes["T001"] = TaskNode(id="T001", name="Schema", parent="group1")
+    tree.nodes["T002"] = TaskNode(id="T002", name="Models", parent="group1", depends_on=["T001"])
+    tree.nodes["T003"] = TaskNode(id="T003", name="Frontend", parent="phase1")
+    return tree
+
+
+def test_root_phase_resolves_deep_descendants():
+    tree = _deep_tree()
+    assert tree.root_phase("T001") == "phase1"
+    assert tree.root_phase("T002") == "phase1"
+    assert tree.root_phase("T003") == "phase1"
+    assert tree.root_phase("group1") == "phase1"
+    assert tree.root_phase("phase1") == "phase1"
+
+
+def test_branch_name_deep_tree():
+    tree = _deep_tree()
+    assert tree.branch_name("T001") == "feature/test/phase1"
+    assert tree.branch_name("T002") == "feature/test/phase1"
+    assert tree.branch_name("T003") == "feature/test/phase1"
+    assert tree.branch_name("group1") == "feature/test/phase1"
+
+
+def test_leaves_under_collects_all_deep_leaves():
+    tree = _deep_tree()
+    leaves = tree.leaves_under("phase1")
+    assert {l.id for l in leaves} == {"T001", "T002", "T003"}
+
+
+def test_leaves_under_subgroup():
+    tree = _deep_tree()
+    leaves = tree.leaves_under("group1")
+    assert {l.id for l in leaves} == {"T001", "T002"}
+
+
 def test_to_dict_and_from_dict_roundtrip():
     tree = _make_tree()
     tree.compute_execution_order()

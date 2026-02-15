@@ -341,6 +341,54 @@ class TestGardenRepeatedEquivalence:
 
 
 # ---------------------------------------------------------------------------
+# 5. Deep tree (ragged hierarchy) integration
+# ---------------------------------------------------------------------------
+
+class TestDeepTreeIntegration:
+    """Verify that ragged hierarchies work end-to-end."""
+
+    def test_deep_tree_gardener_completes_all(self, git_repo):
+        """Gardener completes all tasks in a 3-level ragged tree."""
+        from agent_arborist.tree.model import TaskNode
+        tree = TaskTree(spec_id="test", namespace="feature")
+        tree.root_ids = ["phase1"]
+        tree.nodes["phase1"] = TaskNode(id="phase1", name="Phase 1", children=["group1", "T003"])
+        tree.nodes["group1"] = TaskNode(id="group1", name="Group 1", parent="phase1", children=["T001", "T002"])
+        tree.nodes["T001"] = TaskNode(id="T001", name="Schema", parent="group1", description="Create schema")
+        tree.nodes["T002"] = TaskNode(id="T002", name="Models", parent="group1", depends_on=["T001"], description="Create models")
+        tree.nodes["T003"] = TaskNode(id="T003", name="Frontend", parent="phase1", description="Create frontend")
+        tree.compute_execution_order()
+
+        runner = _MockRunner(implement_ok=True, review_ok=True)
+        result = gardener(tree, git_repo, runner, base_branch="main")
+
+        assert result.success
+        assert result.tasks_completed == 3
+        completed = scan_completed_tasks(tree, git_repo)
+        assert completed == {"T001", "T002", "T003"}
+
+        # All tasks share one branch
+        assert git_branch_exists("feature/test/phase1", git_repo)
+
+        # Phase merged to main
+        main_log = git_log("main", "%s", git_repo, n=10)
+        assert "merge" in main_log.lower()
+
+    def test_deep_tree_from_spec_fixture(self):
+        """Parse the 3-level fixture and verify structure."""
+        tree = parse_spec(FIXTURES / "tasks-deep-tree.md", spec_id="deep")
+        tree.compute_execution_order()
+
+        assert len(tree.leaves()) == 4
+        # All phase1 leaves share branch
+        assert tree.branch_name("T001") == "feature/deep/phase1"
+        assert tree.branch_name("T002") == "feature/deep/phase1"
+        assert tree.branch_name("T003") == "feature/deep/phase1"
+        # phase2 leaf has own branch
+        assert tree.branch_name("T004") == "feature/deep/phase2"
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 

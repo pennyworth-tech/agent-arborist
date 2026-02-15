@@ -11,6 +11,9 @@ from agent_arborist.tree.model import TaskNode, TaskTree
 # Pattern: ## Phase N: Name
 PHASE_PATTERN = re.compile(r"^##\s*Phase\s*(\d+):\s*(.+)$")
 
+# Pattern: ### or #### etc. subgroup headers
+SUBGROUP_PATTERN = re.compile(r"^(#{3,6})\s+(.+)$")
+
 # Pattern: - [ ] T001 Description or - [ ] T001 [P] Description
 TASK_PATTERN = re.compile(r"^-\s*\[\s*\]\s*(T\d+)\s*(\[P\])?\s*(.+)$")
 
@@ -29,10 +32,20 @@ def parse_spec(path: Path, spec_id: str, namespace: str = "feature") -> TaskTree
 
     tree = TaskTree(spec_id=spec_id, namespace=namespace)
 
-    current_phase_id: str | None = None
+    # Stack tracks (header_level, node_id) for nested groups.
+    # Level 2 = phase (##), level 3 = ### subgroup, etc.
+    group_stack: list[tuple[int, str]] = []
     in_dependencies = False
     dep_lines: list[str] = []
-    phase_counter = 0
+    subgroup_counter = 0
+
+    def _current_group_id() -> str | None:
+        return group_stack[-1][1] if group_stack else None
+
+    def _pop_to_level(level: int) -> None:
+        """Pop stack entries at or deeper than the given level."""
+        while group_stack and group_stack[-1][0] >= level:
+            group_stack.pop()
 
     for line in lines:
         stripped = line.strip()
@@ -48,37 +61,60 @@ def parse_spec(path: Path, spec_id: str, namespace: str = "feature") -> TaskTree
                 dep_lines.append(stripped)
             continue
 
-        # Phase header
+        # Phase header (## Phase N: Name)
         if match := PHASE_PATTERN.match(stripped):
-            phase_counter += 1
+            _pop_to_level(2)
             phase_num = match.group(1)
             phase_name = match.group(2).strip()
             phase_id = f"phase{phase_num}"
-            current_phase_id = phase_id
 
             tree.nodes[phase_id] = TaskNode(
                 id=phase_id,
                 name=phase_name,
             )
             tree.root_ids.append(phase_id)
+            group_stack.append((2, phase_id))
+            continue
+
+        # Subgroup header (### or deeper)
+        if match := SUBGROUP_PATTERN.match(stripped):
+            level = len(match.group(1))  # number of #'s
+            subgroup_name = match.group(2).strip()
+            subgroup_counter += 1
+            subgroup_id = f"group{subgroup_counter}"
+
+            _pop_to_level(level)
+            parent_id = _current_group_id()
+
+            tree.nodes[subgroup_id] = TaskNode(
+                id=subgroup_id,
+                name=subgroup_name,
+                parent=parent_id,
+            )
+
+            if parent_id and parent_id in tree.nodes:
+                tree.nodes[parent_id].children.append(subgroup_id)
+
+            group_stack.append((level, subgroup_id))
             continue
 
         # Task item
         if match := TASK_PATTERN.match(stripped):
             task_id = match.group(1)
             description = match.group(3).strip()
+            parent_id = _current_group_id()
 
             node = TaskNode(
                 id=task_id,
                 name=description,
                 description=description,
-                parent=current_phase_id,
+                parent=parent_id,
             )
 
             tree.nodes[task_id] = node
 
-            if current_phase_id and current_phase_id in tree.nodes:
-                tree.nodes[current_phase_id].children.append(task_id)
+            if parent_id and parent_id in tree.nodes:
+                tree.nodes[parent_id].children.append(task_id)
             continue
 
     # Parse dependencies

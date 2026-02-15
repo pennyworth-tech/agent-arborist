@@ -94,3 +94,38 @@ def test_garden_fails_after_max_retries(git_repo, mock_runner_always_reject):
     assert not result.success
     assert "failed after 2 retries" in result.error
     assert git_current_branch(git_repo) == "main"
+
+
+def _deep_tree():
+    """Ragged: phase1 -> group1 -> T001, T002; phase1 -> T003."""
+    tree = TaskTree(spec_id="test", namespace="feature")
+    tree.root_ids = ["phase1"]
+    tree.nodes["phase1"] = TaskNode(id="phase1", name="Phase 1", children=["group1", "T003"])
+    tree.nodes["group1"] = TaskNode(id="group1", name="Group 1", parent="phase1", children=["T001", "T002"])
+    tree.nodes["T001"] = TaskNode(id="T001", name="Schema", parent="group1", description="Create schema")
+    tree.nodes["T002"] = TaskNode(id="T002", name="Models", parent="group1", depends_on=["T001"], description="Create models")
+    tree.nodes["T003"] = TaskNode(id="T003", name="Frontend", parent="phase1", description="Create frontend")
+    tree.compute_execution_order()
+    return tree
+
+
+def test_deep_tree_merge_waits_for_all_leaves(git_repo, mock_runner_all_pass):
+    """Phase should not merge until ALL deep leaves are complete."""
+    tree = _deep_tree()
+
+    # Complete T001 — phase should NOT merge yet
+    r1 = garden(tree, git_repo, mock_runner_all_pass, base_branch="main")
+    assert r1.success
+    from agent_arborist.git.repo import git_log
+    main_log = git_log("main", "%s", git_repo, n=5)
+    assert "merge" not in main_log.lower()
+
+    # Complete T003
+    r2 = garden(tree, git_repo, mock_runner_all_pass, base_branch="main")
+    assert r2.success
+
+    # Complete T002 — now all leaves done, phase should merge
+    r3 = garden(tree, git_repo, mock_runner_all_pass, base_branch="main")
+    assert r3.success
+    main_log = git_log("main", "%s", git_repo, n=5)
+    assert "merge" in main_log.lower()

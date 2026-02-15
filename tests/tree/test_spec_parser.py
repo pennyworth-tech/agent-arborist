@@ -53,6 +53,26 @@ def test_parse_produces_branch_names():
     assert "phase" in bn
 
 
+def test_parse_deep_tree_nested_headers():
+    """### subgroups become intermediate nodes in the tree."""
+    tree = parse_spec(FIXTURES / "tasks-deep-tree.md", spec_id="deep")
+    # Two root phases
+    assert len(tree.root_ids) == 2
+    # phase1 has subgroups, not direct leaf children
+    phase1 = tree.nodes["phase1"]
+    # phase1 children should include subgroup ids, not T001 directly
+    leaf_ids = {n.id for n in tree.leaves()}
+    assert leaf_ids == {"T001", "T002", "T003", "T004"}
+    # T001 should be nested under a subgroup, not phase1 directly
+    assert tree.nodes["T001"].parent != "phase1"
+    # All phase1 descendants resolve to phase1
+    assert tree.root_phase("T001") == "phase1"
+    assert tree.root_phase("T002") == "phase1"
+    assert tree.root_phase("T003") == "phase1"
+    # phase2 direct child
+    assert tree.nodes["T004"].parent == "phase2"
+
+
 def test_to_dict_produces_json():
     """Task tree can be serialized to JSON."""
     import json

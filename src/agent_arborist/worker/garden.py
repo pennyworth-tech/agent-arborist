@@ -65,14 +65,15 @@ def _commit_with_trailers(
 def _merge_phase_if_complete(
     tree: TaskTree, task_id: str, cwd: Path, base_branch: str
 ) -> bool:
-    """If all siblings of task_id's phase are complete, merge phase branch to base."""
-    node = tree.nodes[task_id]
-    if not node.parent:
+    """If all leaves under the root phase are complete, merge phase branch to base."""
+    rp = tree.root_phase(task_id)
+    if rp == task_id and tree.nodes[task_id].is_leaf:
+        # Standalone root leaf — no phase to merge
         return False
-    parent = tree.nodes[node.parent]
+    phase_leaves = tree.leaves_under(rp)
     completed = scan_completed_tasks(tree, cwd)
-    if all(c in completed for c in parent.children):
-        phase_branch = tree.branch_name(node.parent)
+    if all(leaf.id in completed for leaf in phase_leaves):
+        phase_branch = tree.branch_name(rp)
         git_merge(phase_branch, cwd, message=f"merge: {phase_branch} complete")
         return True
     return False

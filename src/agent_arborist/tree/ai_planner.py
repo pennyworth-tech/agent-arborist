@@ -44,12 +44,18 @@ OUTPUT FORMAT - JSON:
     {{
       "id": "Phase2",
       "description": "Phase 2: Implementation",
-      "children": ["T004", "T005"]
+      "children": ["SubGroup1", "T005"]
+    }},
+    {{
+      "id": "SubGroup1",
+      "description": "Sub-group: API layer",
+      "parent": "Phase2",
+      "children": ["T004"]
     }},
     {{
       "id": "T004",
       "description": "Implement feature",
-      "parent": "Phase2"
+      "parent": "SubGroup1"
     }}
   ]
 }}
@@ -59,6 +65,7 @@ TREE STRUCTURE:
 2. Leaf tasks have "parent" pointing to their containing group
 3. Top-level groupings have NO parent (they are root tasks)
 4. Leaf tasks have NO children
+5. Nesting to arbitrary depth is allowed (e.g. Phase → SubGroup → Task)
 
 EXTRACTION RULES:
 1. Extract EVERY single task - count must match all task items in the spec

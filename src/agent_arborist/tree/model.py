@@ -40,18 +40,33 @@ class TaskTree:
                 ready.append(node)
         return ready
 
+    def root_phase(self, node_id: str) -> str:
+        """Walk up to the ancestor that lives in root_ids."""
+        nid = node_id
+        while nid not in self.root_ids:
+            parent = self.nodes[nid].parent
+            if parent is None:
+                return nid
+            nid = parent
+        return nid
+
+    def leaves_under(self, node_id: str) -> list[TaskNode]:
+        """Recursively collect all leaf descendants of node_id."""
+        node = self.nodes[node_id]
+        if node.is_leaf:
+            return [node]
+        result: list[TaskNode] = []
+        for child_id in node.children:
+            result.extend(self.leaves_under(child_id))
+        return result
+
     def branch_name(self, node_id: str) -> str:
         """Get the git branch name for a node.
 
-        Phase nodes own branches: feature/calc/phase1
-        Leaf tasks inherit their parent's branch.
+        All descendants of a root phase share one branch.
         """
-        node = self.nodes[node_id]
-        if node.is_leaf and node.parent:
-            # Leaf inherits parent's branch
-            return self.branch_name(node.parent)
-        # Phase node gets its own branch
-        return f"{self.namespace}/{self.spec_id}/{node_id}"
+        rp = self.root_phase(node_id)
+        return f"{self.namespace}/{self.spec_id}/{rp}"
 
     def compute_execution_order(self) -> list[str]:
         """Compute topological execution order using Kahn's algorithm.
