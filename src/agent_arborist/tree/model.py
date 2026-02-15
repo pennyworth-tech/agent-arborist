@@ -111,7 +111,6 @@ class TaskTree:
     def to_dict(self) -> dict:
         return {
             "spec_id": self.spec_id,
-            "namespace": self.namespace,
             "nodes": {
                 nid: {
                     "id": n.id,
@@ -135,7 +134,6 @@ class TaskTree:
     def from_dict(cls, data: dict) -> TaskTree:
         tree = cls(
             spec_id=data["spec_id"],
-            namespace=data.get("namespace", "arborist"),
             execution_order=data.get("execution_order", []),
             spec_files=data.get("spec_files", []),
         )
