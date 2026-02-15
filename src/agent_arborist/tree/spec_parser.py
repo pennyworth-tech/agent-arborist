@@ -80,7 +80,6 @@ def parse_spec(path: Path, spec_id: str, namespace: str = "feature") -> TaskTree
                 source_file=rel_path,
                 source_line=line_idx + 1,
             )
-            tree.root_ids.append(phase_id)
             group_stack.append((2, phase_id))
             continue
 

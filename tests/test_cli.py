@@ -56,7 +56,6 @@ def test_build_default_uses_ai_planner(tmp_path):
     mock_tree.nodes = {}
     mock_tree.leaves.return_value = []
     mock_tree.execution_order = []
-    mock_tree.root_ids = []
     mock_tree.namespace = "feature"
     mock_tree.spec_id = "test"
 

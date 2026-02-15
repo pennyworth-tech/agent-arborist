@@ -67,7 +67,6 @@ def test_is_task_not_complete_when_pending(git_repo):
 
 def test_scan_completed_tasks(git_repo):
     tree = TaskTree(spec_id="test", namespace="feature")
-    tree.root_ids = ["phase1"]
     tree.nodes["phase1"] = TaskNode(id="phase1", name="Phase 1", children=["T001", "T002"])
     tree.nodes["T001"] = TaskNode(id="T001", name="Task 1", parent="phase1")
     tree.nodes["T002"] = TaskNode(id="T002", name="Task 2", parent="phase1")

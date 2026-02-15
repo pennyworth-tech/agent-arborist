@@ -172,7 +172,6 @@ class TestGardenerFullLoop:
     def test_multi_phase_creates_separate_branches(self, git_repo):
         """Two phases, each with one task → two separate branches, two merges."""
         tree = TaskTree(spec_id="test", namespace="feature")
-        tree.root_ids = ["phase1", "phase2"]
 
         from agent_arborist.tree.model import TaskNode
         tree.nodes["phase1"] = TaskNode(id="phase1", name="Phase 1", children=["T001"])
@@ -323,7 +322,6 @@ class TestGardenRepeatedEquivalence:
         """Two phases, each with one task — garden() called twice merges both."""
         from agent_arborist.tree.model import TaskNode
         tree = TaskTree(spec_id="test", namespace="feature")
-        tree.root_ids = ["phase1", "phase2"]
         tree.nodes["phase1"] = TaskNode(id="phase1", name="P1", children=["T001"])
         tree.nodes["T001"] = TaskNode(id="T001", name="Task 1", parent="phase1", description="Do 1")
         tree.nodes["phase2"] = TaskNode(id="phase2", name="P2", children=["T002"])
@@ -351,7 +349,6 @@ class TestDeepTreeIntegration:
         """Gardener completes all tasks in a 3-level ragged tree."""
         from agent_arborist.tree.model import TaskNode
         tree = TaskTree(spec_id="test", namespace="feature")
-        tree.root_ids = ["phase1"]
         tree.nodes["phase1"] = TaskNode(id="phase1", name="Phase 1", children=["group1", "T003"])
         tree.nodes["group1"] = TaskNode(id="group1", name="Group 1", parent="phase1", children=["T001", "T002"])
         tree.nodes["T001"] = TaskNode(id="T001", name="Schema", parent="group1", description="Create schema")
@@ -396,7 +393,6 @@ def _small_tree() -> TaskTree:
     """Single phase, single task."""
     from agent_arborist.tree.model import TaskNode
     tree = TaskTree(spec_id="test", namespace="feature")
-    tree.root_ids = ["phase1"]
     tree.nodes["phase1"] = TaskNode(id="phase1", name="Phase 1", children=["T001"])
     tree.nodes["T001"] = TaskNode(id="T001", name="Create files", parent="phase1", description="Create initial files")
     tree.compute_execution_order()
@@ -407,7 +403,6 @@ def _two_task_tree() -> TaskTree:
     """Single phase, two tasks with dependency T001 → T002."""
     from agent_arborist.tree.model import TaskNode
     tree = TaskTree(spec_id="test", namespace="feature")
-    tree.root_ids = ["phase1"]
     tree.nodes["phase1"] = TaskNode(id="phase1", name="Phase 1", children=["T001", "T002"])
     tree.nodes["T001"] = TaskNode(id="T001", name="Create files", parent="phase1", description="Create initial files")
     tree.nodes["T002"] = TaskNode(id="T002", name="Add tests", parent="phase1", depends_on=["T001"], description="Add test files")

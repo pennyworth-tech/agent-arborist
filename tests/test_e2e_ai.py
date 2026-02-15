@@ -67,7 +67,6 @@ def _setup_repo_with_tree(git_repo: Path, tree: TaskTree) -> None:
 def _simple_tree() -> TaskTree:
     """Single phase, single trivial task."""
     tree = TaskTree(spec_id="hello", namespace="feature")
-    tree.root_ids = ["phase1"]
     tree.nodes["phase1"] = TaskNode(id="phase1", name="Setup", children=["T001"])
     tree.nodes["T001"] = TaskNode(
         id="T001", name="Create project structure", parent="phase1",
@@ -79,7 +78,6 @@ def _simple_tree() -> TaskTree:
 def _two_task_tree() -> TaskTree:
     """Single phase, two tasks, T002 depends on T001."""
     tree = TaskTree(spec_id="hello", namespace="feature")
-    tree.root_ids = ["phase1"]
     tree.nodes["phase1"] = TaskNode(id="phase1", name="Setup", children=["T001", "T002"])
     tree.nodes["T001"] = TaskNode(
         id="T001", name="Create a file", parent="phase1",

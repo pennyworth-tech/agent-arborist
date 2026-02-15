@@ -8,7 +8,6 @@ from agent_arborist.tree.model import TaskNode, TaskTree
 def _make_tree():
     """Helper: phase1 -> T001, T002 (T002 depends on T001)."""
     tree = TaskTree(spec_id="test", namespace="feature")
-    tree.root_ids = ["phase1"]
     tree.nodes["phase1"] = TaskNode(
         id="phase1", name="Setup", children=["T001", "T002"]
     )
@@ -71,7 +70,6 @@ def test_compute_execution_order_respects_deps():
 
 def test_compute_execution_order_no_deps():
     tree = TaskTree(spec_id="test")
-    tree.root_ids = ["phase1"]
     tree.nodes["phase1"] = TaskNode(id="phase1", name="P", children=["T001", "T002"])
     tree.nodes["T001"] = TaskNode(id="T001", name="A", parent="phase1")
     tree.nodes["T002"] = TaskNode(id="T002", name="B", parent="phase1")
@@ -83,7 +81,6 @@ def test_compute_execution_order_no_deps():
 def test_compute_execution_order_diamond():
     """T001 -> T002, T003 -> T004 (diamond dependency)."""
     tree = TaskTree(spec_id="test")
-    tree.root_ids = ["phase1"]
     tree.nodes["phase1"] = TaskNode(id="phase1", name="P", children=["T001", "T002", "T003", "T004"])
     tree.nodes["T001"] = TaskNode(id="T001", name="A", parent="phase1")
     tree.nodes["T002"] = TaskNode(id="T002", name="B", parent="phase1", depends_on=["T001"])
@@ -105,7 +102,6 @@ def test_to_dict_includes_execution_order():
 def _deep_tree():
     """Ragged deep tree: phase1 -> group1 -> T001, T002; phase1 -> T003."""
     tree = TaskTree(spec_id="test", namespace="feature")
-    tree.root_ids = ["phase1"]
     tree.nodes["phase1"] = TaskNode(
         id="phase1", name="Setup", children=["group1", "T003"]
     )

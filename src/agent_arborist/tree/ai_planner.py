@@ -206,10 +206,6 @@ def _build_tree_from_json(
     if not tree.nodes:
         return None
 
-    tree.root_ids = [
-        tid for tid, node in tree.nodes.items() if node.parent is None
-    ]
-
     tree.spec_files = sorted(
         {n.source_file for n in tree.nodes.values() if n.source_file}
     )

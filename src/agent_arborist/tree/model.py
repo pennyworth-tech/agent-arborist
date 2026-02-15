@@ -27,9 +27,12 @@ class TaskTree:
     spec_id: str
     namespace: str = "feature"
     nodes: dict[str, TaskNode] = field(default_factory=dict)
-    root_ids: list[str] = field(default_factory=list)
     execution_order: list[str] = field(default_factory=list)
     spec_files: list[str] = field(default_factory=list)
+
+    @property
+    def root_ids(self) -> list[str]:
+        return [nid for nid, n in self.nodes.items() if n.parent is None]
 
     def leaves(self) -> list[TaskNode]:
         return [n for n in self.nodes.values() if n.is_leaf]
@@ -44,14 +47,13 @@ class TaskTree:
         return ready
 
     def root_phase(self, node_id: str) -> str:
-        """Walk up to the ancestor that lives in root_ids."""
+        """Walk up to the topmost ancestor (parent is None)."""
         nid = node_id
-        while nid not in self.root_ids:
+        while True:
             parent = self.nodes[nid].parent
             if parent is None:
                 return nid
             nid = parent
-        return nid
 
     def leaves_under(self, node_id: str) -> list[TaskNode]:
         """Recursively collect all leaf descendants of node_id."""
@@ -133,7 +135,6 @@ class TaskTree:
         tree = cls(
             spec_id=data["spec_id"],
             namespace=data.get("namespace", "feature"),
-            root_ids=data.get("root_ids", []),
             execution_order=data.get("execution_order", []),
             spec_files=data.get("spec_files", []),
         )
