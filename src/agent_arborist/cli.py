@@ -11,7 +11,10 @@ import click
 from rich.console import Console
 from rich.tree import Tree as RichTree
 
-from agent_arborist.config import get_config, get_step_runner_model, ArboristConfig
+from agent_arborist.config import (
+    get_config, get_step_runner_model, ArboristConfig,
+    VALID_RUNNERS, generate_config_template,
+)
 from agent_arborist.constants import DEFAULT_NAMESPACE, DEFAULT_MAX_RETRIES
 from agent_arborist.git.repo import git_current_branch, git_toplevel
 
@@ -51,6 +54,100 @@ def main(log_level):
         level=log_level.upper(),
         format="%(levelname)s %(name)s: %(message)s",
     )
+
+
+@main.command()
+def init():
+    """Initialize .arborist/ directory with config and logs."""
+    try:
+        root = Path(git_toplevel())
+    except Exception:
+        root = Path.cwd()
+
+    arborist_dir = root / ".arborist"
+    config_path = arborist_dir / "config.json"
+    logs_dir = arborist_dir / "logs"
+    gitignore_path = root / ".gitignore"
+
+    # --- .arborist/ directory ---
+    if arborist_dir.exists():
+        console.print(f"[dim].arborist/ already exists at {arborist_dir}[/dim]")
+    else:
+        if click.confirm("Create .arborist/ directory?", default=True):
+            arborist_dir.mkdir(parents=True)
+            console.print(f"[green]Created[/green] {arborist_dir}")
+        else:
+            console.print("[yellow]Aborted.[/yellow]")
+            return
+
+    # --- logs/ directory ---
+    if logs_dir.exists():
+        console.print("[dim].arborist/logs/ already exists[/dim]")
+    else:
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        console.print("[green]Created[/green] .arborist/logs/")
+
+    # --- .gitignore entry ---
+    ignore_entry = ".arborist/logs/"
+    already_ignored = False
+    if gitignore_path.exists():
+        content = gitignore_path.read_text()
+        already_ignored = ignore_entry in content
+    if already_ignored:
+        console.print("[dim].arborist/logs/ already in .gitignore[/dim]")
+    else:
+        if click.confirm("Add .arborist/logs/ to .gitignore?", default=True):
+            with open(gitignore_path, "a") as f:
+                if gitignore_path.exists() and not gitignore_path.read_text().endswith("\n"):
+                    f.write("\n")
+                f.write(f"\n# Arborist runner logs\n{ignore_entry}\n")
+            console.print("[green]Added[/green] .arborist/logs/ to .gitignore")
+
+    # --- config.json ---
+    if config_path.exists():
+        console.print(f"[dim]config.json already exists at {config_path}[/dim]")
+    else:
+        # Ask for default runner/model
+        runner_choices = list(VALID_RUNNERS)
+        console.print("\n[bold]Default runner/model for this project:[/bold]")
+        runner = click.prompt(
+            "  Runner",
+            type=click.Choice(runner_choices, case_sensitive=False),
+            default="claude",
+        )
+        default_models = {
+            "claude": "sonnet",
+            "gemini": "gemini-2.5-flash",
+            "opencode": "cerebras/zai-glm-4.7",
+        }
+        model = click.prompt(
+            "  Model",
+            default=default_models.get(runner, ""),
+        )
+
+        template = generate_config_template()
+        # Strip _comment keys for a clean project config
+        config_data = {
+            "version": "1",
+            "defaults": {
+                "runner": runner,
+                "model": model,
+            },
+            "steps": {
+                "run": {"runner": None, "model": None},
+                "implement": {"runner": None, "model": None},
+                "review": {"runner": None, "model": None},
+                "post-merge": {"runner": None, "model": None},
+            },
+        }
+
+        if click.confirm(f"\nWrite config to {config_path}?", default=True):
+            config_path.write_text(json.dumps(config_data, indent=2) + "\n")
+            console.print(f"[green]Created[/green] {config_path}")
+        else:
+            console.print("[yellow]Skipped config.json[/yellow]")
+
+    console.print("\n[bold]Done.[/bold] You can edit .arborist/config.json to customize further.")
 
 
 @main.command()

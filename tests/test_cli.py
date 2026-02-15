@@ -144,3 +144,57 @@ class TestBaseBranchDefault:
             mock_gcb.assert_not_called()
             _, kwargs = mock_garden.call_args
             assert kwargs["base_branch"] == "develop"
+
+
+# ---------------------------------------------------------------------------
+# Init command tests
+# ---------------------------------------------------------------------------
+
+class TestInitCommand:
+
+    def test_init_creates_directory_and_config(self, tmp_path):
+        """init creates .arborist/, logs/, config.json, and updates .gitignore."""
+        runner = CliRunner()
+        with patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)):
+            result = runner.invoke(main, ["init"], input="y\ny\nclaude\nsonnet\ny\n")
+
+        assert result.exit_code == 0, result.output
+        assert (tmp_path / ".arborist").is_dir()
+        assert (tmp_path / ".arborist" / "logs").is_dir()
+        assert (tmp_path / ".arborist" / "config.json").exists()
+
+        config = json.loads((tmp_path / ".arborist" / "config.json").read_text())
+        assert config["defaults"]["runner"] == "claude"
+        assert config["defaults"]["model"] == "sonnet"
+
+        gitignore = (tmp_path / ".gitignore").read_text()
+        assert ".arborist/logs/" in gitignore
+
+    def test_init_skips_existing(self, tmp_path):
+        """init does not overwrite existing .arborist/ or config.json."""
+        arborist_dir = tmp_path / ".arborist"
+        arborist_dir.mkdir()
+        (arborist_dir / "logs").mkdir()
+        config_path = arborist_dir / "config.json"
+        config_path.write_text('{"version": "1", "defaults": {"runner": "gemini"}}')
+        (tmp_path / ".gitignore").write_text(".arborist/logs/\n")
+
+        runner = CliRunner()
+        with patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)):
+            result = runner.invoke(main, ["init"])
+
+        assert result.exit_code == 0, result.output
+        # Config should NOT be overwritten
+        config = json.loads(config_path.read_text())
+        assert config["defaults"]["runner"] == "gemini"
+        assert "already exists" in result.output
+
+    def test_init_abort_on_no(self, tmp_path):
+        """Answering 'n' to create directory aborts."""
+        runner = CliRunner()
+        with patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)):
+            result = runner.invoke(main, ["init"], input="n\n")
+
+        assert result.exit_code == 0
+        assert not (tmp_path / ".arborist").exists()
+        assert "Aborted" in result.output
