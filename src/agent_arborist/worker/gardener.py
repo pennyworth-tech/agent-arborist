@@ -37,8 +37,6 @@ def gardener(
     """Run tasks in order until all complete or stalled."""
     result = GardenerResult(success=False)
     all_leaves = {n.id for n in tree.leaves()}
-    max_failures = len(all_leaves)  # prevent infinite loop
-    failures = 0
 
     while True:
         completed = scan_completed_tasks(tree, cwd)
@@ -72,8 +70,6 @@ def gardener(
             result.tasks_completed += 1
             result.order.append(gr.task_id)
         else:
-            failures += 1
-            logger.info("Task %s failed (%d failures so far)", gr.task_id, failures)
-            if failures >= max_failures:
-                result.error = f"too many failures ({failures})"
-                return result
+            logger.info("Task %s failed, stopping gardener", gr.task_id)
+            result.error = f"task {gr.task_id} failed: {gr.error}"
+            return result
