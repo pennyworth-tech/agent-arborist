@@ -126,3 +126,190 @@ def test_deep_tree_merge_waits_for_all_leaves(git_repo, mock_runner_all_pass):
     assert r3.success
     main_log = git_log("main", "%s", git_repo, n=5)
     assert "merge" in main_log.lower()
+
+
+# --- Feedback passthrough tests ---
+# Feedback must be durable (git commits + log files), not in-memory state.
+
+
+def test_review_log_trailer_in_commit(git_repo, tmp_path):
+    """Review commit should include Arborist-Review-Log trailer with log file path."""
+    from tests.conftest import TrackingRunner
+    from agent_arborist.runner import RunResult
+    from agent_arborist.git.repo import git_log
+
+    tree = _make_tree()
+    log_dir = tmp_path / "logs"
+
+    runner = TrackingRunner(implement_ok=True, review_ok=True)
+    result = garden(tree, git_repo, runner, max_retries=3, base_branch="main", log_dir=log_dir)
+    assert result.success
+
+    # Check the review commit on the phase branch has the trailer
+    branch = tree.branch_name("T001")
+    log_output = git_log(branch, "%B", git_repo, n=10, grep="review")
+    assert "Arborist-Review-Log:" in log_output, (
+        f"Review commit should have Arborist-Review-Log trailer, got:\n{log_output}"
+    )
+
+
+def test_test_log_trailer_in_commit(git_repo, tmp_path):
+    """Test-fail commit should include Arborist-Test-Log trailer with log file path."""
+    from tests.conftest import TrackingRunner
+    from agent_arborist.git.repo import git_log
+
+    tree = _make_tree()
+    log_dir = tmp_path / "logs"
+
+    runner = TrackingRunner(implement_ok=True, review_ok=True)
+
+    # Test command that fails first, passes second
+    counter_file = git_repo / ".test-counter"
+    counter_file.write_text("0")
+    test_cmd = f'c=$(cat {counter_file}); echo "SOME_TEST_ERROR"; echo $((c+1)) > {counter_file}; [ "$c" -gt "0" ]'
+
+    result = garden(tree, git_repo, runner, test_command=test_cmd, max_retries=3, base_branch="main", log_dir=log_dir)
+    assert result.success
+
+    branch = tree.branch_name("T001")
+    log_output = git_log(branch, "%B", git_repo, n=10, grep="tests fail")
+    assert "Arborist-Test-Log:" in log_output, (
+        f"Test-fail commit should have Arborist-Test-Log trailer, got:\n{log_output}"
+    )
+
+
+def test_review_body_contains_output(git_repo, tmp_path):
+    """Review commit body should contain the actual review output, not be empty."""
+    from tests.conftest import TrackingRunner
+    from agent_arborist.runner import RunResult
+    from agent_arborist.git.repo import git_log
+
+    tree = _make_tree()
+    log_dir = tmp_path / "logs"
+
+    review_count = {"n": 0}
+    runner = TrackingRunner(implement_ok=True, review_ok=False)
+
+    def patched_run(prompt, **kwargs):
+        runner.prompts.append(prompt)
+        if "review" in prompt.lower():
+            review_count["n"] += 1
+            if review_count["n"] >= 2:
+                return RunResult(success=True, output="APPROVED: looks good now")
+            return RunResult(success=False, output="REJECTED: variable naming is inconsistent")
+        return RunResult(success=True, output="Implementation complete")
+
+    runner.run = patched_run
+
+    result = garden(tree, git_repo, runner, max_retries=3, base_branch="main", log_dir=log_dir)
+    assert result.success
+
+    branch = tree.branch_name("T001")
+    log_output = git_log(branch, "%B", git_repo, n=10, grep="review rejected")
+    assert "variable naming is inconsistent" in log_output, (
+        f"Review commit body should contain review output, got:\n{log_output}"
+    )
+
+
+def test_feedback_from_git_history_on_retry(git_repo, tmp_path):
+    """On retry, implement prompt should include feedback extracted from git commit history."""
+    from tests.conftest import TrackingRunner
+    from agent_arborist.runner import RunResult
+
+    tree = _make_tree()
+    log_dir = tmp_path / "logs"
+
+    review_count = {"n": 0}
+    runner = TrackingRunner(implement_ok=True, review_ok=False)
+
+    def patched_run(prompt, **kwargs):
+        runner.prompts.append(prompt)
+        if "review" in prompt.lower():
+            review_count["n"] += 1
+            if review_count["n"] >= 2:
+                return RunResult(success=True, output="APPROVED")
+            return RunResult(success=False, output="REJECTED: missing error handling in parser")
+        return RunResult(success=True, output="Implementation complete")
+
+    runner.run = patched_run
+
+    result = garden(tree, git_repo, runner, max_retries=3, base_branch="main", log_dir=log_dir)
+    assert result.success
+
+    implement_prompts = [p for p in runner.prompts if p.startswith("Implement")]
+    assert len(implement_prompts) >= 2, f"Expected at least 2 implement prompts, got {len(implement_prompts)}"
+
+    second_prompt = implement_prompts[1]
+    assert "missing error handling in parser" in second_prompt, (
+        f"Retry implement prompt should contain review feedback from git history, got:\n{second_prompt[:500]}"
+    )
+
+
+def test_test_failure_feedback_from_git_on_retry(git_repo, tmp_path):
+    """On retry after test failure, implement prompt should include test output from git."""
+    from tests.conftest import TrackingRunner
+
+    tree = _make_tree()
+    log_dir = tmp_path / "logs"
+
+    runner = TrackingRunner(implement_ok=True, review_ok=True)
+
+    counter_file = git_repo / ".test-counter"
+    counter_file.write_text("0")
+    test_cmd = f'c=$(cat {counter_file}); echo "SOME_TEST_ERROR: assertion failed"; echo $((c+1)) > {counter_file}; [ "$c" -gt "0" ]'
+
+    result = garden(tree, git_repo, runner, test_command=test_cmd, max_retries=3, base_branch="main", log_dir=log_dir)
+    assert result.success
+
+    implement_prompts = [p for p in runner.prompts if p.startswith("Implement")]
+    assert len(implement_prompts) >= 2
+
+    second_prompt = implement_prompts[1]
+    assert "SOME_TEST_ERROR" in second_prompt, (
+        f"Retry implement prompt should contain test failure output from git, got:\n{second_prompt[:500]}"
+    )
+
+
+def test_runner_timeout_passed_to_runner(git_repo, tmp_path):
+    """When runner_timeout is set, it should be passed to runner.run() calls."""
+    from tests.conftest import TrackingRunner
+
+    tree = _make_tree()
+    runner = TrackingRunner(implement_ok=True, review_ok=True)
+
+    result = garden(tree, git_repo, runner, max_retries=3, base_branch="main", runner_timeout=120)
+    assert result.success
+    assert all(t == 120 for t in runner.timeouts), f"Expected all timeouts to be 120, got {runner.timeouts}"
+
+
+def test_runner_timeout_default_when_none(git_repo, tmp_path):
+    """When runner_timeout is None, runner should use its own default."""
+    from tests.conftest import TrackingRunner
+
+    tree = _make_tree()
+    runner = TrackingRunner(implement_ok=True, review_ok=True)
+
+    result = garden(tree, git_repo, runner, max_retries=3, base_branch="main")
+    assert result.success
+    assert all(t == 600 for t in runner.timeouts), f"Expected default timeout 600, got {runner.timeouts}"
+
+
+def test_no_feedback_on_first_attempt(git_repo, tmp_path):
+    """First implement prompt should NOT contain any previous feedback."""
+    from tests.conftest import TrackingRunner
+
+    tree = _make_tree()
+    log_dir = tmp_path / "logs"
+
+    runner = TrackingRunner(implement_ok=True, review_ok=True)
+
+    result = garden(tree, git_repo, runner, max_retries=3, base_branch="main", log_dir=log_dir)
+    assert result.success
+
+    implement_prompts = [p for p in runner.prompts if p.startswith("Implement")]
+    assert len(implement_prompts) >= 1
+
+    first_prompt = implement_prompts[0]
+    assert "Previous feedback" not in first_prompt, (
+        f"First implement prompt should not contain previous feedback section"
+    )

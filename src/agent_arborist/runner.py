@@ -152,7 +152,7 @@ class Runner(ABC):
     def run(
         self,
         prompt: str,
-        timeout: int = 60,
+        timeout: int = 600,
         cwd: Path | None = None,
         container_cmd_prefix: list[str] | None = None,
     ) -> RunResult:
@@ -188,7 +188,7 @@ class ClaudeRunner(Runner):
     def run(
         self,
         prompt: str,
-        timeout: int = 60,
+        timeout: int = 600,
         cwd: Path | None = None,
         container_cmd_prefix: list[str] | None = None,
     ) -> RunResult:
@@ -220,7 +220,7 @@ class OpencodeRunner(Runner):
     def run(
         self,
         prompt: str,
-        timeout: int = 60,
+        timeout: int = 600,
         cwd: Path | None = None,
         container_cmd_prefix: list[str] | None = None,
     ) -> RunResult:
@@ -252,7 +252,7 @@ class GeminiRunner(Runner):
     def run(
         self,
         prompt: str,
-        timeout: int = 60,
+        timeout: int = 600,
         cwd: Path | None = None,
         container_cmd_prefix: list[str] | None = None,
     ) -> RunResult:
