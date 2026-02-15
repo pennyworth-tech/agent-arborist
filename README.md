@@ -1,98 +1,133 @@
 # Agent Arborist
 
-Automated Task Tree Executor - DAG workflow orchestration with Claude Code and Dagu.
+Git-native task tree orchestration. Break complex projects into hierarchical tasks, then let AI execute them — one branch, one commit at a time.
 
-## Installation
+## Quick Start
+
+### 1. Install
 
 ```bash
 pip install -e .
 ```
 
-## Architecture: Host-Based with Optional Container Support
+### 2. Initialize a Project
 
-Agent Arborist runs on your **HOST machine** and can optionally execute tasks inside devcontainers:
-
-```
-┌─────────────────────────────────────────┐
-│ Arborist (runs on HOST)                 │
-│ - Detects target's .devcontainer/       │
-│ - Generates DAG with container commands │
-│ - Orchestrates via Dagu                 │
-└─────────────────────────────────────────┘
-              ↓
-┌─────────────────────────────────────────┐
-│ Target Project (user provides)          │
-│ └── .devcontainer/                      │
-│     ├── devcontainer.json               │
-│     └── Dockerfile                      │
-└─────────────────────────────────────────┘
-              ↓
-      Tasks execute inside
-      target's container
+```bash
+cd your-project
+arborist init
 ```
 
-**Key Points**:
-- Arborist itself runs on your host (no devcontainer needed for arborist)
-- Target projects can have `.devcontainer/` for isolated execution
-- Tests run from host and verify container operations
-- See `tests/fixtures/devcontainers/` for example target configurations
+This creates `.arborist/config.json` with your preferred runner (Claude, Gemini, or OpenCode) and model.
+
+### 3. Write a Task Spec
+
+Create a `spec/` directory with markdown files describing your tasks:
+
+```markdown
+## Phase 1: Setup
+- [ ] T001 Create database schema
+- [ ] T002 Add migration scripts
+
+## Phase 2: API
+- [ ] T003 Implement user endpoints (depends on T001)
+- [ ] T004 Add authentication middleware (depends on T003)
+
+## Dependencies
+T003 -> T001
+T004 -> T003
+```
+
+### 4. Build the Task Tree
+
+```bash
+arborist build --spec-dir spec/
+```
+
+This sends your spec to an AI planner (Claude Opus by default) which produces a `task-tree.json` with the full hierarchy and execution order.
+
+### 5. Run All Tasks
+
+```bash
+arborist gardener --tree task-tree.json
+```
+
+Arborist works through each task in dependency order. For each task it:
+1. Creates a git branch
+2. Sends the task to an AI runner to implement
+3. Runs your test command
+4. Sends the diff for AI code review
+5. On approval, commits and merges back
+
+### 6. Check Status
+
+```bash
+arborist status --tree task-tree.json
+```
+
+## How It Works
+
+Arborist stores all state in git — branches for isolation, commit trailers for tracking. No external database, no daemon. If a process crashes, pick up where you left off by running `gardener` again.
+
+```
+spec/*.md  ──►  arborist build  ──►  task-tree.json
+                                          │
+                                    arborist gardener
+                                          │
+                              ┌───────────┼───────────┐
+                              ▼           ▼           ▼
+                          branch/T001  branch/T002  branch/T003
+                          implement    implement    implement
+                          test         test         test
+                          review       review       review
+                          merge ◄──────merge ◄──────merge
+```
+
+## Configuration
+
+Arborist uses a layered config system (highest precedence first):
+
+1. CLI flags
+2. Environment variables (`ARBORIST_RUNNER`, `ARBORIST_MODEL`, etc.)
+3. Project config (`.arborist/config.json`)
+4. Global config (`~/.arborist_config.json`)
+5. Built-in defaults
+
+### Per-Step Runner Overrides
+
+Use a powerful model for implementation and a fast one for review:
+
+```json
+{
+  "defaults": { "runner": "claude", "model": "sonnet" },
+  "steps": {
+    "implement": { "runner": "claude", "model": "opus" },
+    "review": { "runner": "claude", "model": "haiku" }
+  }
+}
+```
+
+## Supported Runners
+
+| Runner | CLI Tool | Example Models |
+|--------|----------|----------------|
+| Claude | `claude` | `opus`, `sonnet`, `haiku` |
+| Gemini | `gemini` | `gemini-2.5-flash`, `gemini-2.5-pro` |
+| OpenCode | `opencode` | `cerebras/zai-glm-4.7` |
+
+## Documentation
+
+See [docs/manual/](docs/manual/) for the full user manual.
 
 ## Testing
 
-### Environment Setup
-
-Copy `.env.example` to `.env` and fill in your API keys:
-
 ```bash
-cp .env.example .env
-# Edit .env with your actual API keys
-```
-
-### Required API Keys
-
-- **CLAUDE_CODE_OAUTH_TOKEN** - For Claude Code integration tests (OAuth token from Claude Pro/Max subscription)
-- **OPENAI_API_KEY** - For OpenCode integration tests
-- **GOOGLE_API_KEY** - For Gemini integration tests
-- **ZAI_API_KEY** - (Optional) For OpenCode with ZAI
-
-### Running Tests
-
-All tests run from the HOST (not inside containers):
-
-```bash
-# Unit tests only (fast, no containers)
+# Unit tests
 pytest tests/
 
-# Integration tests (starts containers, requires Docker)
-pytest tests/ -m integration
-
-# Provider-specific tests (requires API keys)
-pytest tests/ -m claude          # Claude Code tests
-pytest tests/ -m opencode        # OpenCode tests
-pytest tests/ -m gemini          # Gemini tests
-
-# Dagu integration tests (requires dagu CLI on host)
-pytest tests/ -m dagu
+# Provider-specific (requires API keys)
+pytest tests/ -m claude
+pytest tests/ -m gemini
+pytest tests/ -m opencode
 ```
 
-**Test Architecture**:
-1. Tests run from HOST using pytest
-2. Test fixtures in `tests/fixtures/devcontainers/` represent target projects
-3. Tests start containers using `devcontainer` CLI
-4. Tests execute commands inside containers via `devcontainer exec`
-5. Tests verify results from HOST
-
-## Usage
-
-```bash
-# Show version
-arborist version
-
-# Check dependencies
-arborist doctor
-
-# Generate DAG with optional container support
-arborist spec dag-build spec/ --container-mode auto  # Use target's .devcontainer if present
-arborist spec dag-build spec/ --container-mode enabled  # Require .devcontainer
-arborist spec dag-build spec/ --container-mode disabled # Ignore .devcontainer
-```
+See `.env.example` for required API keys.
