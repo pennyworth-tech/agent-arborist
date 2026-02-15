@@ -42,10 +42,6 @@ ENV_TIMEOUT_POST_MERGE = "ARBORIST_TIMEOUT_POST_MERGE"
 ENV_TEST_COMMAND = "ARBORIST_TEST_COMMAND"
 ENV_TEST_TIMEOUT = "ARBORIST_TEST_TIMEOUT"
 
-# Deprecated env vars (backward compatibility)
-ENV_DEFAULT_RUNNER_DEPRECATED = "ARBORIST_DEFAULT_RUNNER"
-ENV_DEFAULT_MODEL_DEPRECATED = "ARBORIST_DEFAULT_MODEL"
-
 # Step-specific env var pattern
 ENV_STEP_RUNNER_TEMPLATE = "ARBORIST_STEP_{step}_RUNNER"
 ENV_STEP_MODEL_TEMPLATE = "ARBORIST_STEP_{step}_MODEL"
@@ -908,24 +904,7 @@ def apply_env_overrides(config: ArboristConfig) -> ArboristConfig:
     """
     result = copy.deepcopy(config)
 
-    # Check deprecated env vars first (with warnings)
-    deprecated_runner = os.environ.get(ENV_DEFAULT_RUNNER_DEPRECATED)
-    if deprecated_runner and not os.environ.get(ENV_RUNNER):
-        logger.warning(
-            f"{ENV_DEFAULT_RUNNER_DEPRECATED} is deprecated. "
-            f"Use {ENV_RUNNER} instead."
-        )
-        result.defaults.runner = deprecated_runner
-
-    deprecated_model = os.environ.get(ENV_DEFAULT_MODEL_DEPRECATED)
-    if deprecated_model and not os.environ.get(ENV_MODEL):
-        logger.warning(
-            f"{ENV_DEFAULT_MODEL_DEPRECATED} is deprecated. "
-            f"Use {ENV_MODEL} instead."
-        )
-        result.defaults.model = deprecated_model
-
-    # Apply new env vars (override deprecated)
+    # Apply env var overrides
     if runner := os.environ.get(ENV_RUNNER):
         result.defaults.runner = runner
 

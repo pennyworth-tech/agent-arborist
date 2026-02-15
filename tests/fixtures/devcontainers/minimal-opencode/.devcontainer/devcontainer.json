@@ -7,8 +7,8 @@
   "remoteEnv": {
     "OPENAI_API_KEY": "${localEnv:OPENAI_API_KEY}",
     "ZAI_API_KEY": "${localEnv:ZAI_API_KEY}",
-    "ARBORIST_DEFAULT_RUNNER": "opencode",
-    "ARBORIST_DEFAULT_MODEL": "openai/gpt-4o-mini"
+    "ARBORIST_RUNNER": "opencode",
+    "ARBORIST_MODEL": "openai/gpt-4o-mini"
   },
   "postCreateCommand": "git config --global --add safe.directory /workspace",
   "customizations": {

@@ -144,8 +144,8 @@ project/
 
 From `src/agent_arborist/cli.py`:
 - `ARBORIST_MANIFEST` - Path to branch manifest
-- `ARBORIST_DEFAULT_RUNNER` - Default runner (claude, opencode, gemini)
-- `ARBORIST_DEFAULT_MODEL` - Default model
+- `ARBORIST_RUNNER` - Default runner (claude, opencode, gemini)
+- `ARBORIST_MODEL` - Default model
 - `DAGU_HOME` - Dagu directory
 
 ## Configuration System

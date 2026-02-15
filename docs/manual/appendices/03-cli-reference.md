@@ -404,8 +404,8 @@ arborist dashboard --port 9000
 | Variable | Description |
 |----------|-------------|
 | `ARBORIST_MANIFEST` | Path to branch manifest file |
-| `ARBORIST_DEFAULT_RUNNER` | Default AI runner (claude, opencode, gemini) |
-| `ARBORIST_DEFAULT_MODEL` | Default model for runner |
+| `ARBORIST_RUNNER` | Default AI runner (claude, opencode, gemini) |
+| `ARBORIST_MODEL` | Default model for runner |
 | `DAGU_HOME` | Dagu directory path |
 | `ARBORIST_CONTAINER_MODE` | Container mode (auto, enabled, disabled) |
 | `ARBORIST_CONFIG` | Path to config file |

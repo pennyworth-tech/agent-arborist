@@ -1,7 +1,6 @@
 """Runner abstraction for executing prompts via CLI tools."""
 
 import logging
-import os
 import subprocess
 import shutil
 from abc import ABC, abstractmethod
@@ -12,15 +11,6 @@ from typing import Literal
 logger = logging.getLogger(__name__)
 
 RunnerType = Literal["claude", "opencode", "gemini"]
-
-# Environment variable names for defaults
-ARBORIST_DEFAULT_RUNNER_ENV_VAR = "ARBORIST_DEFAULT_RUNNER"
-ARBORIST_DEFAULT_MODEL_ENV_VAR = "ARBORIST_DEFAULT_MODEL"
-
-# Default runners/models for different purposes
-# Task execution: opencode with Cerebras (fast, good for implementation)
-TASK_DEFAULT_RUNNER: RunnerType = "opencode"
-TASK_DEFAULT_MODEL: str = "cerebras/zai-glm-4.7"
 
 # DAG building (spec analysis): claude with opus (best reasoning)
 DAG_DEFAULT_RUNNER: RunnerType = "claude"
@@ -69,30 +59,6 @@ def _extract_commit_summary(output: str) -> str | None:
     return None
 
 
-def _get_default_runner() -> RunnerType:
-    """Get default runner from environment or fallback to task default."""
-    env_runner = os.environ.get(ARBORIST_DEFAULT_RUNNER_ENV_VAR, "").lower()
-    if env_runner in ("claude", "opencode", "gemini"):
-        return env_runner  # type: ignore
-    return TASK_DEFAULT_RUNNER
-
-
-def _get_default_model() -> str | None:
-    """Get default model from environment or fallback to task default."""
-    return os.environ.get(ARBORIST_DEFAULT_MODEL_ENV_VAR) or TASK_DEFAULT_MODEL
-
-
-# These are functions to allow dynamic resolution from env
-def get_default_runner() -> RunnerType:
-    """Get the default runner type for task execution."""
-    return _get_default_runner()
-
-
-def get_default_model() -> str | None:
-    """Get the default model for task execution."""
-    return _get_default_model()
-
-
 def get_dag_runner() -> RunnerType:
     """Get the default runner type for DAG building."""
     return DAG_DEFAULT_RUNNER
@@ -101,12 +67,6 @@ def get_dag_runner() -> RunnerType:
 def get_dag_model() -> str:
     """Get the default model for DAG building."""
     return DAG_DEFAULT_MODEL
-
-
-# For backwards compatibility, expose as a constant that's evaluated at import time
-# but prefer using get_default_runner() for dynamic resolution
-DEFAULT_RUNNER: RunnerType = _get_default_runner()
-DEFAULT_MODEL: str | None = _get_default_model()
 
 
 @dataclass
@@ -306,14 +266,12 @@ class GeminiRunner(Runner):
         return _execute_command(cmd, timeout, cwd, container_cmd_prefix)
 
 
-def get_runner(runner_type: RunnerType | None = None, model: str | None = None) -> Runner:
+def get_runner(runner_type: RunnerType, model: str | None = None) -> Runner:
     """Get a runner instance by type.
 
     Args:
         runner_type: Type of runner ("claude", "opencode", "gemini").
-            If None, uses ARBORIST_RUNNER env var or default.
         model: Model to use (format depends on runner type).
-            If None, uses ARBORIST_MODEL env var or default.
             - claude: "opus", "sonnet", "haiku" or full model name
             - gemini: "gemini-2.5-flash", "gemini-2.5-pro", etc.
             - opencode: "provider/model" format, e.g., "zai-coding-plan/glm-4.7"
@@ -324,14 +282,10 @@ def get_runner(runner_type: RunnerType | None = None, model: str | None = None) 
         "gemini": GeminiRunner,
     }
 
-    # Use defaults from environment if not provided
-    resolved_runner = runner_type or get_default_runner()
-    resolved_model = model if model is not None else get_default_model()
+    if runner_type not in runners:
+        raise ValueError(f"Unknown runner type: {runner_type}")
 
-    if resolved_runner not in runners:
-        raise ValueError(f"Unknown runner type: {resolved_runner}")
-
-    return runners[resolved_runner](model=resolved_model)
+    return runners[runner_type](model=model)
 
 
 @dataclass

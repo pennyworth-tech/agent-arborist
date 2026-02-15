@@ -11,11 +11,23 @@ import click
 from rich.console import Console
 from rich.tree import Tree as RichTree
 
+from agent_arborist.config import get_config, get_step_runner_model, ArboristConfig
 from agent_arborist.constants import DEFAULT_NAMESPACE, DEFAULT_MAX_RETRIES
 from agent_arborist.git.repo import git_current_branch, git_toplevel
 
 
 console = Console()
+
+
+def _load_config() -> ArboristConfig:
+    """Load merged config from global + project files + env vars."""
+    arborist_home = Path(".arborist")
+    if not arborist_home.is_absolute():
+        try:
+            arborist_home = Path(git_toplevel()) / ".arborist"
+        except Exception:
+            arborist_home = Path.cwd() / ".arborist"
+    return get_config(arborist_home if arborist_home.exists() else None)
 
 
 def _default_repo() -> str:
@@ -48,8 +60,8 @@ def main(log_level):
 @click.option("--namespace", default=DEFAULT_NAMESPACE)
 @click.option("--spec-id", default=None)
 @click.option("--no-ai", is_flag=True, help="Disable AI planning; use markdown parser instead")
-@click.option("--runner", default="claude", help="Runner for AI planning")
-@click.option("--model", default="opus", help="Model for AI planning")
+@click.option("--runner", default=None, help="Runner for AI planning (default: from config or 'claude')")
+@click.option("--model", default=None, help="Model for AI planning (default: from config or 'opus')")
 def build(spec_dir, output, namespace, spec_id, no_ai, runner, model):
     """Build a task tree from a spec directory and write it to a JSON file."""
     if spec_id is None:
@@ -63,8 +75,13 @@ def build(spec_dir, output, namespace, spec_id, no_ai, runner, model):
             sys.exit(1)
         tree = parse_spec(spec_files[0], spec_id=spec_id, namespace=namespace)
     else:
-        from agent_arborist.tree.ai_planner import plan_tree
-        console.print(f"[bold]Planning task tree with AI ({runner}/{model})...[/bold]")
+        from agent_arborist.tree.ai_planner import plan_tree, DAG_DEFAULT_RUNNER, DAG_DEFAULT_MODEL
+        # Resolve runner/model: CLI flag > config > DAG defaults
+        cfg = _load_config()
+        resolved_runner = runner or cfg.defaults.runner or DAG_DEFAULT_RUNNER
+        resolved_model = model or cfg.defaults.model or DAG_DEFAULT_MODEL
+        console.print(f"[bold]Planning task tree with AI ({resolved_runner}/{resolved_model})...[/bold]")
+        runner, model = resolved_runner, resolved_model
         result = plan_tree(
             spec_dir=spec_dir,
             spec_id=spec_id,
@@ -97,10 +114,10 @@ def build(spec_dir, output, namespace, spec_id, no_ai, runner, model):
 @main.command()
 @click.option("--tree", "tree_path", type=click.Path(exists=True, path_type=Path), required=True,
               help="Path to task-tree.json")
-@click.option("--runner-type", "runner", default="claude")
-@click.option("--model", default="sonnet")
+@click.option("--runner-type", "runner", default=None, help="Runner type (default: from config or 'claude')")
+@click.option("--model", default=None, help="Model name (default: from config or 'sonnet')")
 @click.option("--max-retries", default=DEFAULT_MAX_RETRIES, type=int)
-@click.option("--test-command", default="true")
+@click.option("--test-command", default=None, help="Test command (default: from config or 'true')")
 @click.option("--target-repo", type=click.Path(path_type=Path), default=None)
 @click.option("--base-branch", default=None, help="Base branch (default: current branch)")
 def garden(tree_path, runner, model, max_retries, test_command, target_repo, base_branch):
@@ -108,15 +125,19 @@ def garden(tree_path, runner, model, max_retries, test_command, target_repo, bas
     from agent_arborist.runner import get_runner
     from agent_arborist.worker.garden import garden as garden_fn
 
+    cfg = _load_config()
+    resolved_runner, resolved_model = get_step_runner_model(cfg, "run", runner, model)
+    resolved_test_command = test_command or cfg.test.command or "true"
+
     target = target_repo.resolve() if target_repo else Path(_default_repo()).resolve()
     if base_branch is None:
         base_branch = git_current_branch(target)
     tree = _load_tree(tree_path)
 
-    runner_instance = get_runner(runner, model)
+    runner_instance = get_runner(resolved_runner, resolved_model)
     result = garden_fn(
         tree, target, runner_instance,
-        test_command=test_command,
+        test_command=resolved_test_command,
         max_retries=max_retries,
         base_branch=base_branch,
     )
@@ -131,10 +152,10 @@ def garden(tree_path, runner, model, max_retries, test_command, target_repo, bas
 @main.command()
 @click.option("--tree", "tree_path", type=click.Path(exists=True, path_type=Path), required=True,
               help="Path to task-tree.json")
-@click.option("--runner-type", "runner", default="claude")
-@click.option("--model", default="sonnet")
+@click.option("--runner-type", "runner", default=None, help="Runner type (default: from config or 'claude')")
+@click.option("--model", default=None, help="Model name (default: from config or 'sonnet')")
 @click.option("--max-retries", default=DEFAULT_MAX_RETRIES, type=int)
-@click.option("--test-command", default="true")
+@click.option("--test-command", default=None, help="Test command (default: from config or 'true')")
 @click.option("--target-repo", type=click.Path(path_type=Path), default=None)
 @click.option("--base-branch", default=None, help="Base branch (default: current branch)")
 def gardener(tree_path, runner, model, max_retries, test_command, target_repo, base_branch):
@@ -142,15 +163,19 @@ def gardener(tree_path, runner, model, max_retries, test_command, target_repo, b
     from agent_arborist.runner import get_runner
     from agent_arborist.worker.gardener import gardener as gardener_fn
 
+    cfg = _load_config()
+    resolved_runner, resolved_model = get_step_runner_model(cfg, "run", runner, model)
+    resolved_test_command = test_command or cfg.test.command or "true"
+
     target = target_repo.resolve() if target_repo else Path(_default_repo()).resolve()
     if base_branch is None:
         base_branch = git_current_branch(target)
     tree = _load_tree(tree_path)
 
-    runner_instance = get_runner(runner, model)
+    runner_instance = get_runner(resolved_runner, resolved_model)
     result = gardener_fn(
         tree, target, runner_instance,
-        test_command=test_command,
+        test_command=resolved_test_command,
         max_retries=max_retries,
         base_branch=base_branch,
     )
