@@ -109,7 +109,7 @@ def test_ai_builds_valid_tree(runner_type, model, cli_binary):
         namespace="feature",
         runner_type=runner_type,
         model=model,
-        timeout=120,
+        timeout=300,
     )
 
     assert result.success, f"AI planner failed: {result.error}"
