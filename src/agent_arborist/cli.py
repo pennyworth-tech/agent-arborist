@@ -37,15 +37,22 @@ def main():
               help="Output path for the task tree JSON file")
 @click.option("--namespace", default=DEFAULT_NAMESPACE)
 @click.option("--spec-id", default=None)
-@click.option("--ai", is_flag=True, help="Use AI to generate task tree from spec")
+@click.option("--no-ai", is_flag=True, help="Disable AI planning; use markdown parser instead")
 @click.option("--runner", default="claude", help="Runner for AI planning")
 @click.option("--model", default="opus", help="Model for AI planning")
-def build(spec_dir, output, namespace, spec_id, ai, runner, model):
+def build(spec_dir, output, namespace, spec_id, no_ai, runner, model):
     """Build a task tree from a spec directory and write it to a JSON file."""
     if spec_id is None:
         spec_id = spec_dir.name if spec_dir.name != "spec" else Path.cwd().resolve().name
 
-    if ai:
+    if no_ai:
+        from agent_arborist.tree.spec_parser import parse_spec
+        spec_files = list(spec_dir.glob("tasks*.md")) + list(spec_dir.glob("*.md"))
+        if not spec_files:
+            console.print(f"[red]Error:[/red] No markdown files found in {spec_dir}")
+            sys.exit(1)
+        tree = parse_spec(spec_files[0], spec_id=spec_id, namespace=namespace)
+    else:
         from agent_arborist.tree.ai_planner import plan_tree
         console.print(f"[bold]Planning task tree with AI ({runner}/{model})...[/bold]")
         result = plan_tree(
@@ -59,13 +66,6 @@ def build(spec_dir, output, namespace, spec_id, ai, runner, model):
             console.print(f"[red]Error:[/red] {result.error}")
             sys.exit(1)
         tree = result.tree
-    else:
-        from agent_arborist.tree.spec_parser import parse_spec
-        spec_files = list(spec_dir.glob("tasks*.md")) + list(spec_dir.glob("*.md"))
-        if not spec_files:
-            console.print(f"[red]Error:[/red] No markdown files found in {spec_dir}")
-            sys.exit(1)
-        tree = parse_spec(spec_files[0], spec_id=spec_id, namespace=namespace)
 
     # Compute execution order
     tree.compute_execution_order()

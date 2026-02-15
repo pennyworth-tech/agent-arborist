@@ -31,6 +31,8 @@ def parse_spec(path: Path, spec_id: str, namespace: str = "feature") -> TaskTree
     lines = content.strip().split("\n")
 
     tree = TaskTree(spec_id=spec_id, namespace=namespace)
+    rel_path = str(path)
+    tree.spec_files = [rel_path]
 
     # Stack tracks (header_level, node_id) for nested groups.
     # Level 2 = phase (##), level 3 = ### subgroup, etc.
@@ -47,7 +49,7 @@ def parse_spec(path: Path, spec_id: str, namespace: str = "feature") -> TaskTree
         while group_stack and group_stack[-1][0] >= level:
             group_stack.pop()
 
-    for line in lines:
+    for line_idx, line in enumerate(lines):
         stripped = line.strip()
 
         if stripped == "## Dependencies":
@@ -71,6 +73,8 @@ def parse_spec(path: Path, spec_id: str, namespace: str = "feature") -> TaskTree
             tree.nodes[phase_id] = TaskNode(
                 id=phase_id,
                 name=phase_name,
+                source_file=rel_path,
+                source_line=line_idx + 1,
             )
             tree.root_ids.append(phase_id)
             group_stack.append((2, phase_id))
@@ -90,6 +94,8 @@ def parse_spec(path: Path, spec_id: str, namespace: str = "feature") -> TaskTree
                 id=subgroup_id,
                 name=subgroup_name,
                 parent=parent_id,
+                source_file=rel_path,
+                source_line=line_idx + 1,
             )
 
             if parent_id and parent_id in tree.nodes:
@@ -109,6 +115,8 @@ def parse_spec(path: Path, spec_id: str, namespace: str = "feature") -> TaskTree
                 name=description,
                 description=description,
                 parent=parent_id,
+                source_file=rel_path,
+                source_line=line_idx + 1,
             )
 
             tree.nodes[task_id] = node

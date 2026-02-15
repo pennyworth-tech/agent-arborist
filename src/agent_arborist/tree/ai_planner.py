@@ -15,7 +15,10 @@ TASK_ANALYSIS_PROMPT = '''Extract the COMPLETE task tree from the task specifica
 
 TASK SPECIFICATION DIRECTORY: {spec_dir}
 
-Read ALL markdown files and extract the FULL TREE of tasks WITH their natural groupings.
+SPEC FILE CONTENTS (with line numbers):
+{spec_contents}
+
+Extract the FULL TREE of tasks WITH their natural groupings from the spec files above.
 
 DETECTING HIERARCHY:
 Look for natural groupings in the spec such as:
@@ -39,7 +42,9 @@ OUTPUT FORMAT - JSON:
     {{
       "id": "T001",
       "description": "Create directory structure",
-      "parent": "Phase1"
+      "parent": "Phase1",
+      "source_file": "tasks.md",
+      "source_line": 10
     }},
     {{
       "id": "Phase2",
@@ -66,6 +71,9 @@ TREE STRUCTURE:
 3. Top-level groupings have NO parent (they are root tasks)
 4. Leaf tasks have NO children
 5. Nesting to arbitrary depth is allowed (e.g. Phase → SubGroup → Task)
+
+SOURCE REFERENCES:
+- For each task, include "source_file" (relative path of the spec file) and "source_line" (1-indexed line number where the task appears)
 
 EXTRACTION RULES:
 1. Extract EVERY single task - count must match all task items in the spec
@@ -107,7 +115,11 @@ def plan_tree(
     """Use AI to generate a TaskTree from a spec directory."""
     runner_instance = runner or get_runner(runner_type, model)
 
-    prompt = TASK_ANALYSIS_PROMPT.format(spec_dir=spec_dir.resolve())
+    spec_contents = _read_spec_contents(spec_dir)
+    prompt = TASK_ANALYSIS_PROMPT.format(
+        spec_dir=spec_dir.resolve(),
+        spec_contents=spec_contents,
+    )
     result = runner_instance.run(prompt, timeout=timeout, cwd=spec_dir)
 
     if not result.success:
@@ -152,6 +164,16 @@ def plan_tree(
     return PlanResult(success=True, tree=tree, raw_output=result.output)
 
 
+def _read_spec_contents(spec_dir: Path) -> str:
+    """Read all markdown files in spec_dir with line numbers."""
+    parts: list[str] = []
+    for md in sorted(spec_dir.glob("*.md")):
+        lines = md.read_text().splitlines()
+        numbered = "\n".join(f"{i + 1}: {line}" for i, line in enumerate(lines))
+        parts.append(f"--- {md.name} ---\n{numbered}")
+    return "\n\n".join(parts) if parts else "(no spec files found)"
+
+
 def _build_tree_from_json(
     data: dict, spec_id: str, namespace: str
 ) -> TaskTree | None:
@@ -169,6 +191,8 @@ def _build_tree_from_json(
             parent=t.get("parent"),
             children=t.get("children", []),
             depends_on=t.get("depends_on", []),
+            source_file=t.get("source_file"),
+            source_line=t.get("source_line"),
         )
 
     if not tree.nodes:
@@ -177,6 +201,10 @@ def _build_tree_from_json(
     tree.root_ids = [
         tid for tid, node in tree.nodes.items() if node.parent is None
     ]
+
+    tree.spec_files = sorted(
+        {n.source_file for n in tree.nodes.values() if n.source_file}
+    )
 
     return tree
 

@@ -131,6 +131,11 @@ def test_ai_builds_valid_tree(tmp_path, runner_type, model, cli_binary):
     restored = TaskTree.from_dict(json.loads(json.dumps(tree.to_dict())))
     assert len(restored.leaves()) == len(leaves)
 
+    # Source back-references populated by AI
+    assert len(tree.spec_files) >= 1
+    nodes_with_source = [n for n in tree.nodes.values() if n.source_file]
+    assert len(nodes_with_source) >= 1
+
 
 # ---------------------------------------------------------------------------
 # 2. Garden one task: verify commit structure

@@ -14,6 +14,8 @@ class TaskNode:
     parent: str | None = None
     children: list[str] = field(default_factory=list)
     depends_on: list[str] = field(default_factory=list)
+    source_file: str | None = None
+    source_line: int | None = None
 
     @property
     def is_leaf(self) -> bool:
@@ -27,6 +29,7 @@ class TaskTree:
     nodes: dict[str, TaskNode] = field(default_factory=dict)
     root_ids: list[str] = field(default_factory=list)
     execution_order: list[str] = field(default_factory=list)
+    spec_files: list[str] = field(default_factory=list)
 
     def leaves(self) -> list[TaskNode]:
         return [n for n in self.nodes.values() if n.is_leaf]
@@ -114,12 +117,15 @@ class TaskTree:
                     "parent": n.parent,
                     "children": n.children,
                     "depends_on": n.depends_on,
+                    "source_file": n.source_file,
+                    "source_line": n.source_line,
                     "is_leaf": n.is_leaf,
                 }
                 for nid, n in self.nodes.items()
             },
             "root_ids": self.root_ids,
             "execution_order": self.execution_order,
+            "spec_files": self.spec_files,
         }
 
     @classmethod
@@ -129,6 +135,7 @@ class TaskTree:
             namespace=data.get("namespace", "feature"),
             root_ids=data.get("root_ids", []),
             execution_order=data.get("execution_order", []),
+            spec_files=data.get("spec_files", []),
         )
         for nid, nd in data.get("nodes", {}).items():
             tree.nodes[nid] = TaskNode(
@@ -138,5 +145,7 @@ class TaskTree:
                 parent=nd.get("parent"),
                 children=nd.get("children", []),
                 depends_on=nd.get("depends_on", []),
+                source_file=nd.get("source_file"),
+                source_line=nd.get("source_line"),
             )
         return tree

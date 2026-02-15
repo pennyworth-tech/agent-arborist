@@ -73,6 +73,16 @@ def test_parse_deep_tree_nested_headers():
     assert tree.nodes["T004"].parent == "phase2"
 
 
+def test_parse_source_file_and_line():
+    tree = parse_spec(FIXTURES / "tasks-hello-world.md", spec_id="hello-world")
+    # T001 is on line 8 of the fixture
+    assert tree.nodes["T001"].source_file == str(FIXTURES / "tasks-hello-world.md")
+    assert tree.nodes["T001"].source_line == 8
+    # Phase headers have source refs too
+    assert tree.nodes["phase1"].source_line == 6
+    assert tree.spec_files == [str(FIXTURES / "tasks-hello-world.md")]
+
+
 def test_to_dict_produces_json():
     """Task tree can be serialized to JSON."""
     import json
