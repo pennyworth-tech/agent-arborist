@@ -24,7 +24,7 @@ TASK_PATTERN = re.compile(r"^-\s*\[\s*\]\s*(T\d+)\s*(\[P\])?\s*(.+)$")
 DEP_ARROW_PATTERN = re.compile(r"(T\d+)")
 
 
-def parse_spec(path: Path, spec_id: str, namespace: str = "feature") -> TaskTree:
+def parse_spec(path: Path, spec_id: str, namespace: str = "arborist") -> TaskTree:
     """Parse a task spec markdown file into a TaskTree.
 
     Expects format with ## Phase N: headers, - [ ] TXXX task items,

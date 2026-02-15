@@ -25,7 +25,7 @@ class TaskNode:
 @dataclass
 class TaskTree:
     spec_id: str
-    namespace: str = "feature"
+    namespace: str = "arborist"
     nodes: dict[str, TaskNode] = field(default_factory=dict)
     execution_order: list[str] = field(default_factory=list)
     spec_files: list[str] = field(default_factory=list)
@@ -71,7 +71,8 @@ class TaskTree:
         All descendants of a root phase share one branch.
         """
         rp = self.root_phase(node_id)
-        return f"{self.namespace}/{self.spec_id}/{rp}"
+        parts = [p for p in (self.namespace, self.spec_id, rp) if p]
+        return "/".join(parts)
 
     def compute_execution_order(self) -> list[str]:
         """Compute topological execution order using Kahn's algorithm.
@@ -134,7 +135,7 @@ class TaskTree:
     def from_dict(cls, data: dict) -> TaskTree:
         tree = cls(
             spec_id=data["spec_id"],
-            namespace=data.get("namespace", "feature"),
+            namespace=data.get("namespace", "arborist"),
             execution_order=data.get("execution_order", []),
             spec_files=data.get("spec_files", []),
         )

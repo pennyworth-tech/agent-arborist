@@ -109,7 +109,7 @@ class PlanResult:
 def plan_tree(
     spec_dir: Path,
     spec_id: str,
-    namespace: str = "feature",
+    namespace: str = "arborist",
     runner: Runner | None = None,
     runner_type: RunnerType = DAG_DEFAULT_RUNNER,
     model: str = DAG_DEFAULT_MODEL,

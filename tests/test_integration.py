@@ -65,14 +65,14 @@ class TestBuildFromSpec:
         tree = parse_spec(FIXTURES / "tasks-calculator.md", spec_id="calc")
 
         # Phase nodes get their own branches
-        assert tree.branch_name("phase1") == "feature/calc/phase1"
-        assert tree.branch_name("phase2") == "feature/calc/phase2"
+        assert tree.branch_name("phase1") == "arborist/calc/phase1"
+        assert tree.branch_name("phase2") == "arborist/calc/phase2"
 
         # Leaf tasks inherit their parent phase's branch
-        assert tree.branch_name("T001") == "feature/calc/phase1"
-        assert tree.branch_name("T005") == "feature/calc/phase2"
-        assert tree.branch_name("T009") == "feature/calc/phase3"
-        assert tree.branch_name("T012") == "feature/calc/phase4"
+        assert tree.branch_name("T001") == "arborist/calc/phase1"
+        assert tree.branch_name("T005") == "arborist/calc/phase2"
+        assert tree.branch_name("T009") == "arborist/calc/phase3"
+        assert tree.branch_name("T012") == "arborist/calc/phase4"
 
     def test_task_tree_json_roundtrip(self):
         tree = parse_spec(FIXTURES / "tasks-calculator.md", spec_id="calc")
@@ -378,11 +378,11 @@ class TestDeepTreeIntegration:
 
         assert len(tree.leaves()) == 4
         # All phase1 leaves share branch
-        assert tree.branch_name("T001") == "feature/deep/phase1"
-        assert tree.branch_name("T002") == "feature/deep/phase1"
-        assert tree.branch_name("T003") == "feature/deep/phase1"
+        assert tree.branch_name("T001") == "arborist/deep/phase1"
+        assert tree.branch_name("T002") == "arborist/deep/phase1"
+        assert tree.branch_name("T003") == "arborist/deep/phase1"
         # phase2 leaf has own branch
-        assert tree.branch_name("T004") == "feature/deep/phase2"
+        assert tree.branch_name("T004") == "arborist/deep/phase2"
 
 
 # ---------------------------------------------------------------------------

@@ -49,7 +49,7 @@ def test_parse_produces_branch_names():
     tree = parse_spec(FIXTURES / "tasks-hello-world.md", spec_id="hello-world")
     # Leaf tasks inherit parent's branch
     bn = tree.branch_name("T001")
-    assert bn.startswith("feature/hello-world/")
+    assert bn.startswith("arborist/hello-world/")
     assert "phase" in bn
 
 
