@@ -1,1042 +1,200 @@
-"""Tests for CLI commands."""
+"""Tests for CLI --no-ai flag and basic build command."""
 
-import os
-import subprocess
+import json
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
-import pytest
 from click.testing import CliRunner
 
 from agent_arborist.cli import main
-from agent_arborist.checks import DependencyStatus
-from agent_arborist.home import ARBORIST_DIR_NAME, DAGU_DIR_NAME, DAGU_HOME_ENV_VAR
+
+FIXTURES = Path(__file__).parent / "fixtures"
 
 
-class TestVersionCommand:
-    def test_version_output(self):
-        runner = CliRunner()
-        result = runner.invoke(main, ["version"])
+def test_build_no_ai_produces_valid_json(tmp_path):
+    output = tmp_path / "tree.json"
+    runner = CliRunner()
+    result = runner.invoke(main, [
+        "build",
+        "--no-ai",
+        "--spec-dir", str(FIXTURES),
+        "--output", str(output),
+        "--spec-id", "test",
+    ])
+    assert result.exit_code == 0, result.output
+    data = json.loads(output.read_text())
+    assert "nodes" in data
+    assert "spec_id" in data
+    assert data["spec_id"] == "test"
+    assert len(data["nodes"]) > 0
+
+
+def test_build_no_ai_uses_markdown_parser(tmp_path):
+    """--no-ai path should use spec_parser, not ai_planner."""
+    output = tmp_path / "tree.json"
+    runner = CliRunner()
+    with patch("agent_arborist.tree.ai_planner.plan_tree") as mock_plan:
+        result = runner.invoke(main, [
+            "build",
+            "--no-ai",
+            "--spec-dir", str(FIXTURES),
+            "--output", str(output),
+            "--spec-id", "test",
+        ])
         assert result.exit_code == 0
-        assert "agent-arborist" in result.output
-        assert "0.1.0" in result.output
+        mock_plan.assert_not_called()
 
-    @patch("agent_arborist.cli.check_runtimes")
-    @patch("agent_arborist.cli.check_dagu")
-    def test_version_with_check(self, mock_dagu, mock_runtimes):
-        mock_dagu.return_value = DependencyStatus(
-            name="dagu",
-            installed=True,
-            version="1.30.3",
-            path="/usr/bin/dagu",
-            min_version="1.30.3",
-        )
-        mock_runtimes.return_value = [
-            DependencyStatus(name="claude", installed=True, version="1.0.0", path="/usr/bin/claude"),
-            DependencyStatus(name="opencode", installed=False),
-            DependencyStatus(name="gemini", installed=False),
-        ]
 
+def test_build_default_uses_ai_planner(tmp_path):
+    """Default build (no --no-ai) should call plan_tree."""
+    output = tmp_path / "tree.json"
+    runner = CliRunner()
+
+    mock_tree = MagicMock()
+    mock_tree.to_dict.return_value = {"spec_id": "test", "nodes": {}, "root_ids": [], "execution_order": [], "spec_files": []}
+    mock_tree.compute_execution_order.return_value = []
+    mock_tree.nodes = {}
+    mock_tree.leaves.return_value = []
+    mock_tree.execution_order = []
+    mock_tree.namespace = "feature"
+    mock_tree.spec_id = "test"
+
+    mock_result = MagicMock()
+    mock_result.success = True
+    mock_result.tree = mock_tree
+
+    with patch("agent_arborist.cli.plan_tree", mock_result, create=True):
+        # We patch at the import location inside cli.build
+        with patch("agent_arborist.tree.ai_planner.plan_tree", return_value=mock_result) as mock_plan:
+            result = runner.invoke(main, [
+                "build",
+                "--spec-dir", str(FIXTURES),
+                "--output", str(output),
+                "--spec-id", "test",
+            ])
+            assert result.exit_code == 0, result.output
+            mock_plan.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# --base-branch default auto-detection
+# ---------------------------------------------------------------------------
+
+class TestBaseBranchDefault:
+    """Verify --base-branch defaults to current branch, not 'main'."""
+
+    def test_garden_help_shows_no_main_default(self):
+        """--base-branch help text should not show 'main' as default."""
         runner = CliRunner()
-        result = runner.invoke(main, ["version", "--check"])
+        result = runner.invoke(main, ["garden", "--help"])
         assert result.exit_code == 0
-        assert "agent-arborist" in result.output
-        assert "dagu" in result.output
+        # Should not say default is "main"
+        assert "default: main" not in result.output.lower()
 
-
-class TestEchoForTesting:
-    """Tests for --echo-for-testing hidden flag."""
-
-    def test_echo_flag_is_hidden(self):
+    def test_gardener_help_shows_no_main_default(self):
+        """--base-branch help text for gardener should not show 'main' as default."""
         runner = CliRunner()
-        result = runner.invoke(main, ["--help"])
+        result = runner.invoke(main, ["gardener", "--help"])
         assert result.exit_code == 0
-        assert "--echo-for-testing" not in result.output
+        assert "default: main" not in result.output.lower()
 
-    def test_echo_task_run(self):
-        """Test echo mode for task run command."""
+    def test_garden_auto_detects_current_branch(self, tmp_path):
+        """When --base-branch is omitted, garden() should call git_current_branch."""
         runner = CliRunner()
-        result = runner.invoke(main, ["--echo-for-testing", "task", "run", "T001"])
-        assert result.exit_code == 0
-        assert "ECHO: task run" in result.output
-        assert "task_id=T001" in result.output
+        tree_path = tmp_path / "tree.json"
+        tree_path.write_text(json.dumps({
+            "spec_id": "test", "namespace": "feature",
+            "nodes": {"phase1": {"id": "phase1", "name": "P1", "children": ["T001"]},
+                      "T001": {"id": "T001", "name": "Task", "parent": "phase1", "description": "Do it"}},
+            "execution_order": ["T001"], "spec_files": [],
+        }))
 
-    def test_echo_spec_dag_show(self):
+        with patch("agent_arborist.cli.git_current_branch", return_value="my-feature") as mock_gcb, \
+             patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)), \
+             patch("agent_arborist.worker.garden.garden") as mock_garden:
+            mock_garden.return_value = MagicMock(success=True, task_id="T001")
+            result = runner.invoke(main, [
+                "garden", "--tree", str(tree_path),
+            ])
+            assert result.exit_code == 0, result.output
+            mock_gcb.assert_called_once()
+            # garden_fn should have been called with base_branch="my-feature"
+            _, kwargs = mock_garden.call_args
+            assert kwargs["base_branch"] == "my-feature"
+
+    def test_garden_explicit_base_branch_skips_detection(self, tmp_path):
+        """When --base-branch is given explicitly, git_current_branch is NOT called."""
         runner = CliRunner()
-        result = runner.invoke(main, ["--echo-for-testing", "spec", "dag-show", "--deps"])
-        assert result.exit_code == 0
-        assert "ECHO: spec dag-show" in result.output
-        assert "deps=True" in result.output
+        tree_path = tmp_path / "tree.json"
+        tree_path.write_text(json.dumps({
+            "spec_id": "test", "namespace": "feature",
+            "nodes": {"phase1": {"id": "phase1", "name": "P1", "children": ["T001"]},
+                      "T001": {"id": "T001", "name": "Task", "parent": "phase1", "description": "Do it"}},
+            "execution_order": ["T001"], "spec_files": [],
+        }))
 
-    def test_echo_spec_dag_build(self):
-        runner = CliRunner()
-        result = runner.invoke(main, ["--echo-for-testing", "spec", "dag-build", "--no-ai"])
-        assert result.exit_code == 0
-        assert "ECHO: spec dag-build" in result.output
-        assert "spec_id=" in result.output
-        assert "no_ai=True" in result.output
-
-    def test_echo_standard_fields_first(self):
-        """task_id should come first after ECHO: prefix in echo output."""
-        runner = CliRunner()
-        result = runner.invoke(main, ["--echo-for-testing", "task", "run", "T001"])
-        assert result.exit_code == 0
-        output = result.output
-        # task_id should be present and come after ECHO:
-        task_pos = output.find("task_id=T001")
-        echo_pos = output.find("ECHO:")
-        assert echo_pos >= 0, f"ECHO: not found in: {output}"
-        assert task_pos >= 0, f"task_id=T001 not found in: {output}"
-        assert echo_pos < task_pos, f"Fields out of order: {output}"
+        with patch("agent_arborist.cli.git_current_branch") as mock_gcb, \
+             patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)), \
+             patch("agent_arborist.worker.garden.garden") as mock_garden:
+            mock_garden.return_value = MagicMock(success=True, task_id="T001")
+            result = runner.invoke(main, [
+                "garden", "--tree", str(tree_path), "--base-branch", "develop",
+            ])
+            assert result.exit_code == 0, result.output
+            mock_gcb.assert_not_called()
+            _, kwargs = mock_garden.call_args
+            assert kwargs["base_branch"] == "develop"
 
 
-class TestDoctorCommand:
-    def test_doctor_group_help(self):
-        runner = CliRunner()
-        result = runner.invoke(main, ["doctor", "--help"])
-        assert result.exit_code == 0
-        assert "check-runner" in result.output
-
-    @patch("agent_arborist.cli.check_runtimes")
-    @patch("agent_arborist.cli.check_dagu")
-    def test_doctor_all_ok(self, mock_dagu, mock_runtimes):
-        mock_dagu.return_value = DependencyStatus(
-            name="dagu",
-            installed=True,
-            version="1.30.3",
-            path="/usr/bin/dagu",
-            min_version="1.30.3",
-        )
-        mock_runtimes.return_value = [
-            DependencyStatus(name="claude", installed=True, version="1.0.0", path="/usr/bin/claude"),
-            DependencyStatus(name="opencode", installed=False),
-            DependencyStatus(name="gemini", installed=False),
-        ]
-
-        runner = CliRunner()
-        result = runner.invoke(main, ["doctor"])
-        assert result.exit_code == 0
-        assert "All dependencies OK" in result.output
-
-    @patch("agent_arborist.cli.check_runtimes")
-    @patch("agent_arborist.cli.check_dagu")
-    def test_doctor_dagu_missing(self, mock_dagu, mock_runtimes):
-        mock_dagu.return_value = DependencyStatus(
-            name="dagu",
-            installed=False,
-            min_version="1.30.3",
-            error="dagu not found in PATH",
-        )
-        mock_runtimes.return_value = [
-            DependencyStatus(name="claude", installed=True, version="1.0.0", path="/usr/bin/claude"),
-            DependencyStatus(name="opencode", installed=False),
-            DependencyStatus(name="gemini", installed=False),
-        ]
-
-        runner = CliRunner()
-        result = runner.invoke(main, ["doctor"])
-        assert result.exit_code == 1
-        assert "missing or outdated" in result.output
-
-    @patch("agent_arborist.cli.check_runtimes")
-    @patch("agent_arborist.cli.check_dagu")
-    def test_doctor_no_runtimes(self, mock_dagu, mock_runtimes):
-        mock_dagu.return_value = DependencyStatus(
-            name="dagu",
-            installed=True,
-            version="1.30.3",
-            path="/usr/bin/dagu",
-            min_version="1.30.3",
-        )
-        mock_runtimes.return_value = [
-            DependencyStatus(name="claude", installed=False),
-            DependencyStatus(name="opencode", installed=False),
-            DependencyStatus(name="gemini", installed=False),
-        ]
-
-        runner = CliRunner()
-        result = runner.invoke(main, ["doctor"])
-        assert result.exit_code == 1
-        assert "At least one runtime" in result.output
-
-
-class TestSpecBranchCommands:
-    """Tests for spec branch commands."""
-
-    def test_spec_branch_create_all_help(self):
-        runner = CliRunner()
-        result = runner.invoke(main, ["spec", "branch-create-all", "--help"])
-        assert result.exit_code == 0
-        assert "DEPRECATED" in result.output
-
-    def test_spec_branch_create_all_deprecated(self):
-        """branch-create-all shows deprecation message."""
-        runner = CliRunner()
-        result = runner.invoke(main, ["spec", "branch-create-all"])
-        assert result.exit_code != 0
-        assert "DEPRECATED" in result.output
-        assert "dag run" in result.output
-
-    def test_spec_branch_cleanup_all_help(self):
-        runner = CliRunner()
-        result = runner.invoke(main, ["cleanup", "branches", "--help"])
-        assert result.exit_code == 0
-        assert "--force" in result.output
-
-    def test_spec_branch_cleanup_all_requires_spec_or_manifest(self):
-        """cleanup branches requires spec or ARBORIST_MANIFEST."""
-        runner = CliRunner()
-        result = runner.invoke(main, ["cleanup", "branches"])
-        assert result.exit_code != 0
-        # Now shows helpful message about how to specify spec
-        assert "No spec available" in result.output or "ARBORIST_MANIFEST" in result.output
-
-
-class TestTaskCommands:
-    def test_task_group_help(self):
-        """Task group shows available commands."""
-        runner = CliRunner()
-        result = runner.invoke(main, ["task", "--help"])
-        assert result.exit_code == 0
-        assert "status" in result.output
-        assert "run" in result.output
-        assert "run-test" in result.output
-        assert "list" in result.output
-
-    def test_task_status_requires_task_id(self):
-        """status requires a task_id argument."""
-        runner = CliRunner()
-        result = runner.invoke(main, ["task", "status"])
-        assert result.exit_code != 0  # Missing required argument
-
-    def test_task_run_requires_task_id(self):
-        """run requires a task_id argument."""
-        runner = CliRunner()
-        result = runner.invoke(main, ["task", "run"])
-        assert result.exit_code != 0  # Missing required argument
-
-    def test_task_run_test_requires_task_id(self):
-        """run-test requires a task_id argument."""
-        runner = CliRunner()
-        result = runner.invoke(main, ["task", "run-test"])
-        assert result.exit_code != 0  # Missing required argument
-
-
-class TestSpecCommands:
-    def test_spec_group_help(self):
-        runner = CliRunner()
-        result = runner.invoke(main, ["spec", "--help"])
-        assert result.exit_code == 0
-        assert "whoami" in result.output
-
-    @patch("agent_arborist.cli.detect_spec_from_git")
-    def test_spec_whoami_found(self, mock_detect):
-        from agent_arborist.spec import SpecInfo
-
-        mock_detect.return_value = SpecInfo(
-            spec_id="002",
-            name="my-feature",
-            source="git",
-            branch="002-my-feature",
-        )
-
-        runner = CliRunner()
-        result = runner.invoke(main, ["spec", "whoami"])
-        assert result.exit_code == 0
-        assert "002-my-feature" in result.output
-        assert "git" in result.output
-
-    @patch("agent_arborist.cli.detect_spec_from_git")
-    def test_spec_whoami_not_found(self, mock_detect):
-        from agent_arborist.spec import SpecInfo
-
-        mock_detect.return_value = SpecInfo(
-            error="Branch 'main' does not contain spec pattern",
-            source="git",
-            branch="main",
-        )
-
-        runner = CliRunner()
-        result = runner.invoke(main, ["spec", "whoami"])
-        assert result.exit_code == 0
-        assert "Not detected" in result.output
-        assert "--spec" in result.output or "-s" in result.output
-
-
-class TestCheckRunnerCommand:
-    @patch("agent_arborist.cli.get_runner")
-    def test_check_runner_success(self, mock_get_runner):
-        from agent_arborist.runner import RunResult
-
-        mock_runner = mock_get_runner.return_value
-        mock_runner.is_available.return_value = True
-        mock_runner.command = "claude"
-        mock_runner.run.return_value = RunResult(
-            success=True,
-            output="Why did the programmer quit? Because he didn't get arrays!",
-            exit_code=0,
-        )
-
-        runner = CliRunner()
-        result = runner.invoke(main, ["doctor", "check-runner"])
-        assert result.exit_code == 0
-        assert "OK" in result.output
-        assert "arrays" in result.output
-
-    @patch("agent_arborist.cli.get_runner")
-    def test_check_runner_not_found(self, mock_get_runner):
-        mock_runner = mock_get_runner.return_value
-        mock_runner.is_available.return_value = False
-
-        runner = CliRunner()
-        result = runner.invoke(main, ["doctor", "check-runner"])
-        assert result.exit_code == 1
-        assert "FAIL" in result.output
-        assert "not found" in result.output
-
-    @patch("agent_arborist.cli.get_runner")
-    def test_check_runner_execution_failure(self, mock_get_runner):
-        from agent_arborist.runner import RunResult
-
-        mock_runner = mock_get_runner.return_value
-        mock_runner.is_available.return_value = True
-        mock_runner.command = "claude"
-        mock_runner.run.return_value = RunResult(
-            success=False,
-            output="",
-            error="Timeout after 30 seconds",
-            exit_code=-1,
-        )
-
-        runner = CliRunner()
-        result = runner.invoke(main, ["doctor", "check-runner"])
-        assert result.exit_code != 0
-        assert "FAIL" in result.output
-        assert "Timeout" in result.output
-
-    @patch("agent_arborist.cli.get_runner")
-    def test_check_runner_with_runner_option(self, mock_get_runner):
-        from agent_arborist.runner import RunResult
-
-        mock_runner = mock_get_runner.return_value
-        mock_runner.is_available.return_value = True
-        mock_runner.command = "opencode"
-        mock_runner.run.return_value = RunResult(
-            success=True,
-            output="A joke from opencode",
-            exit_code=0,
-        )
-
-        runner = CliRunner()
-        result = runner.invoke(main, ["doctor", "check-runner", "--runner", "opencode"])
-        assert result.exit_code == 0
-        mock_get_runner.assert_called_with("opencode")
-
-    def test_check_runner_invalid_runner(self):
-        runner = CliRunner()
-        result = runner.invoke(main, ["doctor", "check-runner", "--runner", "invalid"])
-        assert result.exit_code != 0
-
-
-class TestCheckDaguCommand:
-    @patch("shutil.which")
-    def test_check_dagu_not_found(self, mock_which):
-        mock_which.return_value = None
-
-        runner = CliRunner()
-        result = runner.invoke(main, ["doctor", "check-dagu"])
-        assert result.exit_code == 1
-        assert "not found" in result.output
-
-    @patch("subprocess.run")
-    @patch("shutil.which")
-    def test_check_dagu_version_fails(self, mock_which, mock_run):
-        mock_which.return_value = "/usr/bin/dagu"
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=["dagu", "version"],
-            returncode=1,
-            stdout="",
-            stderr="error",
-        )
-
-        runner = CliRunner()
-        result = runner.invoke(main, ["doctor", "check-dagu"])
-        assert result.exit_code == 1
-        assert "Could not get dagu version" in result.output
-
-    @patch("subprocess.run")
-    @patch("shutil.which")
-    def test_check_dagu_success(self, mock_which, mock_run):
-        mock_which.return_value = "/usr/bin/dagu"
-
-        def run_side_effect(args, **kwargs):
-            if "version" in args:
-                return subprocess.CompletedProcess(
-                    args=args, returncode=0, stdout="", stderr="1.30.3"
-                )
-            elif "dry" in args:
-                return subprocess.CompletedProcess(
-                    args=args, returncode=0, stdout="Succeeded", stderr=""
-                )
-            return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
-
-        mock_run.side_effect = run_side_effect
-
-        runner = CliRunner()
-        result = runner.invoke(main, ["doctor", "check-dagu"])
-        assert result.exit_code == 0
-        assert "1.30.3" in result.output
-        assert "All dagu checks passed" in result.output
-
-    @patch("subprocess.run")
-    @patch("shutil.which")
-    def test_check_dagu_dry_run_fails(self, mock_which, mock_run):
-        mock_which.return_value = "/usr/bin/dagu"
-
-        def run_side_effect(args, **kwargs):
-            if "version" in args:
-                return subprocess.CompletedProcess(
-                    args=args, returncode=0, stdout="", stderr="1.30.3"
-                )
-            elif "dry" in args:
-                return subprocess.CompletedProcess(
-                    args=args, returncode=1, stdout="", stderr="DAG execution failed"
-                )
-            return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
-
-        mock_run.side_effect = run_side_effect
-
-        runner = CliRunner()
-        result = runner.invoke(main, ["doctor", "check-dagu"])
-        assert result.exit_code == 1
-        assert "dry run failed" in result.output
-
-
-@pytest.fixture
-def git_repo(tmp_path):
-    """Create a temporary git repository."""
-    original_cwd = os.getcwd()
-    os.chdir(tmp_path)
-    subprocess.run(["git", "init"], capture_output=True, check=True)
-    readme = tmp_path / "README.md"
-    readme.write_text("# Test\n")
-    subprocess.run(["git", "add", "."], capture_output=True, check=True)
-    subprocess.run(
-        ["git", "commit", "-m", "initial"],
-        capture_output=True,
-        check=True,
-        env={
-            **os.environ,
-            "GIT_AUTHOR_NAME": "Test",
-            "GIT_AUTHOR_EMAIL": "test@test.com",
-            "GIT_COMMITTER_NAME": "Test",
-            "GIT_COMMITTER_EMAIL": "test@test.com",
-        },
-    )
-    yield tmp_path
-    os.chdir(original_cwd)
-
-
-@pytest.fixture
-def non_git_dir(tmp_path):
-    """Create a temporary directory that is not a git repo."""
-    original_cwd = os.getcwd()
-    # Create a subdirectory to ensure we're not in a git repo
-    test_dir = tmp_path / "not_git"
-    test_dir.mkdir()
-    os.chdir(test_dir)
-    yield test_dir
-    os.chdir(original_cwd)
-
+# ---------------------------------------------------------------------------
+# Init command tests
+# ---------------------------------------------------------------------------
 
 class TestInitCommand:
-    def test_init_creates_arborist_directory(self, git_repo):
+
+    def test_init_creates_directory_and_config(self, tmp_path):
+        """init creates .arborist/, logs/, config.json, and updates .gitignore."""
         runner = CliRunner()
-        result = runner.invoke(main, ["init"])
-        assert result.exit_code == 0
-        assert "Initialized" in result.output
-
-        arborist_dir = git_repo / ARBORIST_DIR_NAME
-        assert arborist_dir.is_dir()
-
-    def test_init_adds_to_gitignore(self, git_repo):
-        runner = CliRunner()
-        result = runner.invoke(main, ["init"])
-        assert result.exit_code == 0
-
-        gitignore = git_repo / ".gitignore"
-        assert gitignore.exists()
-        content = gitignore.read_text()
-        assert f"{ARBORIST_DIR_NAME}/" in content
-
-    def test_init_fails_outside_git_repo(self, non_git_dir):
-        runner = CliRunner()
-        result = runner.invoke(main, ["init"])
-        assert result.exit_code == 1
-        assert "git repository" in result.output.lower()
-
-    def test_init_fails_if_already_initialized(self, git_repo):
-        # First init
-        runner = CliRunner()
-        result = runner.invoke(main, ["init"])
-        assert result.exit_code == 0
-
-        # Second init should fail
-        result = runner.invoke(main, ["init"])
-        assert result.exit_code == 1
-        assert "already initialized" in result.output.lower()
-
-    def test_init_shows_path_in_output(self, git_repo):
-        runner = CliRunner()
-        result = runner.invoke(main, ["init"])
-        assert result.exit_code == 0
-        assert ARBORIST_DIR_NAME in result.output
-
-    def test_init_creates_dagu_subdirectory(self, git_repo):
-        runner = CliRunner()
-        result = runner.invoke(main, ["init"])
-        assert result.exit_code == 0
-
-        dagu_dir = git_repo / ARBORIST_DIR_NAME / DAGU_DIR_NAME
-        assert dagu_dir.is_dir()
-
-    def test_init_creates_dagu_dags_subdirectory(self, git_repo):
-        runner = CliRunner()
-        result = runner.invoke(main, ["init"])
-        assert result.exit_code == 0
-
-        dags_dir = git_repo / ARBORIST_DIR_NAME / DAGU_DIR_NAME / "dags"
-        assert dags_dir.is_dir()
-
-
-class TestDaguHomeEnvVar:
-    def test_dagu_home_set_when_initialized(self, git_repo):
-        # First initialize
-        runner = CliRunner()
-        result = runner.invoke(main, ["init"])
-        assert result.exit_code == 0
-
-        # Run any command and check env var is set
-        # We use version as a simple command
-        result = runner.invoke(main, ["version"])
-        assert result.exit_code == 0
-
-        # Check the env var was set
-        expected_dagu_home = str(git_repo / ARBORIST_DIR_NAME / DAGU_DIR_NAME)
-        assert os.environ.get(DAGU_HOME_ENV_VAR) == expected_dagu_home
-
-    def test_dagu_home_not_set_when_not_initialized(self, git_repo, monkeypatch):
-        # Ensure env var is not set
-        monkeypatch.delenv(DAGU_HOME_ENV_VAR, raising=False)
-
-        runner = CliRunner()
-        result = runner.invoke(main, ["version"])
-        assert result.exit_code == 0
-
-        # DAGU_HOME should not be set since we didn't init
-        assert os.environ.get(DAGU_HOME_ENV_VAR) is None
-
-
-# -----------------------------------------------------------------------------
-# Spec DAG commands
-# -----------------------------------------------------------------------------
-
-
-class TestSpecDagCommands:
-    def test_spec_group_has_dag_commands(self):
-        runner = CliRunner()
-        result = runner.invoke(main, ["spec", "--help"])
-        assert result.exit_code == 0
-        assert "dag-build" in result.output
-        assert "dag-show" in result.output
-
-    def test_spec_dag_build_help(self):
-        runner = CliRunner()
-        result = runner.invoke(main, ["spec", "dag-build", "--help"])
-        assert result.exit_code == 0
-        assert "DIRECTORY" in result.output
-        assert "--dry-run" in result.output
-        assert "--runner" in result.output
-
-
-class TestDagBuild:
-    @pytest.fixture
-    def git_repo_with_spec(self, tmp_path):
-        """Create a temp git repo with a spec directory."""
-        original_cwd = os.getcwd()
-        os.chdir(tmp_path)
-        subprocess.run(["git", "init"], capture_output=True, check=True)
-        readme = tmp_path / "README.md"
-        readme.write_text("# Test\n")
-        subprocess.run(["git", "add", "."], capture_output=True, check=True)
-        subprocess.run(
-            ["git", "commit", "-m", "init"],
-            capture_output=True,
-            check=True,
-            env={
-                **os.environ,
-                "GIT_AUTHOR_NAME": "Test",
-                "GIT_AUTHOR_EMAIL": "test@test.com",
-                "GIT_COMMITTER_NAME": "Test",
-                "GIT_COMMITTER_EMAIL": "test@test.com",
-            },
-        )
-
-        # Create spec directory with task file
-        spec_dir = tmp_path / "specs" / "test-spec"
-        spec_dir.mkdir(parents=True)
-        task_file = spec_dir / "tasks.md"
-        task_file.write_text("""# Tasks: Test Project
-
-**Project**: Test project
-**Total Tasks**: 3
-
-## Phase 1: Setup
-
-- [ ] T001 Create project directory
-- [ ] T002 Add requirements file
-- [ ] T003 Create main module
-
-**Checkpoint**: Ready
-
----
-
-## Dependencies
-
-```
-T001 → T002 → T003
-```
-""")
-
-        yield tmp_path
-        os.chdir(original_cwd)
-
-    def test_dag_build_dry_run(self, git_repo_with_spec):
-        runner = CliRunner()
-        spec_dir = git_repo_with_spec / "specs" / "test-spec"
-
-        result = runner.invoke(main, ["spec", "dag-build", str(spec_dir), "--dry-run", "--no-ai"])
-
-        assert result.exit_code == 0
-        # Name is derived from directory name (with dashes converted to underscores)
-        assert "name: test_spec" in result.output
-        assert "T001" in result.output
-        assert "T002" in result.output
-        assert "T003" in result.output
-
-    def test_dag_build_with_output(self, git_repo_with_spec, tmp_path):
-        runner = CliRunner()
-        spec_dir = git_repo_with_spec / "specs" / "test-spec"
-        output_file = tmp_path / "output.yaml"
-
-        result = runner.invoke(
-            main, ["spec", "dag-build", str(spec_dir), "-o", str(output_file), "--no-ai"]
-        )
-
-        assert result.exit_code == 0
-        assert output_file.exists()
-        content = output_file.read_text()
-        assert "T001" in content
-        assert "depends:" in content
-
-    def test_dag_build_echo_only_injects_flag(self, git_repo_with_spec, tmp_path):
-        """--echo-only should inject --echo-for-testing into all arborist commands."""
-        runner = CliRunner()
-        spec_dir = git_repo_with_spec / "specs" / "test-spec"
-        output_file = tmp_path / "output.yaml"
-
-        result = runner.invoke(
-            main, ["spec", "dag-build", str(spec_dir), "-o", str(output_file), "--no-ai", "--echo-only"]
-        )
-
-        assert result.exit_code == 0
-        assert output_file.exists()
-        content = output_file.read_text()
-
-        # All arborist commands should have --echo-for-testing injected
-        import yaml
-        # Multi-document YAML - check all documents
-        documents = list(yaml.safe_load_all(content))
-        for dag_data in documents:
-            for step in dag_data.get("steps", []):
-                cmd = step.get("command", "")
-                if "arborist " in cmd:
-                    assert "--echo-for-testing" in cmd, f"Missing --echo-for-testing in: {cmd}"
-
-    def test_dag_build_echo_only_flag_is_hidden(self):
-        """--echo-only should be a hidden flag."""
-        runner = CliRunner()
-        result = runner.invoke(main, ["spec", "dag-build", "--help"])
-        assert result.exit_code == 0
-        assert "--echo-only" not in result.output
-
-    def test_dag_build_to_dagu_home(self, git_repo_with_spec, monkeypatch):
-        # Initialize arborist first
-        runner = CliRunner()
-        result = runner.invoke(main, ["init"])
-        assert result.exit_code == 0
-
-        spec_dir = git_repo_with_spec / "specs" / "test-spec"
-
-        result = runner.invoke(main, ["spec", "dag-build", str(spec_dir), "--no-ai"])
-
-        assert result.exit_code == 0
-        assert "DAG written to:" in result.output
-
-        # Verify file was created in dagu home
-        dagu_home = git_repo_with_spec / ".arborist" / "dagu" / "dags"
-        dag_files = list(dagu_home.glob("*.yaml"))
-        assert len(dag_files) == 1
-
-    def test_dag_build_no_directory_no_spec(self, non_git_dir):
-        runner = CliRunner()
-        result = runner.invoke(main, ["spec", "dag-build"])
-
-        assert result.exit_code == 1
-        assert "No spec" in result.output or "Error" in result.output
-
-    def test_dag_build_nonexistent_directory(self, git_repo):
-        runner = CliRunner()
-        result = runner.invoke(main, ["spec", "dag-build", "/nonexistent/path"])
-
-        # Click validates path exists
-        assert result.exit_code != 0
-
-    def test_dag_build_step_names_under_40_chars(self, git_repo_with_spec):
-        """Ensure all step names are under 40 chars for dagu compatibility."""
-        runner = CliRunner()
-        spec_dir = git_repo_with_spec / "specs" / "test-spec"
-
-        result = runner.invoke(main, ["spec", "dag-build", str(spec_dir), "--dry-run", "--no-ai"])
-
-        assert result.exit_code == 0
-
-        # Parse the YAML output and check step names
-        import yaml
-        # Find the YAML content (skip the status messages)
-        lines = result.output.split("\n")
-        yaml_start = next(i for i, line in enumerate(lines) if line.startswith("name:"))
-        yaml_content = "\n".join(lines[yaml_start:])
-        # Multi-document YAML - check all documents
-        documents = list(yaml.safe_load_all(yaml_content))
-
-        for dag in documents:
-            for step in dag.get("steps", []):
-                assert len(step["name"]) <= 40, f"Step name too long: {step['name']}"
-
-    def test_dag_build_with_show(self, git_repo_with_spec, tmp_path):
-        """Test --show flag displays YAML after writing."""
-        runner = CliRunner()
-        spec_dir = git_repo_with_spec / "specs" / "test-spec"
-        output_file = tmp_path / "output.yaml"
-
-        result = runner.invoke(
-            main, ["spec", "dag-build", str(spec_dir), "-o", str(output_file), "--show", "--no-ai"]
-        )
-
-        assert result.exit_code == 0
-        assert "DAG written to:" in result.output
-        # YAML content should appear after the write message
-        assert "steps:" in result.output
-        assert "T001" in result.output
-
-
-class TestDagShow:
-    @pytest.fixture
-    def git_repo_with_dag(self, tmp_path):
-        """Create a temp git repo with a built DAG."""
-        original_cwd = os.getcwd()
-        os.chdir(tmp_path)
-        subprocess.run(["git", "init"], capture_output=True, check=True)
-        readme = tmp_path / "README.md"
-        readme.write_text("# Test\n")
-        subprocess.run(["git", "add", "."], capture_output=True, check=True)
-        subprocess.run(
-            ["git", "commit", "-m", "init"],
-            capture_output=True,
-            check=True,
-            env={
-                **os.environ,
-                "GIT_AUTHOR_NAME": "Test",
-                "GIT_AUTHOR_EMAIL": "test@test.com",
-                "GIT_COMMITTER_NAME": "Test",
-                "GIT_COMMITTER_EMAIL": "test@test.com",
-            },
-        )
-
-        # Initialize arborist
-        cli_runner = CliRunner()
-        cli_runner.invoke(main, ["init"])
-
-        # Create a DAG file directly
-        dags_dir = tmp_path / ".arborist" / "dagu" / "dags"
-        dag_file = dags_dir / "test-dag.yaml"
-        dag_file.write_text("""name: test_dag
-description: Test DAG
-steps:
-  - name: step1
-    command: echo step1
-  - name: step2
-    command: echo step2
-    depends: [step1]
-  - name: step3
-    command: echo step3
-    depends: [step1]
-  - name: step4
-    command: echo step4
-    depends: [step2, step3]
-""")
-
-        yield tmp_path
-        os.chdir(original_cwd)
-
-    def test_dag_show_summary(self, git_repo_with_dag):
-        runner = CliRunner()
-        result = runner.invoke(main, ["spec", "dag-show", "test-dag"])
-
-        assert result.exit_code == 0
-        assert "test_dag" in result.output
-        assert "Steps:" in result.output
-        assert "step1" in result.output
-        assert "step4" in result.output
-
-    def test_dag_show_deps(self, git_repo_with_dag):
-        runner = CliRunner()
-        result = runner.invoke(main, ["spec", "dag-show", "test-dag", "--deps"])
-
-        assert result.exit_code == 0
-        assert "step2" in result.output
-        assert "← step1" in result.output
-
-    def test_dag_show_blocking(self, git_repo_with_dag):
-        runner = CliRunner()
-        result = runner.invoke(main, ["spec", "dag-show", "test-dag", "--blocking"])
-
-        assert result.exit_code == 0
-        assert "step1" in result.output
-        assert "→ step2" in result.output
-        assert "→ step3" in result.output
-
-    def test_dag_show_yaml(self, git_repo_with_dag):
-        runner = CliRunner()
-        result = runner.invoke(main, ["spec", "dag-show", "test-dag", "--yaml"])
-
-        assert result.exit_code == 0
-        assert "name: test_dag" in result.output
-        assert "step2" in result.output
-        assert "depends:" in result.output
-
-    def test_dag_show_not_found(self, git_repo_with_dag):
-        runner = CliRunner()
-        result = runner.invoke(main, ["spec", "dag-show", "nonexistent"])
-
-        assert result.exit_code == 1
-        assert "not found" in result.output
-
-
-class TestHooksCommands:
-    """Tests for hooks CLI commands."""
-
-    @pytest.fixture
-    def git_repo(self, tmp_path):
-        """Create a minimal git repo for hooks testing."""
-        original_cwd = os.getcwd()
-        os.chdir(tmp_path)
-        subprocess.run(["git", "init"], capture_output=True, check=True)
-        subprocess.run(["git", "config", "user.email", "test@test.com"], capture_output=True)
-        subprocess.run(["git", "config", "user.name", "Test"], capture_output=True)
-        (tmp_path / "README.md").write_text("# Test\n")
-        subprocess.run(["git", "add", "."], capture_output=True, check=True)
-        subprocess.run(["git", "commit", "-m", "init"], capture_output=True, check=True)
-
-        # Create .arborist directory
+        with patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)):
+            result = runner.invoke(main, ["init"], input="y\ny\nclaude\nsonnet\ny\n")
+
+        assert result.exit_code == 0, result.output
+        assert (tmp_path / ".arborist").is_dir()
+        assert (tmp_path / ".arborist" / "logs").is_dir()
+        assert (tmp_path / ".arborist" / "config.json").exists()
+
+        config = json.loads((tmp_path / ".arborist" / "config.json").read_text())
+        assert config["defaults"]["runner"] == "claude"
+        assert config["defaults"]["model"] == "sonnet"
+
+        gitignore = (tmp_path / ".gitignore").read_text()
+        assert ".arborist/logs/" in gitignore
+
+    def test_init_skips_existing(self, tmp_path):
+        """init does not overwrite existing .arborist/ or config.json."""
         arborist_dir = tmp_path / ".arborist"
         arborist_dir.mkdir()
+        (arborist_dir / "logs").mkdir()
+        config_path = arborist_dir / "config.json"
+        config_path.write_text('{"version": "1", "defaults": {"runner": "gemini"}}')
+        (tmp_path / ".gitignore").write_text(".arborist/logs/\n")
 
-        yield tmp_path
-        os.chdir(original_cwd)
-
-    def test_hooks_group_help(self):
         runner = CliRunner()
-        result = runner.invoke(main, ["hooks", "--help"])
+        with patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)):
+            result = runner.invoke(main, ["init"])
+
+        assert result.exit_code == 0, result.output
+        # Config should NOT be overwritten
+        config = json.loads(config_path.read_text())
+        assert config["defaults"]["runner"] == "gemini"
+        assert "already exists" in result.output
+
+    def test_init_abort_on_no(self, tmp_path):
+        """Answering 'n' to create directory aborts."""
+        runner = CliRunner()
+        with patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)):
+            result = runner.invoke(main, ["init"], input="n\n")
+
         assert result.exit_code == 0
-        assert "Hook system management" in result.output
-        assert "list" in result.output
-        assert "validate" in result.output
-        assert "run" in result.output
-
-    def test_hooks_list_disabled(self, git_repo):
-        runner = CliRunner()
-        result = runner.invoke(main, ["hooks", "list"])
-        assert result.exit_code == 0
-        assert "Hooks are not enabled" in result.output
-
-    def test_hooks_list_enabled(self, tmp_path, monkeypatch):
-        # Create a config with hooks enabled
-        arborist_dir = tmp_path / ".arborist"
-        arborist_dir.mkdir()
-        config = {
-            "hooks": {
-                "enabled": True,
-                "step_definitions": {
-                    "code_review": {
-                        "type": "llm_eval",
-                        "prompt": "Review this code"
-                    }
-                },
-                "injections": {
-                    "post_task": [
-                        {"step": "code_review", "tasks": ["*"]}
-                    ]
-                }
-            }
-        }
-        import json
-        (arborist_dir / "config.json").write_text(json.dumps(config))
-
-        monkeypatch.chdir(tmp_path)
-        # Initialize git repo
-        subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True)
-
-        runner = CliRunner()
-        result = runner.invoke(main, ["hooks", "list"])
-        assert result.exit_code == 0
-        assert "Step Definitions:" in result.output
-        assert "code_review" in result.output
-        assert "llm_eval" in result.output
-        assert "Injections by Hook Point:" in result.output
-        assert "post_task" in result.output
-
-    def test_hooks_validate_disabled(self):
-        runner = CliRunner()
-        with runner.isolated_filesystem():
-            result = runner.invoke(main, ["hooks", "validate"])
-            assert result.exit_code == 0
-            assert "valid" in result.output.lower()
-
-    def test_hooks_validate_valid_config(self, tmp_path, monkeypatch):
-        # Create a valid config with hooks
-        arborist_dir = tmp_path / ".arborist"
-        arborist_dir.mkdir()
-        config = {
-            "hooks": {
-                "enabled": True,
-                "step_definitions": {
-                    "lint_check": {
-                        "type": "shell",
-                        "command": "npm run lint"
-                    }
-                },
-                "injections": {
-                    "post_task": [
-                        {"step": "lint_check", "tasks": ["*"]}
-                    ]
-                }
-            }
-        }
-        import json
-        (arborist_dir / "config.json").write_text(json.dumps(config))
-
-        monkeypatch.chdir(tmp_path)
-        subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True)
-
-        runner = CliRunner()
-        result = runner.invoke(main, ["hooks", "validate"])
-        assert result.exit_code == 0
-        assert "✓" in result.output
-
-    def test_hooks_run_shell(self, git_repo):
-        runner = CliRunner()
-        result = runner.invoke(main, [
-            "hooks", "run",
-            "--type", "shell",
-            "--command", "echo hello"
-        ])
-        assert result.exit_code == 0, f"Failed: {result.output}"
-        # Output is JSON
-        import json
-        data = json.loads(result.output)
-        assert data["success"] is True
-        assert "hello" in data["stdout"]
-        assert data["return_code"] == 0
-
-    def test_hooks_run_shell_failure(self, git_repo):
-        runner = CliRunner()
-        result = runner.invoke(main, [
-            "hooks", "run",
-            "--type", "shell",
-            "--command", "exit 1"
-        ])
-        # CLI exits with 1 when hook step fails
-        assert result.exit_code == 1
-        import json
-        data = json.loads(result.output)
-        assert data["success"] is False
-        assert data["return_code"] == 1
-
-    def test_hooks_run_quality_check(self, git_repo):
-        """Quality check extracts score from percentage format like '85%'."""
-        runner = CliRunner()
-        result = runner.invoke(main, [
-            "hooks", "run",
-            "--type", "quality_check",
-            "--command", "echo '85%'",
-            "--min-score", "0.80"  # Score is normalized to 0-1
-        ])
-        assert result.exit_code == 0, f"Failed: {result.output}"
-        import json
-        data = json.loads(result.output)
-        assert "score" in data
-        # 85% is normalized to 0.85
-        assert data["score"] == 0.85
-        assert data["passed"] is True
-
-    def test_hooks_run_quality_check_below_threshold(self, git_repo):
-        """Quality check fails when score is below threshold."""
-        runner = CliRunner()
-        result = runner.invoke(main, [
-            "hooks", "run",
-            "--type", "quality_check",
-            "--command", "echo '50%'",
-            "--min-score", "0.80"  # Score is normalized to 0-1
-        ])
-        import json
-        data = json.loads(result.output)
-        # Default fail_on_threshold is True, so success should be False
-        # and CLI should exit with code 1
-        assert result.exit_code == 1
-        assert data["score"] == 0.50
-        assert data["passed"] is False
-        assert data["success"] is False
-
-    def test_hooks_run_requires_type(self):
-        runner = CliRunner()
-        result = runner.invoke(main, ["hooks", "run"])
-        assert result.exit_code != 0
-        assert "required" in result.output.lower() or "Missing" in result.output
-
-    def test_hooks_run_shell_empty_command(self, git_repo):
-        """Shell with empty command runs (executes empty string), which succeeds."""
-        runner = CliRunner()
-        result = runner.invoke(main, [
-            "hooks", "run",
-            "--type", "shell"
-        ])
-        # Empty command runs successfully
-        assert result.exit_code == 0, f"Failed: {result.output}"
-        import json
-        data = json.loads(result.output)
-        assert data["success"] is True
-
-    def test_hooks_run_with_task_id(self, git_repo):
-        runner = CliRunner()
-        result = runner.invoke(main, [
-            "hooks", "run",
-            "--type", "shell",
-            "--command", "echo task=$TASK_ID",
-            "--task", "T001"
-        ])
-        assert result.exit_code == 0, f"Failed: {result.output}"
-        import json
-        data = json.loads(result.output)
-        assert data["success"] is True
+        assert not (tmp_path / ".arborist").exists()
+        assert "Aborted" in result.output

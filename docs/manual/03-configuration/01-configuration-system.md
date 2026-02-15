@@ -198,10 +198,10 @@ Override config with environment variables:
 
 ```bash
 # Set default runner
-export ARBORIST_DEFAULT_RUNNER=opencode
+export ARBORIST_RUNNER=opencode
 
 # Set default model
-export ARBORIST_DEFAULT_MODEL=haiku
+export ARBORIST_MODEL=haiku
 
 # Set Dagu home directory
 export DAGU_HOME=/custom/dagu/path

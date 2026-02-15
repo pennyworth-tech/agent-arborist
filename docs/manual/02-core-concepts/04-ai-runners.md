@@ -70,7 +70,7 @@ arborist task run T001
 arborist task run T001 --runner claude --model sonnet
 
 # Environment variable
-export ARBORIST_DEFAULT_RUNNER=gemini
+export ARBORIST_RUNNER=gemini
 ```
 
 ## Runner Selection

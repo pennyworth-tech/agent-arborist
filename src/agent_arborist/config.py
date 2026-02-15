@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 VALID_RUNNERS = ("claude", "opencode", "gemini")
 VALID_OUTPUT_FORMATS = ("json", "text")
 VALID_CONTAINER_MODES = ("auto", "enabled", "disabled")
-VALID_STEPS = ("run", "post-merge")
+VALID_STEPS = ("run", "implement", "review", "post-merge")
 
 # Hardcoded defaults
 DEFAULT_RUNNER = "claude"
@@ -41,10 +41,6 @@ ENV_TIMEOUT_TASK_RUN = "ARBORIST_TIMEOUT_TASK_RUN"
 ENV_TIMEOUT_POST_MERGE = "ARBORIST_TIMEOUT_POST_MERGE"
 ENV_TEST_COMMAND = "ARBORIST_TEST_COMMAND"
 ENV_TEST_TIMEOUT = "ARBORIST_TEST_TIMEOUT"
-
-# Deprecated env vars (backward compatibility)
-ENV_DEFAULT_RUNNER_DEPRECATED = "ARBORIST_DEFAULT_RUNNER"
-ENV_DEFAULT_MODEL_DEPRECATED = "ARBORIST_DEFAULT_MODEL"
 
 # Step-specific env var pattern
 ENV_STEP_RUNNER_TEMPLATE = "ARBORIST_STEP_{step}_RUNNER"
@@ -671,6 +667,8 @@ class ArboristConfig:
     steps: dict[str, StepConfig] = field(
         default_factory=lambda: {
             "run": StepConfig(),
+            "implement": StepConfig(),
+            "review": StepConfig(),
             "post-merge": StepConfig(),
         }
     )
@@ -737,6 +735,8 @@ class ArboristConfig:
         steps_data = data.get("steps", {})
         steps = {
             "run": StepConfig.from_dict(steps_data.get("run", {}), strict),
+            "implement": StepConfig.from_dict(steps_data.get("implement", {}), strict),
+            "review": StepConfig.from_dict(steps_data.get("review", {}), strict),
             "post-merge": StepConfig.from_dict(steps_data.get("post-merge", {}), strict),
         }
         # Add any additional steps from data
@@ -908,24 +908,7 @@ def apply_env_overrides(config: ArboristConfig) -> ArboristConfig:
     """
     result = copy.deepcopy(config)
 
-    # Check deprecated env vars first (with warnings)
-    deprecated_runner = os.environ.get(ENV_DEFAULT_RUNNER_DEPRECATED)
-    if deprecated_runner and not os.environ.get(ENV_RUNNER):
-        logger.warning(
-            f"{ENV_DEFAULT_RUNNER_DEPRECATED} is deprecated. "
-            f"Use {ENV_RUNNER} instead."
-        )
-        result.defaults.runner = deprecated_runner
-
-    deprecated_model = os.environ.get(ENV_DEFAULT_MODEL_DEPRECATED)
-    if deprecated_model and not os.environ.get(ENV_MODEL):
-        logger.warning(
-            f"{ENV_DEFAULT_MODEL_DEPRECATED} is deprecated. "
-            f"Use {ENV_MODEL} instead."
-        )
-        result.defaults.model = deprecated_model
-
-    # Apply new env vars (override deprecated)
+    # Apply env var overrides
     if runner := os.environ.get(ENV_RUNNER):
         result.defaults.runner = runner
 
@@ -1029,44 +1012,51 @@ def get_step_runner_model(
     step: str,
     cli_runner: str | None = None,
     cli_model: str | None = None,
+    fallback_step: str | None = None,
 ) -> tuple[str, str]:
     """Resolve runner and model for a specific step.
 
     Precedence (highest to lowest):
     1. CLI flags
     2. Step-specific config
-    3. Defaults config
-    4. Hardcoded defaults
+    3. Fallback step config (if provided)
+    4. Defaults config
+    5. Hardcoded defaults
 
     Runner and model resolve independently.
 
     Args:
         config: Merged configuration
-        step: Step name (e.g., "run", "post-merge")
+        step: Step name (e.g., "run", "implement", "review")
         cli_runner: Optional runner from CLI flag
         cli_model: Optional model from CLI flag
+        fallback_step: Optional fallback step (e.g., "run") to try before defaults
 
     Returns:
         Tuple of (runner, model)
     """
-    # Get step config (or empty)
     step_config = config.steps.get(step, StepConfig())
+    fallback_config = config.steps.get(fallback_step, StepConfig()) if fallback_step else StepConfig()
 
-    # Resolve runner: CLI > step config > defaults > hardcoded
+    # Resolve runner: CLI > step config > fallback step > defaults > hardcoded
     if cli_runner is not None:
         runner = cli_runner
     elif step_config.runner is not None:
         runner = step_config.runner
+    elif fallback_config.runner is not None:
+        runner = fallback_config.runner
     elif config.defaults.runner is not None:
         runner = config.defaults.runner
     else:
         runner = DEFAULT_RUNNER
 
-    # Resolve model: CLI > step config > defaults > hardcoded
+    # Resolve model: CLI > step config > fallback step > defaults > hardcoded
     if cli_model is not None:
         model = cli_model
     elif step_config.model is not None:
         model = step_config.model
+    elif fallback_config.model is not None:
+        model = fallback_config.model
     elif config.defaults.model is not None:
         model = config.defaults.model
     else:
@@ -1132,6 +1122,16 @@ def generate_config_template() -> dict[str, Any]:
                 "runner": None,
                 "model": None,
                 "_comment": "Override runner/model for 'run' step",
+            },
+            "implement": {
+                "runner": None,
+                "model": None,
+                "_comment": "Override runner/model for implement phase (falls back to 'run')",
+            },
+            "review": {
+                "runner": None,
+                "model": None,
+                "_comment": "Override runner/model for review phase (falls back to 'run')",
             },
             "post-merge": {
                 "runner": None,

@@ -432,8 +432,8 @@ if self.config.model:
 ```bash
 # Container environment from devcontainer.json
 "remoteEnv": {
-  "ARBORIST_DEFAULT_RUNNER": "opencode",
-  "ARBORIST_DEFAULT_MODEL": "openai/gpt-4o-mini"
+  "ARBORIST_RUNNER": "opencode",
+  "ARBORIST_MODEL": "openai/gpt-4o-mini"
 }
 ```
 
@@ -469,7 +469,7 @@ This approach had issues:
 ```python
 # No --runner or --model flags needed
 run_cmd = f"arborist task run {task_id}"
-# Relies on ARBORIST_DEFAULT_RUNNER in container environment
+# Relies on ARBORIST_RUNNER in container environment
 ```
 
 **Option 2: Config file per workspace**
