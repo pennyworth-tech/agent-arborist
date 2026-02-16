@@ -35,6 +35,7 @@ Thumbs.db
 
 # Test fixture .env files (user creates manually)
 tests/fixtures/**/.devcontainer/.env
+tests/fixtures/**/.env
 .opencode/
 
 # Arborist runner logs
