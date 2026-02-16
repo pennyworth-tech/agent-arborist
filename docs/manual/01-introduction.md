@@ -48,3 +48,8 @@ flowchart LR
 ```
 
 Everything happens in a single git repository. No containers, no daemons, no orchestration servers — just git branches and AI runners.
+
+## Core Principles
+
+### Immutable State Log
+Arborist treats the Git repository as a log-structured state store. Every action—implementation attempts, test results, and review feedback—is recorded as an immutable commit. This ensures a perfect audit trail and allows AI agents to learn from previous failures by reading the history of the current task.
