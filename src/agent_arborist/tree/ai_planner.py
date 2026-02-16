@@ -11,7 +11,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 from agent_arborist.runner import Runner, get_runner, RunnerType, DAG_DEFAULT_RUNNER, DAG_DEFAULT_MODEL
-from agent_arborist.tree.model import TaskNode, TaskTree
+from agent_arborist.tree.model import TaskNode, TaskTree, TestCommand, TestType
 
 
 TASK_ANALYSIS_PROMPT = '''Extract the COMPLETE task tree from the task specification files.
@@ -94,6 +94,29 @@ EXTRACTION RULES:
    - Explicit "Phase X" or "Story X" labels
    - Section boundaries
 
+TEST COMMANDS:
+For each task, optionally generate a "test_commands" array. Each entry:
+{{
+  "type": "unit" | "integration" | "e2e",
+  "command": "shell command to run tests",
+  "framework": "pytest" | "jest" | "vitest" | "go" | null,
+  "timeout": <seconds or null>
+}}
+
+Rules:
+- Leaf tasks typically get "type": "unit" tests
+- Parent/group tasks may get "type": "integration" or "type": "e2e" tests
+- Integration/e2e tests on parent nodes run before the phase branch merges
+- Infer the framework from project context (package.json → jest/vitest, pyproject.toml → pytest, go.mod → go)
+- If you cannot determine a test command, omit test_commands (it defaults to empty)
+
+Framework template examples:
+- pytest: {{"type": "unit", "command": "python -m pytest tests/ -x", "framework": "pytest"}}
+- jest: {{"type": "unit", "command": "npx jest --passWithNoTests", "framework": "jest"}}
+- vitest: {{"type": "unit", "command": "npx vitest run", "framework": "vitest"}}
+- go: {{"type": "unit", "command": "go test ./...", "framework": "go"}}
+- cargo: {{"type": "unit", "command": "cargo test", "framework": "cargo"}}
+
 OUTPUT ONLY valid JSON. Start with {{ on line 1. No markdown fences.
 '''
 
@@ -114,6 +137,7 @@ def plan_tree(
     runner_type: RunnerType = DAG_DEFAULT_RUNNER,
     model: str = DAG_DEFAULT_MODEL,
     timeout: int = 120,
+    container_workspace: Path | None = None,
 ) -> PlanResult:
     """Use AI to generate a TaskTree from a spec directory."""
     runner_instance = runner or get_runner(runner_type, model)
@@ -126,7 +150,8 @@ def plan_tree(
         spec_contents=spec_contents,
     )
     logger.debug("Prompt length: %d chars", len(prompt))
-    result = runner_instance.run(prompt, timeout=timeout, cwd=spec_dir)
+    result = runner_instance.run(prompt, timeout=timeout, cwd=spec_dir,
+                                 container_workspace=container_workspace)
 
     if not result.success:
         return PlanResult(
@@ -192,6 +217,13 @@ def _build_tree_from_json(
         if "id" not in t:
             continue
         tid = t["id"]
+        test_commands = []
+        for tc_data in t.get("test_commands", []):
+            try:
+                test_commands.append(TestCommand.from_dict(tc_data))
+            except (KeyError, ValueError):
+                logger.warning("Skipping invalid test_command in task %s", tid)
+
         tree.nodes[tid] = TaskNode(
             id=tid,
             name=t.get("description", tid),
@@ -201,6 +233,7 @@ def _build_tree_from_json(
             depends_on=t.get("depends_on", []),
             source_file=t.get("source_file"),
             source_line=t.get("source_line"),
+            test_commands=test_commands,
         )
 
     if not tree.nodes:

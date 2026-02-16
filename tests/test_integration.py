@@ -14,7 +14,7 @@ from agent_arborist.git.repo import (
     git_log,
 )
 from agent_arborist.git.state import scan_completed_tasks, TaskState, get_task_trailers, task_state_from_trailers
-from agent_arborist.tree.model import TaskTree
+from agent_arborist.tree.model import TaskTree, TaskNode, TestCommand, TestType
 from agent_arborist.tree.spec_parser import parse_spec
 from agent_arborist.worker.garden import garden as garden_fn, find_next_task
 from agent_arborist.worker.gardener import gardener
@@ -31,7 +31,7 @@ class _MockRunner:
         self.name = "mock"
         self.model = "mock-model"
 
-    def run(self, prompt, timeout=60, cwd=None, container_cmd_prefix=None):
+    def run(self, prompt, timeout=60, cwd=None, container_workspace=None):
         if "review" in prompt.lower():
             ok = self.review_ok
             return RunResult(success=ok, output="APPROVED" if ok else "REJECTED")
@@ -495,10 +495,312 @@ def _small_tree() -> TaskTree:
 
 def _two_task_tree() -> TaskTree:
     """Single phase, two tasks with dependency T001 → T002."""
-    from agent_arborist.tree.model import TaskNode
     tree = TaskTree(spec_id="test", namespace="feature")
     tree.nodes["phase1"] = TaskNode(id="phase1", name="Phase 1", children=["T001", "T002"])
     tree.nodes["T001"] = TaskNode(id="T001", name="Create files", parent="phase1", description="Create initial files")
     tree.nodes["T002"] = TaskNode(id="T002", name="Add tests", parent="phase1", depends_on=["T001"], description="Add test files")
     tree.compute_execution_order()
     return tree
+
+
+# ---------------------------------------------------------------------------
+# 8. Test Commands E2E — per-node tests, trailers, parsing, phase gating
+# ---------------------------------------------------------------------------
+
+class TestTestCommandsE2E:
+    """End-to-end tests for first-class test commands through the full pipeline."""
+
+    def test_per_node_test_command_runs_and_trailers_recorded(self, git_repo):
+        """Leaf with test_commands=[unit pytest] → trailers include type/counts/runtime."""
+        tree = TaskTree(spec_id="test", namespace="feature")
+        tree.nodes["phase1"] = TaskNode(id="phase1", name="Phase 1", children=["T001"])
+        tree.nodes["T001"] = TaskNode(
+            id="T001", name="Create files", parent="phase1",
+            description="Create initial files",
+            test_commands=[TestCommand(
+                type=TestType.UNIT,
+                command="echo '5 passed, 1 failed in 0.42s'; exit 0",
+                framework="pytest",
+            )],
+        )
+        tree.compute_execution_order()
+
+        runner = _MockRunner(implement_ok=True, review_ok=True)
+        result = garden_fn(tree, git_repo, runner, base_branch="main")
+        assert result.success
+
+        # Check trailers on test commit
+        branch = tree.branch_name("T001")
+        log_output = git_log(branch, "%B", git_repo, n=20, grep="tests pass")
+        assert "Arborist-Test-Type: unit" in log_output
+        assert "Arborist-Test-Passed: 5" in log_output
+        assert "Arborist-Test-Failed: 1" in log_output
+        assert "Arborist-Test-Runtime:" in log_output
+
+    def test_global_fallback_when_no_test_commands(self, git_repo):
+        """Node without test_commands falls back to global test_command."""
+        tree = TaskTree(spec_id="test", namespace="feature")
+        tree.nodes["phase1"] = TaskNode(id="phase1", name="Phase 1", children=["T001"])
+        tree.nodes["T001"] = TaskNode(
+            id="T001", name="Create files", parent="phase1",
+            description="Create initial files",
+            # No test_commands — should use global
+        )
+        tree.compute_execution_order()
+
+        runner = _MockRunner(implement_ok=True, review_ok=True)
+        result = garden_fn(
+            tree, git_repo, runner,
+            test_command="echo 'all good'; exit 0",
+            base_branch="main",
+        )
+        assert result.success
+
+        branch = tree.branch_name("T001")
+        log_output = git_log(branch, "%B", git_repo, n=20, grep="tests pass")
+        # Fallback should still emit test type trailer as "unit"
+        assert "Arborist-Test-Type: unit" in log_output
+
+    def test_test_command_failure_triggers_retry(self, git_repo):
+        """Per-node test command that fails first → retry → then passes."""
+        counter_file = git_repo / ".test-counter"
+        counter_file.write_text("0")
+
+        tree = TaskTree(spec_id="test", namespace="feature")
+        tree.nodes["phase1"] = TaskNode(id="phase1", name="Phase 1", children=["T001"])
+        tree.nodes["T001"] = TaskNode(
+            id="T001", name="Flaky task", parent="phase1",
+            description="Task with flaky test",
+            test_commands=[TestCommand(
+                type=TestType.UNIT,
+                command=f'c=$(cat {counter_file}); echo $((c+1)) > {counter_file}; [ "$c" -gt "0" ]',
+            )],
+        )
+        tree.compute_execution_order()
+
+        runner = _MockRunner(implement_ok=True, review_ok=True)
+        result = garden_fn(tree, git_repo, runner, max_retries=3, base_branch="main")
+        assert result.success
+
+        # Should have at least 2 implement prompts (initial + retry)
+        branch = tree.branch_name("T001")
+        log_output = git_log(branch, "%s", git_repo, n=30)
+        subjects = [s.strip() for s in log_output.strip().split("\n") if s.strip()]
+        impl_commits = [s for s in subjects if "implement" in s]
+        assert len(impl_commits) >= 2, f"Expected retry, got commits: {subjects}"
+
+    def test_multiple_test_commands_on_one_node(self, git_repo):
+        """Node with two test commands — both must pass."""
+        tree = TaskTree(spec_id="test", namespace="feature")
+        tree.nodes["phase1"] = TaskNode(id="phase1", name="Phase 1", children=["T001"])
+        tree.nodes["T001"] = TaskNode(
+            id="T001", name="Multi-test task", parent="phase1",
+            description="Task with multiple test commands",
+            test_commands=[
+                TestCommand(type=TestType.UNIT, command="echo 'unit ok'; exit 0"),
+                TestCommand(type=TestType.INTEGRATION, command="echo 'integration ok'; exit 0"),
+            ],
+        )
+        tree.compute_execution_order()
+
+        runner = _MockRunner(implement_ok=True, review_ok=True)
+        result = garden_fn(tree, git_repo, runner, base_branch="main")
+        assert result.success
+
+    def test_multiple_test_commands_one_fails(self, git_repo):
+        """If any test command in the list fails, the whole test step fails."""
+        tree = TaskTree(spec_id="test", namespace="feature")
+        tree.nodes["phase1"] = TaskNode(id="phase1", name="Phase 1", children=["T001"])
+        tree.nodes["T001"] = TaskNode(
+            id="T001", name="Partial fail", parent="phase1",
+            description="First test passes, second fails",
+            test_commands=[
+                TestCommand(type=TestType.UNIT, command="exit 0"),
+                TestCommand(type=TestType.INTEGRATION, command="exit 1"),
+            ],
+        )
+        tree.compute_execution_order()
+
+        runner = _MockRunner(implement_ok=True, review_ok=True)
+        result = garden_fn(tree, git_repo, runner, max_retries=1, base_branch="main")
+        assert not result.success
+        assert "failed after 1 retries" in result.error
+
+    def test_phase_gating_blocks_merge_on_integration_failure(self, git_repo):
+        """Parent node integration test fails → phase does NOT merge to base."""
+        tree = TaskTree(spec_id="test", namespace="feature")
+        tree.nodes["phase1"] = TaskNode(
+            id="phase1", name="Phase 1", children=["T001"],
+            test_commands=[TestCommand(
+                type=TestType.INTEGRATION,
+                command="echo 'integration FAIL'; exit 1",
+            )],
+        )
+        tree.nodes["T001"] = TaskNode(
+            id="T001", name="Leaf task", parent="phase1",
+            description="Simple leaf",
+        )
+        tree.compute_execution_order()
+
+        runner = _MockRunner(implement_ok=True, review_ok=True)
+        result = garden_fn(tree, git_repo, runner, base_branch="main")
+
+        assert not result.success
+        assert "Phase test failed" in result.error
+
+        # Main should NOT have a merge commit
+        main_log = git_log("main", "%s", git_repo, n=5)
+        assert "merge" not in main_log.lower()
+
+    def test_phase_gating_passes_allows_merge(self, git_repo):
+        """Parent node integration test passes → phase merges to base."""
+        tree = TaskTree(spec_id="test", namespace="feature")
+        tree.nodes["phase1"] = TaskNode(
+            id="phase1", name="Phase 1", children=["T001"],
+            test_commands=[TestCommand(
+                type=TestType.INTEGRATION,
+                command="echo 'integration OK'; exit 0",
+            )],
+        )
+        tree.nodes["T001"] = TaskNode(
+            id="T001", name="Leaf task", parent="phase1",
+            description="Simple leaf",
+        )
+        tree.compute_execution_order()
+
+        runner = _MockRunner(implement_ok=True, review_ok=True)
+        result = garden_fn(tree, git_repo, runner, base_branch="main")
+        assert result.success
+
+        main_log = git_log("main", "%s", git_repo, n=5)
+        assert "merge" in main_log.lower()
+
+    def test_phase_gating_only_runs_integration_e2e_not_unit(self, git_repo):
+        """Parent with unit test_commands should NOT gate the merge."""
+        tree = TaskTree(spec_id="test", namespace="feature")
+        tree.nodes["phase1"] = TaskNode(
+            id="phase1", name="Phase 1", children=["T001"],
+            test_commands=[TestCommand(
+                type=TestType.UNIT,
+                command="exit 1",  # Would fail, but should be skipped for phase gating
+            )],
+        )
+        tree.nodes["T001"] = TaskNode(
+            id="T001", name="Leaf task", parent="phase1",
+            description="Simple leaf",
+        )
+        tree.compute_execution_order()
+
+        runner = _MockRunner(implement_ok=True, review_ok=True)
+        result = garden_fn(tree, git_repo, runner, base_branch="main")
+        assert result.success
+
+        main_log = git_log("main", "%s", git_repo, n=5)
+        assert "merge" in main_log.lower()
+
+    def test_gardener_full_loop_with_test_commands(self, git_repo):
+        """Full gardener loop: two tasks with per-node tests + phase integration test."""
+        tree = TaskTree(spec_id="test", namespace="feature")
+        tree.nodes["phase1"] = TaskNode(
+            id="phase1", name="Phase 1", children=["T001", "T002"],
+            test_commands=[TestCommand(
+                type=TestType.INTEGRATION,
+                command="echo 'integration ok'; exit 0",
+            )],
+        )
+        tree.nodes["T001"] = TaskNode(
+            id="T001", name="Create API", parent="phase1",
+            description="Build the API",
+            test_commands=[TestCommand(
+                type=TestType.UNIT,
+                command="echo '3 passed in 0.1s'; exit 0",
+                framework="pytest",
+            )],
+        )
+        tree.nodes["T002"] = TaskNode(
+            id="T002", name="Add auth", parent="phase1",
+            depends_on=["T001"],
+            description="Add authentication",
+            test_commands=[TestCommand(
+                type=TestType.UNIT,
+                command="echo '2 passed in 0.2s'; exit 0",
+                framework="pytest",
+            )],
+        )
+        tree.compute_execution_order()
+
+        runner = _MockRunner(implement_ok=True, review_ok=True)
+        result = gardener(tree, git_repo, runner, base_branch="main")
+
+        assert result.success
+        assert result.tasks_completed == 2
+        assert result.order == ["T001", "T002"]
+
+        # Both tasks complete
+        completed = scan_completed_tasks(tree, git_repo)
+        assert completed == {"T001", "T002"}
+
+        # Phase merged to main (integration test passed)
+        main_log = git_log("main", "%s", git_repo, n=5)
+        assert "merge" in main_log.lower()
+
+        # Verify test trailers on the phase branch
+        branch = tree.branch_name("T001")
+        t001_log = git_log(branch, "%B", git_repo, n=30, grep="tests pass.*Create API")
+        # At minimum, some test trailer should be present
+        full_log = git_log(branch, "%B", git_repo, n=30, grep="tests pass")
+        assert "Arborist-Test-Type: unit" in full_log
+        assert "Arborist-Test-Passed:" in full_log
+
+    def test_task_tree_json_roundtrip_with_test_commands(self):
+        """task-tree.json with test_commands survives serialization."""
+        tree = TaskTree(spec_id="test", namespace="feature")
+        tree.nodes["phase1"] = TaskNode(
+            id="phase1", name="Phase 1", children=["T001"],
+            test_commands=[TestCommand(type=TestType.INTEGRATION, command="pytest tests/integration/")],
+        )
+        tree.nodes["T001"] = TaskNode(
+            id="T001", name="Task", parent="phase1",
+            test_commands=[
+                TestCommand(type=TestType.UNIT, command="pytest -x", framework="pytest", timeout=60),
+            ],
+        )
+        tree.compute_execution_order()
+
+        # Serialize → deserialize
+        data = json.dumps(tree.to_dict(), indent=2)
+        restored = TaskTree.from_dict(json.loads(data))
+
+        assert len(restored.nodes["T001"].test_commands) == 1
+        tc = restored.nodes["T001"].test_commands[0]
+        assert tc.type == TestType.UNIT
+        assert tc.command == "pytest -x"
+        assert tc.framework == "pytest"
+        assert tc.timeout == 60
+
+        assert len(restored.nodes["phase1"].test_commands) == 1
+        ptc = restored.nodes["phase1"].test_commands[0]
+        assert ptc.type == TestType.INTEGRATION
+
+    def test_test_timeout_from_config_used(self, git_repo):
+        """test_timeout parameter is used when per-command timeout is not set."""
+        tree = TaskTree(spec_id="test", namespace="feature")
+        tree.nodes["phase1"] = TaskNode(id="phase1", name="Phase 1", children=["T001"])
+        tree.nodes["T001"] = TaskNode(
+            id="T001", name="Slow test", parent="phase1",
+            description="Task with slow test",
+            test_commands=[TestCommand(
+                type=TestType.UNIT,
+                command="sleep 10",
+                # No per-command timeout — should use test_timeout param
+            )],
+        )
+        tree.compute_execution_order()
+
+        runner = _MockRunner(implement_ok=True, review_ok=True)
+        result = garden_fn(
+            tree, git_repo, runner,
+            max_retries=1, base_branch="main",
+            test_timeout=1,  # 1 second timeout
+        )
+        assert not result.success  # sleep 10 > 1s timeout

@@ -28,7 +28,7 @@ from agent_arborist.git.repo import (
 from agent_arborist.git.state import get_task_trailers, scan_completed_tasks
 from agent_arborist.runner import get_runner
 from agent_arborist.tree.ai_planner import plan_tree
-from agent_arborist.tree.model import TaskNode, TaskTree
+from agent_arborist.tree.model import TaskNode, TaskTree, TestCommand, TestType
 from agent_arborist.worker.garden import garden
 from agent_arborist.worker.gardener import gardener
 
@@ -223,3 +223,88 @@ def test_ai_gardener_merges_phase_to_base(git_repo, runner_type, model, cli_bina
     # File changes from the phase branch are now on main
     numstat = _run(["diff", "--numstat", "HEAD~1", "HEAD"], git_repo)
     assert len(numstat.strip()) > 0, "Merge commit should bring file changes to main"
+
+
+# ---------------------------------------------------------------------------
+# 4. Per-node test commands with real AI: verify trailers + phase gating
+# ---------------------------------------------------------------------------
+
+def _tree_with_test_commands() -> TaskTree:
+    """Single phase, one task with a per-node unit test command."""
+    tree = TaskTree(spec_id="hello", namespace="feature")
+    tree.nodes["phase1"] = TaskNode(
+        id="phase1", name="Setup", children=["T001"],
+        test_commands=[TestCommand(
+            type=TestType.INTEGRATION,
+            command="echo 'integration suite ok'; exit 0",
+        )],
+    )
+    tree.nodes["T001"] = TaskNode(
+        id="T001", name="Create project structure", parent="phase1",
+        description="Create a file called 'hello.txt' containing 'hello world'.",
+        test_commands=[TestCommand(
+            type=TestType.UNIT,
+            command="echo '1 passed in 0.01s'; exit 0",
+            framework="pytest",
+        )],
+    )
+    return tree
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("runner_type,model,cli_binary", RUNNER_CONFIGS)
+def test_ai_garden_with_test_commands_and_trailers(git_repo, runner_type, model, cli_binary):
+    """Real AI implements a task; per-node test command runs; trailers include test metadata."""
+    _skip_if_missing(cli_binary)
+
+    tree = _tree_with_test_commands()
+    _setup_repo_with_tree(git_repo, tree)
+
+    runner = get_runner(runner_type, model)
+    result = garden(tree, git_repo, runner, base_branch="main")
+
+    assert result.success, f"garden() failed: {result.error}"
+    assert result.task_id == "T001"
+
+    # Phase branch exists
+    assert git_branch_exists("feature/hello/phase1", git_repo)
+
+    # Test trailers recorded
+    log = git_log("feature/hello/phase1", "%B", git_repo, n=30, grep="tests pass")
+    assert "Arborist-Test-Type: unit" in log
+    assert "Arborist-Test-Passed: 1" in log
+    assert "Arborist-Test-Runtime:" in log
+
+    # Phase integration test passed → merged to main
+    main_log = git_log("main", "%s", git_repo, n=5)
+    assert "merge" in main_log.lower()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("runner_type,model,cli_binary", RUNNER_CONFIGS)
+def test_ai_garden_phase_gating_blocks_on_failure(git_repo, runner_type, model, cli_binary):
+    """Real AI implements; phase integration test fails; merge blocked."""
+    _skip_if_missing(cli_binary)
+
+    tree = TaskTree(spec_id="hello", namespace="feature")
+    tree.nodes["phase1"] = TaskNode(
+        id="phase1", name="Setup", children=["T001"],
+        test_commands=[TestCommand(
+            type=TestType.INTEGRATION,
+            command="echo 'INTEGRATION FAILED'; exit 1",
+        )],
+    )
+    tree.nodes["T001"] = TaskNode(
+        id="T001", name="Create project structure", parent="phase1",
+        description="Create a file called 'hello.txt' containing 'hello world'.",
+    )
+    _setup_repo_with_tree(git_repo, tree)
+
+    runner = get_runner(runner_type, model)
+    result = garden(tree, git_repo, runner, base_branch="main")
+
+    assert not result.success
+    assert "Phase test failed" in result.error
+
+    main_log = git_log("main", "%s", git_repo, n=5)
+    assert "merge" not in main_log.lower()

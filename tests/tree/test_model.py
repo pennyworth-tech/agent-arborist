@@ -2,7 +2,7 @@
 
 import json
 
-from agent_arborist.tree.model import TaskNode, TaskTree
+from agent_arborist.tree.model import TaskNode, TaskTree, TestCommand, TestType
 
 
 def _make_tree():
@@ -169,3 +169,58 @@ def test_to_dict_and_from_dict_roundtrip():
     assert restored.nodes["T002"].depends_on == ["T001"]
     assert restored.execution_order == ["T001", "T002"]
     assert restored.branch_name("T001") == tree.branch_name("T001")
+
+
+# --- TestCommand / TestType tests ---
+
+
+def test_test_command_round_trip():
+    tc = TestCommand(type=TestType.UNIT, command="pytest -x", framework="pytest", timeout=60)
+    d = tc.to_dict()
+    assert d == {"type": "unit", "command": "pytest -x", "framework": "pytest", "timeout": 60}
+    restored = TestCommand.from_dict(d)
+    assert restored.type == TestType.UNIT
+    assert restored.command == "pytest -x"
+    assert restored.framework == "pytest"
+    assert restored.timeout == 60
+
+
+def test_test_command_minimal_round_trip():
+    tc = TestCommand(type=TestType.E2E, command="npm run e2e")
+    d = tc.to_dict()
+    assert "framework" not in d
+    assert "timeout" not in d
+    restored = TestCommand.from_dict(d)
+    assert restored.framework is None
+    assert restored.timeout is None
+
+
+def test_task_node_with_test_commands_serializes():
+    tree = TaskTree(spec_id="test")
+    tree.nodes["T001"] = TaskNode(
+        id="T001", name="Test task",
+        test_commands=[
+            TestCommand(type=TestType.UNIT, command="pytest -x", framework="pytest"),
+            TestCommand(type=TestType.INTEGRATION, command="pytest tests/integration/"),
+        ],
+    )
+    data = tree.to_dict()
+    tcs = data["nodes"]["T001"]["test_commands"]
+    assert len(tcs) == 2
+    assert tcs[0]["type"] == "unit"
+    assert tcs[1]["type"] == "integration"
+
+    restored = TaskTree.from_dict(data)
+    assert len(restored.nodes["T001"].test_commands) == 2
+    assert restored.nodes["T001"].test_commands[0].type == TestType.UNIT
+
+
+def test_from_dict_missing_test_commands_defaults_empty():
+    data = {
+        "spec_id": "test",
+        "nodes": {
+            "T001": {"id": "T001", "name": "Old task"},
+        },
+    }
+    tree = TaskTree.from_dict(data)
+    assert tree.nodes["T001"].test_commands == []

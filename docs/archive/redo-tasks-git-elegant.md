@@ -1,7 +1,15 @@
 # Complete Redo: Git-Elegant Architecture — Task Plan
 
 **Branch**: `feature/complete-redo-phase1`
-**Strategy**: Start fresh on a new branch. Gut the existing `src/agent_arborist/` and rebuild from scratch using jj-native primitives. Keep `docs/` and `tests/fixtures/` for reference. All existing Dagu, worktree, and sequential-git code is discarded.
+**Strategy**: Start fresh on a new branch. Gut the existing `src/agent_arborist/` and rebuild from scratch using Git-native primitives. Keep `docs/` and `tests/fixtures/` for reference. All existing Dagu, worktree, and sequential-git code is discarded.
+
+**⚠️ ARCHITECTURAL UPDATE (Phase 1 Complete)**:
+**jj (Jujutsu) has been removed entirely.** The implementation is now 100% Git-native:
+- All `jj/` modules replaced with `git/` modules using subprocess wrappers
+- Git branches instead of jj bookmarks for task tracking
+- `git log --grep` and trailer parsing instead of jj revsets
+- Simplified dependency chain (no jj installation required)
+- Direct GitHub/GitLab compatibility
 
 ---
 
@@ -9,19 +17,27 @@
 
 | Phase | Scope | Status |
 |:------|:------|:-------|
-| **Phase 1** | jj-native single-worker, tree builder, protocol commits | **Active** |
-| **Phase 2** | Devcontainer support, hooks system | Future |
+| **Phase 1** | Git-native single-worker, tree builder, protocol commits | **Complete** ✅ |
+| **Phase 2.0** | First-class test commands, per-node tests, output parsing, phase gating | **Complete** ✅ |
+| **Phase 2.1** | Devcontainer support (detection, CLI wrapper, runtime wiring) | **Complete** ✅ |
+| **Phase 2.2–2.3** | Hooks system, custom protocol steps | Future |
 | **Phase 3** | Parallel workers, locking, distributed coordination | Future |
 
 ---
 
-## Phase 1: jj-Native Single Worker
+## Phase 1: Git-Native Single Worker ✅ (COMPLETE)
 
-The goal is a minimal, working system where:
+**The goal was a minimal, working system where:**
 - A **spec directory** (markdown) is parsed into a hierarchical task tree
-- The tree is materialized as **jj bookmarks** (branches) in a target repo
+- The tree is materialized as **Git branches** (per phase) in a target repo
 - A **single worker loop** pops the next ready task, runs implement → test → review, and merges completed leaves upward
-- All state lives in jj changes/bookmarks — no sidecar DB, no YAML DAGs, no Dagu
+- All state lives in Git commits/trailers — no sidecar DB, no YAML DAGs, no Dagu, no jj
+
+**✅ IMPLEMENTED AS:**
+- Phase branches (`feature/{spec-id}/{phase}`) instead of per-task bookmarks
+- Git trailers in commit messages track task state through protocol steps
+- Single-worker gardener loop sequentially processes ready tasks
+- State recovery via `git log --grep` and trailer parsing
 
 ### Testing Strategy: RED → GREEN
 
@@ -49,15 +65,15 @@ Every module follows strict RED/GREEN TDD:
 - `tests/fixtures/expected-calculator-tree.json` — golden-file: expected `TaskTree` from parsing `tasks-calculator.md`
 - `tests/fixtures/mock-runner-responses.json` — canned implement/test/review responses for mock runner
 
-**jj Test Helper** (`tests/conftest.py`):
+**Git Test Helper** (`tests/conftest.py`):
 
 > **CRITICAL: Test Repo Isolation**
 >
 > Tests MUST NEVER run against the agent-arborist project repo. Every test that
-> touches git or jj creates a **completely separate, disposable repository** under
+> touches git creates a **completely separate, disposable repository** under
 > `/tmp` via pytest's `tmp_path`. No test should `os.chdir()` into or operate on
-> the working tree at `/Users/.../agent-arborist`. The `jj_repo` fixture enforces
-> this — all jj/git wrapper calls receive an explicit `cwd=tmp_path` argument.
+> the working tree at `/Users/.../agent-arborist`. The `git_repo` fixture enforces
+> this — all git wrapper calls receive an explicit `cwd=tmp_path` argument.
 > Any function that defaults `cwd` to the current directory is a bug.
 
 ```python
@@ -74,26 +90,24 @@ PROJECT_ROOT = Path(__file__).parent.parent
 def _guard_project_repo(tmp_path, monkeypatch):
     """Prevent tests from accidentally modifying the project repo.
 
-    Sets CWD to tmp_path for every test. Any jj/git operation that omits
+    Sets CWD to tmp_path for every test. Any git operation that omits
     the cwd argument will hit the temp dir, not the project.
     """
     monkeypatch.chdir(tmp_path)
 
 @pytest.fixture
-def jj_repo(tmp_path):
-    """Create a fresh git+jj colocated repo in an isolated temp directory.
+def git_repo(tmp_path):
+    """Create a fresh git repo in an isolated temp directory.
 
     - Lives under /tmp (pytest tmp_path) — completely separate from project repo
-    - Initializes both git and jj so colocated operations work
+    - Initializes git only (no jj dependency)
     - Sets dummy git identity for commits
-    - All downstream code MUST pass cwd=jj_repo to every jj/git call
+    - All downstream code MUST pass cwd=git_repo to every git call
     """
     repo_dir = tmp_path / "test-repo"
     repo_dir.mkdir()
     subprocess.run(["git", "init", str(repo_dir)], check=True,
                    capture_output=True)
-    subprocess.run(["jj", "git", "init", "--colocate"], cwd=repo_dir,
-                   check=True, capture_output=True)
     subprocess.run(["git", "config", "user.email", "test@test.com"],
                    cwd=repo_dir, check=True, capture_output=True)
     subprocess.run(["git", "config", "user.name", "Test"],
@@ -102,17 +116,6 @@ def jj_repo(tmp_path):
     assert str(repo_dir) != str(PROJECT_ROOT)
     assert not (repo_dir / "pyproject.toml").exists()
     return repo_dir
-
-@pytest.fixture
-def jj_repo_with_bookmarks(jj_repo):
-    """jj repo pre-populated with a hello-world bookmark tree.
-
-    Parses tests/fixtures/tasks-hello-world.md and materializes the full
-    bookmark hierarchy into the ISOLATED jj_repo (not the project repo).
-    """
-    tree = parse_spec(FIXTURES / "tasks-hello-world.md", spec_id="hello-world")
-    materialize(tree, cwd=jj_repo)
-    return jj_repo, tree
 
 @pytest.fixture
 def mock_runner_all_pass():
@@ -140,118 +143,66 @@ def mock_runner_always_reject():
 
 ---
 
-### 1.0 — Project Skeleton & jj Primitives
+### 1.0 — Project Skeleton & Git Primitives ✅
 
-#### T1.0.1 — Scaffold new package structure
+#### T1.0.1 — Scaffold new package structure ✅
 Strip `src/agent_arborist/` to a clean skeleton:
 ```
 src/agent_arborist/
 ├── __init__.py
-├── cli.py            # Click CLI (minimal: build, run, status)
+├── cli.py            # Click CLI (build, garden, gardener, status, init)
 ├── config.py         # Simplified config (runner, model, timeouts)
 ├── runner.py         # Keep runner abstraction (Claude, OpenCode, Gemini)
-├── jj/
+├── git/
 │   ├── __init__.py
-│   ├── repo.py       # jj repo wrapper (init, log, bookmark ops)
-│   ├── state.py      # Read task state from jj log/trailers
-│   └── changes.py    # Create/describe/new changes
+│   ├── repo.py       # Git repo wrapper (init, log, branch ops)
+│   └── state.py      # Read task state from git log/trailers
 ├── tree/
 │   ├── __init__.py
 │   ├── spec_parser.py  # Parse spec/ markdown → TaskTree
 │   ├── model.py        # TaskTree, TaskNode dataclasses
-│   └── materializer.py # TaskTree → jj bookmarks
+│   └── ai_planner.py   # AI-assisted task tree generation
 ├── worker/
 │   ├── __init__.py
-│   ├── controller.py   # The "Gardener" control loop
-│   ├── protocol.py     # Protocol commit state machine
-│   └── steps.py        # implement/test/review step execution
+│   ├── garden.py       # Single task executor (implement → test → review)
+│   └── gardener.py     # The "Gardener" control loop
 └── constants.py
 ```
 
-**Test**: Import succeeds, `arborist --help` shows `build`, `run`, `status` commands. (No RED/GREEN — this is scaffolding.)
+✅ **COMPLETED**: All modules implemented. `arborist --help` shows `init`, `build`, `garden`, `gardener`, `status` commands.
 
-#### T1.0.2 — jj repo wrapper (`jj/repo.py`)
-Thin subprocess wrapper around jj CLI:
-- `jj_init(path)` — init or colocate a repo
-- `jj_log(revset, template)` — query log with revsets
-- `jj_bookmark_create(name, revision)` — create bookmark
-- `jj_bookmark_list(pattern)` — list bookmarks matching glob
-- `jj_bookmark_delete(name)` — delete bookmark
-- `jj_new(parents, message)` — create new change
-- `jj_describe(revision, message)` — set change description
-- `jj_edit(revision)` — switch working copy
-- `jj_diff(revision)` — show diff
-- `jj_squash(from_rev, into_rev)` — squash changes
+#### T1.0.2 — Git repo wrapper (`git/repo.py`) ✅
+Thin subprocess wrapper around Git CLI:
+- `git_init(path)` — init a git repo
+- `git_log(branch, fmt, cwd)` — query log with grep
+- `git_checkout(branch, cwd, create)` — checkout/create branch
+- `git_current_branch(cwd)` — get current branch name
+- `git_commit(message, cwd)` — commit with message
+- `git_merge(branch, cwd)` — merge branch
+- `git_diff(ref1, ref2, cwd)` — show diff
+- `git_branch_exists(branch, cwd)` — check if branch exists
+- `git_toplevel(cwd)` — get repo root
 
 All functions take a **required** `cwd` parameter — never default to the current directory. This prevents accidental operations against the project repo during tests.
 
-**RED** (`tests/jj/test_repo.py`):
-```python
-def test_init_creates_jj_repo(tmp_path):
-    """Start from bare temp dir, init git + jj colocated."""
-    repo = tmp_path / "fresh-repo"
-    repo.mkdir()
-    subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
-    jj_init(cwd=repo)  # should run jj git init --colocate
-    assert (repo / ".jj").exists()
-    assert (repo / ".git").exists()
+✅ **COMPLETED**: `git/repo.py` implemented with all necessary Git primitives. Tests in `tests/git/test_repo.py` pass.
 
-def test_bookmark_roundtrip(jj_repo):
-    jj_new(message="initial", cwd=jj_repo)
-    jj_bookmark_create("feature/test", cwd=jj_repo)
-    bookmarks = jj_bookmark_list("feature/*", cwd=jj_repo)
-    assert "feature/test" in bookmarks
+#### T1.0.3 — Git state reader (`git/state.py`) ✅
+Parse Git commit trailers to extract protocol state:
+- `get_task_trailers(branch, task_id, cwd)` → dict of all `Arborist-*` trailers from git log
+- `task_state_from_trailers(trailers)` → `TaskState` enum (`pending | implementing | testing | reviewing | complete | failed`)
+- `is_task_complete(branch, task_id, cwd)` → bool
+- `scan_completed_tasks(tree, cwd)` → set of completed task IDs
 
-def test_log_with_template(jj_repo):
-    jj_new(message="hello\n\nArborist-Step: implement", cwd=jj_repo)
-    result = jj_log(revset="@", template="description", cwd=jj_repo)
-    assert "Arborist-Step: implement" in result
-```
-**GREEN**: Implement `jj/repo.py` subprocess wrappers until all pass.
+Uses `git log --grep` with trailer parsing to extract state efficiently.
 
-#### T1.0.3 — jj state reader (`jj/state.py`)
-Parse jj commit descriptions to extract protocol state:
-- `get_task_state(bookmark_name, cwd)` → `TaskState` enum (`pending | implementing | testing | reviewing | complete | failed`)
-- `get_last_step(bookmark_name, cwd)` → last `Arborist-Step` trailer value
-- `get_trailers(revision, cwd)` → dict of all `Arborist-*` trailers
-- `is_task_ready(bookmark_name, cwd)` → bool (all child bookmarks merged)
-
-Uses jj log with custom templates to extract trailers efficiently.
-
-**RED** (`tests/jj/test_state.py`):
-```python
-def test_get_task_state_pending(jj_repo):
-    """A bookmark with 'Arborist-Step: pending' trailer → TaskState.PENDING"""
-    # set up bookmark with pending trailer
-    state = get_task_state("feature/test/T001", cwd=jj_repo)
-    assert state == TaskState.PENDING
-
-def test_get_task_state_after_implement(jj_repo):
-    """After implement commit → TaskState.IMPLEMENTING"""
-    # add implement trailer
-    state = get_task_state("feature/test/T001", cwd=jj_repo)
-    assert state == TaskState.IMPLEMENTING
-
-def test_get_trailers_parses_all(jj_repo):
-    trailers = get_trailers("@", cwd=jj_repo)
-    assert trailers["Arborist-Step"] == "implement"
-    assert trailers["Arborist-Agent"] == "claude-sonnet"
-
-def test_is_task_ready_no_children(jj_repo):
-    """Leaf task with no deps and pending state → ready"""
-    assert is_task_ready("feature/test/T001", cwd=jj_repo) is True
-
-def test_is_task_ready_blocked_by_dep(jj_repo):
-    """Task with incomplete dependency → not ready"""
-    assert is_task_ready("feature/test/T002", cwd=jj_repo) is False
-```
-**GREEN**: Implement `jj/state.py` parsing logic.
+✅ **COMPLETED**: `git/state.py` implements all state reading functions. Tests in `tests/git/test_state.py` pass.
 
 ---
 
-### 1.1 — Tree Builder (spec → jj bookmarks)
+### 1.1 — Tree Builder (spec → task-tree.json) ✅
 
-#### T1.1.1 — Spec parser (`tree/spec_parser.py`)
+#### T1.1.1 — Spec parser (`tree/spec_parser.py`) ✅
 Parse the spec directory markdown into a `TaskTree`:
 - Read all `.md` files from `spec/` directory
 - Extract hierarchical task structure (phases → tasks)
@@ -307,9 +258,9 @@ def test_parse_all_fixtures_no_crash():
         tree = parse_spec(f, spec_id=f.stem)
         assert len(tree.nodes) > 0
 ```
-**GREEN**: Implement `tree/spec_parser.py`.
+✅ **COMPLETED**: `tree/spec_parser.py` implements all parsing logic. Tests in `tests/tree/test_spec_parser.py` pass.
 
-#### T1.1.2 — Task tree model (`tree/model.py`)
+#### T1.1.2 — Task tree model (`tree/model.py`) ✅
 Dataclasses for the task hierarchy:
 ```python
 @dataclass
@@ -356,10 +307,10 @@ def test_bookmark_name_hierarchy():
     assert tree.bookmark_name("T001") == "feature/001-auth/phase1/T001"
     assert tree.bookmark_name("phase1") == "feature/001-auth/phase1"
 ```
-**GREEN**: Implement `tree/model.py` dataclasses and methods.
+✅ **COMPLETED**: `tree/model.py` implements all dataclasses and methods. Tests in `tests/tree/test_model.py` pass.
 
-#### T1.1.3 — AI-assisted tree generation (`tree/ai_planner.py`)
-Use an LLM (via runner) to generate a TaskTree from a spec directory, similar to current `dag_generator.py`:
+#### T1.1.3 — AI-assisted tree generation (`tree/ai_planner.py`) ✅
+Use an LLM (via runner) to generate a TaskTree from a spec directory:
 - Read all markdown files from spec/
 - Prompt the LLM to produce a structured JSON task hierarchy
 - Parse JSON into `TaskTree`
@@ -367,78 +318,33 @@ Use an LLM (via runner) to generate a TaskTree from a spec directory, similar to
 
 This is the "smart" path — T1.1.1 is the deterministic fallback for pre-structured specs.
 
-**Test**: Mock the runner, verify JSON→TaskTree parsing and validation. Integration test with real LLM optional.
+✅ **COMPLETED**: `tree/ai_planner.py` implements LLM-based tree generation. Tests in `tests/tree/test_ai_planner.py` pass.
 
-#### T1.1.4 — Tree materializer (`tree/materializer.py`)
-Convert a `TaskTree` into jj bookmarks in the target repo:
-- For each node in the tree (BFS order):
-  - Create a jj change descending from the parent's bookmark (or trunk for roots)
-  - Set description with `Arborist-Step: pending` trailer
-  - Create bookmark: `{namespace}/{spec_id}/{path...}`
-- Result: a jj repo with a bookmark tree mirroring the task hierarchy
+#### T1.1.4 — ~~Tree materializer~~ **[REMOVED - Not Needed]**
+The original spec called for materializing a TaskTree into jj/bookmarks per task. The actual implementation uses:
 
-```
-trunk
-├── feature/001-auth/phase1           (bookmark)
-│   ├── feature/001-auth/phase1/T001  (bookmark, leaf)
-│   └── feature/001-auth/phase1/T002  (bookmark, leaf)
-└── feature/001-auth/phase2           (bookmark)
-    └── feature/001-auth/phase2/T003  (bookmark, leaf)
-```
+- **Phase branches** instead of per-task bookmarks (`feature/{spec-id}/{phase}`)
+- Task state tracked via **Git trailers** in commit history
+- Lazy branch creation when tasks execute (not upfront materialization)
 
-**RED** (`tests/tree/test_materializer.py` — uses `jj_repo` fixture + parsed hello-world):
-```python
-def test_materialize_creates_bookmarks(jj_repo):
-    tree = parse_spec(FIXTURES / "tasks-hello-world.md", spec_id="hello-world")
-    materialize(tree, cwd=jj_repo)
-    bookmarks = jj_bookmark_list("feature/hello-world/**", cwd=jj_repo)
-    # 3 phases + 6 tasks = 9 bookmarks
-    assert len(bookmarks) == 9
-    assert "feature/hello-world/phase1/T001" in bookmarks
+This simplifies the workflow and reduces branch proliferation.
 
-def test_materialize_sets_pending_trailers(jj_repo):
-    tree = parse_spec(FIXTURES / "tasks-hello-world.md", spec_id="hello-world")
-    materialize(tree, cwd=jj_repo)
-    state = get_task_state("feature/hello-world/phase1/T001", cwd=jj_repo)
-    assert state == TaskState.PENDING
-
-def test_materialize_parent_child_topology(jj_repo):
-    """Phase bookmark is ancestor of its task bookmarks in jj DAG."""
-    tree = parse_spec(FIXTURES / "tasks-hello-world.md", spec_id="hello-world")
-    materialize(tree, cwd=jj_repo)
-    # jj log with revset: T001 should be descendant of phase1
-    log = jj_log(
-        revset='ancestors(bookmarks("feature/hello-world/phase1/T001")) & bookmarks("feature/hello-world/phase1")',
-        template="bookmarks", cwd=jj_repo
-    )
-    assert "feature/hello-world/phase1" in log
-
-def test_materialize_calculator_complex(jj_repo):
-    """Calculator spec with 12 tasks materializes correctly."""
-    tree = parse_spec(FIXTURES / "tasks-calculator.md", spec_id="calculator")
-    materialize(tree, cwd=jj_repo)
-    bookmarks = jj_bookmark_list("feature/calculator/**", cwd=jj_repo)
-    assert len(bookmarks) == 16  # 4 phases + 12 tasks
-```
-**GREEN**: Implement `tree/materializer.py`.
-
-#### T1.1.5 — `arborist build` CLI command
+#### T1.1.5 — `arborist build` CLI command ✅
 Wire it all together:
 ```
-arborist build [--spec-dir ./spec] [--target-repo .] [--namespace feature] [--ai]
+arborist build [--spec-dir ./spec] [--namespace feature] [--no-ai] [--runner claude] [--model opus]
 ```
-1. Parse spec dir → TaskTree (deterministic or AI-assisted with `--ai`)
-2. Init/colocate jj in target repo
-3. Materialize tree as bookmarks
-4. Print summary: N tasks, M phases, bookmark tree
+1. Parse spec dir → TaskTree (deterministic or AI-assisted without `--no-ai`)
+2. Write `task-tree.json` to disk
+3. Print summary: N nodes, M leaves, execution order
 
-**Test**: End-to-end: create a temp dir with spec markdown, run `arborist build`, verify jj bookmarks in target.
+✅ **COMPLETED**: `build` command in `cli.py` implements spec parsing and tree JSON export. Integration tests pass.
 
 ---
 
-### 1.2 — Protocol Commit State Machine
+### 1.2 — Protocol Commit State Machine ✅
 
-#### T1.2.1 — Protocol definition (`worker/protocol.py`)
+#### T1.2.1 — Protocol definition ~~(`worker/protocol.py`)~~ **[IMPLICIT in garden.py]**
 Define the task lifecycle as a state machine:
 ```
 States: pending → implementing → testing → reviewing → complete
@@ -446,419 +352,724 @@ States: pending → implementing → testing → reviewing → complete
                       └─────── (review fail) ───┘
 ```
 
-- `next_step(current_state) → Step` — what to do next
-- `transition(current_state, result) → new_state` — apply result
-- `Step` enum: `IMPLEMENT`, `TEST`, `REVIEW`
-- Handle review failure → loop back to IMPLEMENT
+- Implicit state transitions in `garden()` via commit trailers
+- `git/state.py` provides `task_state_from_trailers()` function
+- Retry loop handles test failure → re-implement, review rejection → re-implement
 
-Each transition produces a commit with `Arborist-Step: <step>` and `Arborist-Status: <status>` trailers.
+Each transition produces a commit with `Arborist-Step: <step>` and `Arborist-Result/Review/Test` trailers.
 
-**RED** (`tests/worker/test_protocol.py` — pure logic, no jj needed):
-```python
-def test_next_step_from_pending():
-    assert next_step(TaskState.PENDING) == Step.IMPLEMENT
+✅ **COMPLETED**: Protocol state machine implemented implicitly in `worker/garden.py`. No separate `protocol.py` module needed.
 
-def test_next_step_from_implementing():
-    assert next_step(TaskState.IMPLEMENTING) == Step.TEST
+#### T1.2.2 — Step executors ~~(`worker/steps.py`)~~ **[INTEGRATED in garden.py]** ✅
+Execute each protocol step (integrated into `garden()`):
 
-def test_next_step_from_testing():
-    assert next_step(TaskState.TESTING) == Step.REVIEW
-
-def test_next_step_from_complete_is_none():
-    assert next_step(TaskState.COMPLETE) is None
-
-def test_transition_implement_success():
-    new = transition(TaskState.PENDING, StepResult(step=Step.IMPLEMENT, success=True))
-    assert new == TaskState.IMPLEMENTING
-
-def test_transition_test_pass():
-    new = transition(TaskState.IMPLEMENTING, StepResult(step=Step.TEST, success=True))
-    assert new == TaskState.TESTING
-
-def test_transition_review_approved():
-    new = transition(TaskState.TESTING, StepResult(step=Step.REVIEW, success=True))
-    assert new == TaskState.COMPLETE
-
-def test_transition_review_rejected_loops_back():
-    new = transition(TaskState.TESTING, StepResult(step=Step.REVIEW, success=False))
-    assert new == TaskState.PENDING  # back to implement
-
-def test_transition_test_fail_loops_back():
-    new = transition(TaskState.IMPLEMENTING, StepResult(step=Step.TEST, success=False))
-    assert new == TaskState.PENDING  # back to implement
-
-def test_full_happy_path():
-    """pending → implement → test → review → complete"""
-    state = TaskState.PENDING
-    for step, success in [(Step.IMPLEMENT, True), (Step.TEST, True), (Step.REVIEW, True)]:
-        state = transition(state, StepResult(step=step, success=success))
-    assert state == TaskState.COMPLETE
-
-def test_retry_path():
-    """pending → implement → test ✓ → review ✗ → implement → test ✓ → review ✓"""
-    state = TaskState.PENDING
-    results = [
-        (Step.IMPLEMENT, True), (Step.TEST, True), (Step.REVIEW, False),  # rejected
-        (Step.IMPLEMENT, True), (Step.TEST, True), (Step.REVIEW, True),   # approved
-    ]
-    for step, success in results:
-        state = transition(state, StepResult(step=step, success=success))
-    assert state == TaskState.COMPLETE
-```
-**GREEN**: Implement `worker/protocol.py` — pure state machine, no side effects.
-
-#### T1.2.2 — Step executors (`worker/steps.py`)
-Execute each protocol step:
-
-**implement(task, cwd, runner)**:
+**implement(task, cwd, implement_runner, log_dir)**:
 - Build prompt from task description + current repo state
 - Invoke runner (Claude/OpenCode/Gemini)
-- jj describe with `Arborist-Step: implement` trailer
+- Git commit with `Arborist-Step: implement` + `Arborist-Result` trailers
+- Write log file if log_dir provided
 - Return success/failure
 
-**test(task, cwd)**:
-- Auto-detect test command (pytest, npm test, etc.) or use configured command
-- Run tests
-- Create new change with `Arborist-Step: test` + `Arborist-Test-Result: pass/fail` trailers
-- Return test results
+**test(task, cwd, test_command, log_dir)**:
+- Run configured test command (subprocess)
+- Create git commit with `Arborist-Step: test` + `Arborist-Test` trailers
+- Write log file with test output on failure
+- Return test pass/fail
 
-**review(task, cwd, runner)**:
-- Build review prompt with diff of all task changes
+**review(task, cwd, review_runner, log_dir)**:
+- Build review prompt with git diff
 - Invoke runner for code review
-- Create change with `Arborist-Step: review` + `Arborist-Status: approved/rejected` trailers
-- Return approval/rejection + feedback
+- Create git commit with `Arborist-Step: review` + `Arborist-Review` trailers
+- Write log file with review feedback
+- Return approval/rejection
 
-**RED** (`tests/worker/test_steps.py` — uses `jj_repo_with_bookmarks` fixture + mock runner):
-```python
-def test_implement_creates_change_with_trailer(jj_repo_with_bookmarks, mock_runner):
-    repo, tree = jj_repo_with_bookmarks
-    task = tree.nodes["T001"]
-    result = implement(task, cwd=repo, runner=mock_runner)
-    assert result.success is True
-    state = get_task_state("feature/hello-world/phase1/T001", cwd=repo)
-    assert state == TaskState.IMPLEMENTING
-
-def test_test_step_records_pass(jj_repo_with_bookmarks):
-    repo, tree = jj_repo_with_bookmarks
-    # pre-condition: task already implemented
-    result = test_step(tree.nodes["T001"], cwd=repo, test_command="true")
-    trailers = get_trailers("@", cwd=repo)
-    assert trailers["Arborist-Test-Result"] == "pass"
-
-def test_test_step_records_fail(jj_repo_with_bookmarks):
-    repo, tree = jj_repo_with_bookmarks
-    result = test_step(tree.nodes["T001"], cwd=repo, test_command="false")
-    assert result.success is False
-    trailers = get_trailers("@", cwd=repo)
-    assert trailers["Arborist-Test-Result"] == "fail"
-
-def test_review_approved(jj_repo_with_bookmarks, mock_runner_approves):
-    repo, tree = jj_repo_with_bookmarks
-    result = review(tree.nodes["T001"], cwd=repo, runner=mock_runner_approves)
-    trailers = get_trailers("@", cwd=repo)
-    assert trailers["Arborist-Status"] == "approved"
-
-def test_review_rejected(jj_repo_with_bookmarks, mock_runner_rejects):
-    repo, tree = jj_repo_with_bookmarks
-    result = review(tree.nodes["T001"], cwd=repo, runner=mock_runner_rejects)
-    assert result.success is False
-    trailers = get_trailers("@", cwd=repo)
-    assert trailers["Arborist-Status"] == "rejected"
-```
-**GREEN**: Implement `worker/steps.py`.
+✅ **COMPLETED**: All step executors integrated in `worker/garden.py`. Tests in `tests/worker/test_garden.py` and integration tests verify correctness.
 
 ---
 
-### 1.3 — The Gardener Controller (Single Worker)
+### 1.3 — The Gardener Controller (Single Worker) ✅
 
-#### T1.3.1 — Task discovery & prioritization (`worker/controller.py`)
+#### T1.3.1 — Task discovery & prioritization (`worker/garden.py`) ✅
 The control loop's "eyes":
-- `discover_tasks(namespace, spec_id, cwd)` → list of active leaf bookmarks
-- `inspect_task(bookmark, cwd)` → current protocol state (from trailers)
-- `find_ready_task(cwd)` → first task that:
-  1. Is a leaf
-  2. All dependencies are `complete`
-  3. Is not already `complete`
-  4. Has the lowest priority/order among candidates
+- `scan_completed_tasks(tree, cwd)` → set of completed task IDs (from git trailers)
+- `find_next_task(tree, cwd)` → next ready task in execution order with satisfied deps
+- Task selection respects dependency graph and execution order (computed by `TaskTree.compute_execution_order()`)
 
-Uses jj revsets for efficient querying:
-```
-jj log -r "bookmarks(glob:'feature/spec-id/**')" --template "..."
-```
+✅ **COMPLETED**: Discovery and prioritization logic in `worker/garden.py`. Tests in `tests/worker/test_garden.py` verify correct task selection.
 
-**RED** (`tests/worker/test_controller.py` — uses `jj_repo_with_bookmarks`):
-```python
-def test_discover_finds_all_leaves(jj_repo_with_bookmarks):
-    repo, tree = jj_repo_with_bookmarks  # hello-world: 6 leaf tasks
-    tasks = discover_tasks("feature", "hello-world", cwd=repo)
-    assert len(tasks) == 6
-
-def test_find_ready_task_returns_first_unblocked(jj_repo_with_bookmarks):
-    repo, tree = jj_repo_with_bookmarks
-    task = find_ready_task(cwd=repo)
-    assert task.id == "T001"  # only T001 has no deps
-
-def test_find_ready_task_skips_completed(jj_repo_with_bookmarks):
-    repo, tree = jj_repo_with_bookmarks
-    # mark T001 complete
-    mark_complete("feature/hello-world/phase1/T001", cwd=repo)
-    task = find_ready_task(cwd=repo)
-    assert task.id == "T002"  # T002 depends on T001, now unblocked
-
-def test_find_ready_task_returns_none_when_all_done(jj_repo_with_bookmarks):
-    repo, tree = jj_repo_with_bookmarks
-    # mark all tasks complete
-    for node in tree.leaves():
-        mark_complete(tree.bookmark_name(node.id), cwd=repo)
-    assert find_ready_task(cwd=repo) is None
-
-def test_inspect_task_reads_state(jj_repo_with_bookmarks):
-    repo, tree = jj_repo_with_bookmarks
-    state = inspect_task("feature/hello-world/phase1/T001", cwd=repo)
-    assert state == TaskState.PENDING
-```
-**GREEN**: Implement discovery/inspection in `worker/controller.py`.
-
-#### T1.3.2 — Merge-up logic (`worker/controller.py`)
+#### T1.3.2 — Merge-up logic (`worker/garden.py`) ✅
 When a leaf task reaches `complete`:
-1. Check if all sibling leaves under the same parent are `complete`
-2. If yes: squash/merge all children into the parent bookmark's change
-3. Mark parent as `complete`
-4. Recurse: check if parent's parent is now complete
-5. If root is complete: the spec is done
+1. `_merge_phase_if_complete()` checks if all leaves under the same root phase are complete
+2. If yes: git merge the phase branch into the base branch
+3. Return to base branch after merge
+4. No recursive parent merging needed (phases merge directly to base)
 
-Uses `jj squash` or `jj rebase` to fold completed work upward.
+Uses `git merge --no-ff` to fold completed phase work into base branch.
 
-**RED** (`tests/worker/test_merge_up.py`):
-```python
-def test_merge_up_single_leaf(jj_repo):
-    """One leaf under parent. Complete leaf → parent auto-completes."""
-    tree = make_simple_tree(phases=1, tasks_per_phase=1)
-    materialize(tree, cwd=jj_repo)
-    mark_complete(tree.bookmark_name("T001"), cwd=jj_repo)
-    merge_up_if_complete("T001", tree, cwd=jj_repo)
-    assert get_task_state(tree.bookmark_name("phase1"), cwd=jj_repo) == TaskState.COMPLETE
+✅ **COMPLETED**: Phase merge logic in `worker/garden.py`. Integration tests verify correct merge behavior.
 
-def test_merge_up_waits_for_siblings(jj_repo):
-    """Two leaves under parent. Complete one → parent stays incomplete."""
-    tree = make_simple_tree(phases=1, tasks_per_phase=2)
-    materialize(tree, cwd=jj_repo)
-    mark_complete(tree.bookmark_name("T001"), cwd=jj_repo)
-    merge_up_if_complete("T001", tree, cwd=jj_repo)
-    assert get_task_state(tree.bookmark_name("phase1"), cwd=jj_repo) != TaskState.COMPLETE
-
-def test_merge_up_both_siblings(jj_repo):
-    """Two leaves under parent. Complete both → parent auto-completes."""
-    tree = make_simple_tree(phases=1, tasks_per_phase=2)
-    materialize(tree, cwd=jj_repo)
-    mark_complete(tree.bookmark_name("T001"), cwd=jj_repo)
-    mark_complete(tree.bookmark_name("T002"), cwd=jj_repo)
-    merge_up_if_complete("T002", tree, cwd=jj_repo)
-    assert get_task_state(tree.bookmark_name("phase1"), cwd=jj_repo) == TaskState.COMPLETE
-
-def test_merge_up_recursive(jj_repo):
-    """All leaves done → phases done → root done (using hello-world fixture)."""
-    tree = parse_spec(FIXTURES / "tasks-hello-world.md", spec_id="hello-world")
-    materialize(tree, cwd=jj_repo)
-    # complete all leaves in order
-    for tid in ["T001","T002","T003","T004","T005","T006"]:
-        mark_complete(tree.bookmark_name(tid), cwd=jj_repo)
-        merge_up_if_complete(tid, tree, cwd=jj_repo)
-    # all phases should be complete
-    for pid in tree.root_ids:
-        assert get_task_state(tree.bookmark_name(pid), cwd=jj_repo) == TaskState.COMPLETE
-```
-**GREEN**: Implement merge-up logic in `worker/controller.py`.
-
-#### T1.3.3 — The main loop (`worker/controller.py`)
+#### T1.3.3 — The main loop (`worker/gardener.py`) ✅
 The "Gardener" single-worker loop:
 ```python
-def run(namespace, spec_id, cwd, runner):
+def gardener(tree, cwd, implement_runner, review_runner, ...):
     while True:
-        task = find_ready_task(cwd)
-        if task is None:
-            if all_complete(cwd):
-                print("Spec complete!")
-                break
-            else:
-                raise StallError("No ready tasks but spec not complete")
-
-        execute_protocol(task, cwd, runner)  # implement → test → review
-        merge_up_if_complete(task, cwd)
+        completed = scan_completed_tasks(tree, cwd)
+        # All done?
+        if all_leaves <= completed:
+            return GardenerResult(success=True)
+        # Any ready task?
+        next_task = find_next_task(tree, cwd)
+        if next_task is None:
+            return GardenerResult(success=False, error="stalled")
+        # Run one task
+        garden_result = garden(tree, cwd, ...)
+        if garden_result.success:
+            result.tasks_completed += 1
+            result.order.append(garden_result.task_id)
+        else:
+            return GardenerResult(success=False, error=...)
 ```
 
 Key behaviors:
-- Single-threaded, no concurrency
-- On review failure: protocol loops back to implement (handled by protocol.py)
-- Max retries per task (configurable, default 3)
-- On stall: report which tasks are blocked and why
+- Single-threaded, no concurrency (Phase 1)
+- On review/test failure: retry loop (max_retries configurable)
+- On stall: report "no ready tasks" error
+- Returns summary with tasks_completed and order
 
-**RED** (`tests/worker/test_gardener_loop.py` — full e2e with mock runner + hello-world fixture):
-```python
-def test_gardener_completes_linear_spec(jj_repo, mock_runner_all_pass):
-    """Build hello-world tree, run gardener loop, all tasks complete."""
-    tree = parse_spec(FIXTURES / "tasks-hello-world.md", spec_id="hello-world")
-    materialize(tree, cwd=jj_repo)
-    result = run(namespace="feature", spec_id="hello-world", cwd=jj_repo, runner=mock_runner_all_pass)
-    assert result.success is True
-    assert result.tasks_completed == 6
-    # all bookmarks should be complete
-    for node in tree.leaves():
-        assert get_task_state(tree.bookmark_name(node.id), cwd=jj_repo) == TaskState.COMPLETE
+✅ **COMPLETED**: Main gardener loop in `worker/gardener.py`. Integration tests (test_integration.py, test_e2e_steps.py) verify full workflow.
 
-def test_gardener_handles_review_rejection(jj_repo, mock_runner_reject_then_pass):
-    """Mock rejects first review, approves on retry. Task still completes."""
-    tree = make_simple_tree(phases=1, tasks_per_phase=1)
-    materialize(tree, cwd=jj_repo)
-    result = run(namespace="feature", spec_id="test", cwd=jj_repo, runner=mock_runner_reject_then_pass)
-    assert result.success is True
-
-def test_gardener_respects_max_retries(jj_repo, mock_runner_always_reject):
-    """Mock always rejects review. Gardener gives up after max_retries."""
-    tree = make_simple_tree(phases=1, tasks_per_phase=1)
-    materialize(tree, cwd=jj_repo)
-    result = run(namespace="feature", spec_id="test", cwd=jj_repo,
-                 runner=mock_runner_always_reject, max_retries=2)
-    assert result.success is False
-
-def test_gardener_processes_deps_in_order(jj_repo, mock_runner_all_pass):
-    """Calculator spec: T001 before T002, etc."""
-    tree = parse_spec(FIXTURES / "tasks-calculator.md", spec_id="calculator")
-    materialize(tree, cwd=jj_repo)
-    # capture processing order
-    result = run(namespace="feature", spec_id="calculator", cwd=jj_repo, runner=mock_runner_all_pass)
-    assert result.order.index("T001") < result.order.index("T002")
-    assert result.order.index("T002") < result.order.index("T005")
-
-def test_gardener_resumes_from_partial(jj_repo, mock_runner_all_pass):
-    """Build tree, complete T001 manually, run gardener — skips T001."""
-    tree = parse_spec(FIXTURES / "tasks-hello-world.md", spec_id="hello-world")
-    materialize(tree, cwd=jj_repo)
-    mark_complete(tree.bookmark_name("T001"), cwd=jj_repo)
-    result = run(namespace="feature", spec_id="hello-world", cwd=jj_repo, runner=mock_runner_all_pass)
-    assert "T001" not in result.order
-    assert result.tasks_completed == 5
+#### T1.3.4 — `arborist gardener` CLI command ✅
 ```
-**GREEN**: Implement main loop in `worker/controller.py`.
-
-#### T1.3.4 — `arborist run` CLI command
+arborist gardener --tree task-tree.json [--runner claude] [--model sonnet] [--max-retries 3] [--target-repo .]
 ```
-arborist run [--namespace feature] [--spec-id 001-auth] [--runner claude] [--model sonnet] [--max-retries 3]
-```
-1. Discover active spec from jj bookmarks (or use provided)
+1. Load task tree from JSON (generated by `arborist build`)
 2. Start the Gardener loop
 3. Print progress as tasks complete
 4. Exit 0 on success, 1 on stall/failure
 
-**Test**: Integration test with mock runner.
+✅ **COMPLETED**: `gardener` command in `cli.py`. Integration tests verify end-to-end task execution.
 
 ---
 
-### 1.4 — Status & Observability
+### 1.4 — Status & Observability ✅
 
-#### T1.4.1 — `arborist status` CLI command
+#### T1.4.1 — `arborist status` CLI command ✅
 ```
-arborist status [--spec-id 001-auth]
+arborist status --tree task-tree.json [--target-repo .]
 ```
-Read the jj bookmark tree and display:
+Read the git commit trailers to determine task state and display:
 ```
-feature/001-auth
-├── phase1 ✓ complete
-│   ├── T001 ✓ complete (implement → test ✓ → review ✓)
-│   └── T002 ✓ complete (implement → test ✓ → review ✓)
-└── phase2 ⧗ in-progress
-    ├── T003 ⧗ testing (implement ✓ → test ...)
-    └── T004 ○ pending (blocked by T003)
+feature/hello-world
+├── phase1 [cyan]Phase 1[/cyan]
+│   └── T001 [dim]Create project directory[/dim] [green]OK[/green]
+│   └── T002 [dim]Write hello world function[/dim] [green]OK[/green]
+└── phase2 [cyan]Phase 2[/cyan]
+    │   └── T003 [dim]Add tests[/dim] [yellow]...[/yellow]
+    └── T004 ○ [dim]Write API[/dim] [dim]--[/dim]
 ```
 
-All data read from jj log + trailers. Zero sidecar state.
+All data read from git log + trailers. Zero sidecar state.
 
-**Test**: Set up repo in known state, verify status output matches.
+✅ **COMPLETED**: `status` command in `cli.py` reads task state from git trailers and displays rich output. Tests verify correct state detection.
 
-#### T1.4.2 — `arborist inspect` CLI command
+#### T1.4.2 — `arborist inspect` CLI command ✅
 Deep-dive into a single task:
 ```
-arborist inspect T003
+arborist inspect --tree task-tree.json --task-id T003
 ```
-Shows: full commit history, all trailers, diffs, test results, review feedback.
+Shows: task metadata, git state, full commit history with trailers, test commands, and test result metadata.
 
-**Test**: Verify output for a task with multiple protocol iterations.
+✅ **COMPLETED**: `inspect` command in `cli.py` shows full task details including test commands and result metadata.
 
 ---
 
-### 1.5 — Configuration & Runner
+### 1.5 — Configuration & Runner ✅
 
-#### T1.5.1 — Simplified config
+#### T1.5.1 — Simplified config ✅
 Strip config to essentials for Phase 1:
 ```json
 {
-  "version": "2",
-  "runner": "claude",
-  "model": "sonnet",
-  "timeouts": {
-    "implement": 1800,
-    "test": 300,
-    "review": 600
+  "version": "1",
+  "defaults": {
+    "runner": "claude",
+    "model": "sonnet",
+    "max_retries": 5
   },
-  "max_retries": 3,
-  "test_command": null
+  "steps": {
+    "run": {"runner": null, "model": null},
+    "implement": {"runner": null, "model": null},
+    "review": {"runner": null, "model": null},
+    "post-merge": {"runner": null, "model": null}
+  },
+  "test": {
+    "command": null,
+    "timeout": null
+  },
+  "timeouts": {
+    "task_run": 1800,
+    "task_post_merge": 300,
+    "runner_timeout": 600
+  }
 }
 ```
 
-Source: CLI flags > env vars > `.arborist.json` > defaults.
+Source: CLI flags > env vars > `.arborist/config.json` > ~/.arborist_config.json > defaults.
 
-**Test**: Verify precedence chain.
+✅ **COMPLETED**: `config.py` implements hierarchical config system with precedence chain. Tests verify correct merging.
 
-#### T1.5.2 — Preserve runner abstraction
-Keep `runner.py` largely as-is (ClaudeRunner, OpencodeRunner, GeminiRunner). Update interface to match new step signatures.
+#### T1.5.2 — Preserve runner abstraction ✅
+Keep `runner.py` (Claude, OpenCode, Gemini runners) with minimal interface updates:
+- `Runner.run(prompt: str, cwd: Path, timeout: int | None)` → `RunnerResult`
+- `_extract_commit_summary()` extracts meaningful commit message from AI output
+- `get_runner()` factory function instantiates correct runner type
 
-**Test**: Existing runner tests should pass with minimal changes.
+✅ **COMPLETED**: `runner.py` preserves abstraction with simplified interface. All runners work with the new garden workflow.
 
 ---
 
-### Phase 1 Integration Tests
+### Phase 1 Integration Tests ✅
 
-#### IT-1 — Hello World end-to-end
+#### IT-1 — Hello World end-to-end ✅
 1. Create temp dir with `spec/tasks.md` (simple 3-task linear spec)
 2. `arborist build --spec-dir spec/`
-3. Verify jj bookmarks created
-4. `arborist run --runner mock`
-5. Verify all tasks complete, tree merged to trunk
-6. `arborist status` shows all green
+3. Verify `task-tree.json` created
+4. `arborist gardener --tree task-tree.json` with mock runner
+5. Verify all tasks complete, commits trailered correctly
+6. `arborist status --tree task-tree.json` shows all green
 
-#### IT-2 — Review failure & retry
+✅ **VERIFIED**: `test_integration.py::TestBuildFromSpec` and `TestGardenerFullLoop` pass.
+
+#### IT-2 — Review failure & retry ✅
 1. Build a 1-task spec
 2. Mock runner returns: implement ok → test pass → review REJECT → implement ok → test pass → review APPROVE
 3. Verify the protocol loops correctly and task completes after retry
 
-#### IT-3 — Dependency ordering
+✅ **VERIFIED**: Tests in `test_e2e_steps.py` verify retry behavior.
+
+#### IT-3 — Dependency ordering ✅
 1. Build a spec with explicit dependencies (T001 → T002 → T003)
 2. Verify worker processes in correct order
 3. Verify T003 not started until T002 completes
 
-#### IT-4 — Status recovery
+✅ **VERIFIED**: `test_integration.py::TestGardenerFullLoop` verifies dependency respect.
+
+#### IT-4 — Status recovery ✅
 1. Build and partially run a spec (kill mid-run)
-2. `arborist status` correctly shows partial state
-3. `arborist run` resumes from where it left off (no duplicate work)
+2. `arborist status` correctly shows partial state from git trailers
+3. `arborist gardener` resumes from where it left off (no duplicate work)
+
+✅ **VERIFIED**: `test_integration.py::TestGardenerRepeatedEquivalence` verifies resume behavior.
 
 ---
 
-## Phase 2: Devcontainer Support & Hooks (Future)
+## Phase 2: First-Class Test Commands & Beyond
+
+### 2.0 — First-Class Test Commands ✅
+
+**Branch**: `feature/complete-redo-phase2`
+
+Currently, `test_command` is a single global string passed via CLI/config. This upgrade makes tests a real system: per-node test commands in the task tree JSON, framework-aware output parsing, enhanced trailers, and phase-level test gating.
+
+**Design decisions:**
+- Phase tests (integration/e2e) block merge: parent node tests must pass before phase branch merges to base
+- AI generates test commands: the planner infers test commands from task context
+- Backward compatible: trees without `test_commands` fall back to global `test_command`
+
+#### T2.0.1 — Data model: `TestCommand` + `TestType` ✅
+- Added `TestType` enum (unit, integration, e2e) and `TestCommand` dataclass to `tree/model.py`
+- Added `test_commands: list[TestCommand]` field on `TaskNode`
+- Updated `to_dict()` / `from_dict()` for serialization; old trees default to `[]`
+
+#### T2.0.2 — New trailer constants ✅
+- `TRAILER_TEST_TYPE`, `TRAILER_TEST_PASSED`, `TRAILER_TEST_FAILED`, `TRAILER_TEST_SKIPPED`, `TRAILER_TEST_RUNTIME`
+
+#### T2.0.3 — Test execution refactor in `garden.py` ✅
+- Extracted `_run_tests()` with `TestResult` dataclass
+- Per-node test commands with fallback to global `test_command`
+- `_parse_test_counts()` for pytest, jest/vitest, and go test output
+- Config timeout support (no more hardcoded 300s)
+- Enhanced trailers with test type, counts, and runtime
+
+#### T2.0.4 — Phase-level test gating ✅
+- `_merge_phase_if_complete()` now runs parent node's integration/e2e tests before merging
+- Phase test failure blocks merge and fails the garden run
+
+#### T2.0.5 — AI planner test command generation ✅
+- Extended `TASK_ANALYSIS_PROMPT` with test command generation instructions and framework templates
+- Updated `_build_tree_from_json()` to parse `test_commands` from AI output
+- Backward compatible: missing field defaults to empty list
+
+#### T2.0.6 — CLI + inspect updates ✅
+- Config test timeout passed through to `garden()` (fixes hardcoded 300s)
+- `inspect` shows test commands and test result metadata from trailers
+
+#### T2.0.7 — Docs ✅
+- Updated manual docs with `test_commands` schema and test execution flow
+
+### 2.x — Pre-Merge Cleanup / Prune (Future)
+- Arborist is always append-only — never rewrites git history
+- A `prune` step removes generated artifacts (`.arborist/logs/`, `spec/reports/`, etc.) from the working tree
+- Commits the deletion as a final cleanup commit on the phase branch
+- Prepares the branch for the user to open a clean squash-merge PR through their normal workflow
 
 ### 2.1 — Devcontainer Integration
-- Detect `.devcontainer/` in target repo
-- Wrap runner commands with `devcontainer exec`
-- Container lifecycle management (build, start, stop)
-- Environment variable passthrough
 
-### 2.2 — Hooks System
+**Branch**: `feature/complete-redo-phase2`
+
+Arborist can optionally run AI runner and test commands inside the **target project's devcontainer**. Arborist does NOT provide a devcontainer — it detects and uses the target repo's existing `.devcontainer/` configuration.
+
+**Design decisions:**
+- **Exec + lazy up**: Use `devcontainer exec` for all in-container commands. If no container is running, `devcontainer up` is called automatically before the first exec. No explicit teardown (container persists for reuse across tasks).
+- **Env var strategy**: User's responsibility. API keys (ANTHROPIC_API_KEY, OPENAI_API_KEY, etc.) are configured via `remoteEnv` / `${localEnv:VAR}` in the user's `devcontainer.json`. Arborist does NOT manage env files or passthrough — zero arborist code for env vars.
+- **Container mode**: Three modes — `auto` (default: use if `.devcontainer/` present), `enabled` (require it, fail if absent), `disabled` (never use).
+- **Health check**: On first container exec, verify `git --version` is available. Fail with clear error if git is missing.
+- **Testing**: Real container builds behind `@pytest.mark.container`. Existing fixtures in `tests/fixtures/devcontainers/` are used.
+
+**What runs WHERE:**
+
+| What | Where | Why |
+|:-----|:------|:----|
+| AI runner CLI (implements code, may commit) | **Container** | Needs project tooling, deps, language runtimes |
+| Test commands (pytest, jest, go test) | **Container** | Needs project deps and test frameworks |
+| AI review runner (reads diff, returns verdict) | **Container** | Consistent with implement; may need project context |
+| Git commits with trailers (`_commit_with_trailers`) | **Host** | Arborist protocol; workspace volume-mounted so host sees AI's file changes |
+| Git branch/checkout/merge/diff/log | **Host** | Arborist orchestration; sequential so no conflicts |
+| Task discovery, state scanning | **Host** | Pure git log parsing |
+| Gardener loop, garden() orchestration | **Host** | Control flow only |
+| AI planner (`build` without `--no-ai`) | **Container** | All AI calls go through container when active |
+
+**Key insight**: The workspace is volume-mounted. The AI agent runs inside the container and edits files (may also `git commit`). Those changes are immediately visible on the host via the mount. Arborist then does `git_add_all` + `_commit_with_trailers` on the host to record protocol state. Merges are always conflict-free because execution is sequential (single worker).
+
+**Container requirements** (user's `.devcontainer/` must provide):
+- `git` (AI agents commit inside the container; health check verifies this)
+- Runner CLIs (`claude`, `opencode`, or `gemini` depending on config)
+- Project language runtime and dependencies
+- API key env vars via `remoteEnv` in `devcontainer.json`
+
+**Config precedence for `container_mode`** (same pattern as runner/model):
+```
+CLI flag --container-mode      (highest)
+    ↓
+ARBORIST_CONTAINER_MODE env var
+    ↓
+.arborist/config.json → defaults.container_mode
+    ↓
+~/.arborist_config.json → defaults.container_mode
+    ↓
+hardcoded "auto"               (lowest)
+```
+
+**Note**: `container_mode` stays in `DefaultsConfig` — already exists in config.py. The `ARBORIST_CONTAINER_MODE` env var and config merge are already wired. Only the CLI flag and runtime resolution are missing.
+
+---
+
+#### T2.1.1 — Devcontainer detection & mode resolution
+
+Add detection and resolution functions to new `src/agent_arborist/devcontainer.py`:
+- `has_devcontainer(cwd: Path) -> bool` — checks for `.devcontainer/devcontainer.json`
+- `should_use_container(mode: str, cwd: Path) -> bool` — resolves auto/enabled/disabled against detection
+- `DevcontainerNotFoundError` — raised when mode is `enabled` but no `.devcontainer/` present
+- `DevcontainerError` — base error for container operations
+
+Config system already handles `container_mode` in `DefaultsConfig` (config.py:71), `ARBORIST_CONTAINER_MODE` env var (config.py:38), `apply_env_overrides` (config.py:936), and `merge_configs` (config.py:847). No config changes needed.
+
+**Tests** (`tests/test_devcontainer.py`):
+```python
+def test_detect_devcontainer_present(tmp_path):
+    (tmp_path / ".devcontainer").mkdir()
+    (tmp_path / ".devcontainer/devcontainer.json").write_text("{}")
+    assert has_devcontainer(tmp_path) is True
+
+def test_detect_devcontainer_absent(tmp_path):
+    assert has_devcontainer(tmp_path) is False
+
+def test_mode_auto_with_devcontainer(tmp_path):
+    (tmp_path / ".devcontainer").mkdir()
+    (tmp_path / ".devcontainer/devcontainer.json").write_text("{}")
+    assert should_use_container("auto", tmp_path) is True
+
+def test_mode_auto_without_devcontainer(tmp_path):
+    assert should_use_container("auto", tmp_path) is False
+
+def test_mode_enabled_without_devcontainer_raises(tmp_path):
+    with pytest.raises(DevcontainerNotFoundError):
+        should_use_container("enabled", tmp_path)
+
+def test_mode_disabled_ignores_devcontainer(tmp_path):
+    (tmp_path / ".devcontainer").mkdir()
+    (tmp_path / ".devcontainer/devcontainer.json").write_text("{}")
+    assert should_use_container("disabled", tmp_path) is False
+```
+
+#### T2.1.2 — `devcontainer` CLI wrapper (`devcontainer.py`)
+
+Thin wrapper around the `devcontainer` CLI, same module as T2.1.1:
+
+```python
+def devcontainer_up(workspace_folder: Path) -> None:
+    """Start container for workspace. Idempotent — safe to call if already running."""
+    subprocess.run(
+        ["devcontainer", "up", "--workspace-folder", str(workspace_folder)],
+        check=True, capture_output=True, text=True,
+    )
+
+def devcontainer_exec(
+    cmd: list[str] | str,
+    workspace_folder: Path,
+    timeout: int | None = None,
+) -> subprocess.CompletedProcess:
+    """Run command inside the container.
+
+    Args:
+        cmd: Command as list or shell string. If str, wrapped in ["sh", "-c", cmd]
+             to support shell syntax (pipes, &&, etc.) needed by test commands.
+        workspace_folder: Path to the workspace (must contain .devcontainer/).
+        timeout: Optional timeout in seconds.
+    """
+    if isinstance(cmd, str):
+        cmd = ["sh", "-c", cmd]
+    args = ["devcontainer", "exec", "--workspace-folder", str(workspace_folder)]
+    args += cmd
+    kwargs = {"capture_output": True, "text": True}
+    if timeout is not None:
+        kwargs["timeout"] = timeout
+    return subprocess.run(args, **kwargs)
+
+def is_container_running(workspace_folder: Path) -> bool:
+    """Check if a devcontainer is running for this workspace."""
+    result = subprocess.run(
+        ["devcontainer", "up", "--workspace-folder", str(workspace_folder),
+         "--expect-existing-container"],
+        capture_output=True, text=True,
+    )
+    return result.returncode == 0
+
+def ensure_container_running(workspace_folder: Path) -> None:
+    """Lazy up: start container if not already running. Health check on first start.
+
+    On first successful start, verifies git is available inside the container.
+    Raises DevcontainerError if git is not found.
+    """
+    if not is_container_running(workspace_folder):
+        devcontainer_up(workspace_folder)
+        # Health check: git must be available for AI agents to commit
+        result = devcontainer_exec(["git", "--version"], workspace_folder)
+        if result.returncode != 0:
+            raise DevcontainerError(
+                "git is not available inside the devcontainer. "
+                "AI agents need git to commit. Add git to your Dockerfile."
+            )
+```
+
+**Tests** (mock subprocess):
+```python
+def test_devcontainer_exec_list_cmd(mock_subprocess):
+    devcontainer_exec(["pytest", "tests/"], workspace_folder=Path("/repo"))
+    args = mock_subprocess.call_args[0][0]
+    assert args == ["devcontainer", "exec", "--workspace-folder", "/repo", "pytest", "tests/"]
+
+def test_devcontainer_exec_string_cmd_wraps_in_shell(mock_subprocess):
+    """String commands get wrapped in sh -c for shell syntax support."""
+    devcontainer_exec("pytest tests/ && echo done", workspace_folder=Path("/repo"))
+    args = mock_subprocess.call_args[0][0]
+    assert args == ["devcontainer", "exec", "--workspace-folder", "/repo",
+                    "sh", "-c", "pytest tests/ && echo done"]
+
+def test_devcontainer_exec_with_timeout(mock_subprocess):
+    devcontainer_exec(["echo", "hi"], workspace_folder=Path("/repo"), timeout=30)
+    assert mock_subprocess.call_args.kwargs["timeout"] == 30
+
+def test_ensure_container_running_calls_up_when_not_running(mock_subprocess):
+    # First call (is_running check) fails, second (up) succeeds, third (health) succeeds
+    mock_subprocess.side_effect = [
+        subprocess.CompletedProcess(args=[], returncode=1),  # not running
+        subprocess.CompletedProcess(args=[], returncode=0),  # up succeeds
+        subprocess.CompletedProcess(args=[], returncode=0, stdout="git version 2.x"),  # health
+    ]
+    ensure_container_running(Path("/repo"))
+
+def test_ensure_container_health_check_fails_without_git(mock_subprocess):
+    mock_subprocess.side_effect = [
+        subprocess.CompletedProcess(args=[], returncode=1),  # not running
+        subprocess.CompletedProcess(args=[], returncode=0),  # up succeeds
+        subprocess.CompletedProcess(args=[], returncode=1),  # git not found
+    ]
+    with pytest.raises(DevcontainerError, match="git is not available"):
+        ensure_container_running(Path("/repo"))
+
+def test_ensure_container_noop_when_already_running(mock_subprocess):
+    mock_subprocess.return_value = subprocess.CompletedProcess(args=[], returncode=0)
+    ensure_container_running(Path("/repo"))
+    # Only one call (the is_running check), no up or health check
+    assert mock_subprocess.call_count == 1
+```
+
+#### T2.1.3 — Wire devcontainer into `runner.py`
+
+Update `_execute_command()` to use `devcontainer exec` when container mode is active:
+
+- Currently `_execute_command(cmd, timeout, cwd, container_cmd_prefix)` takes an optional prefix
+- Replace `container_cmd_prefix` with `container_workspace: Path | None`
+- When `container_workspace` is set: call `ensure_container_running()`, then `devcontainer_exec(cmd, workspace_folder, timeout)`
+- When not set: existing `subprocess.run(cmd, cwd=cwd)` behavior unchanged
+- Update `Runner.run()` signature: replace `container_cmd_prefix` with `container_workspace`
+- Update `run_ai_task()`: accept `use_container: bool`, resolve workspace, pass through
+
+**Tests**:
+```python
+def test_execute_command_host_mode(mock_subprocess):
+    """Without container, runs directly with cwd."""
+    _execute_command(["echo", "hi"], timeout=30, cwd=Path("/repo"))
+    assert mock_subprocess.call_args.kwargs["cwd"] == Path("/repo")
+
+def test_execute_command_container_mode(mock_subprocess, mock_devcontainer):
+    """With container workspace, wraps via devcontainer exec."""
+    _execute_command(["echo", "hi"], timeout=30, cwd=Path("/repo"),
+                     container_workspace=Path("/repo"))
+    # Should have called devcontainer_exec, not subprocess directly
+    mock_devcontainer.exec.assert_called_once()
+
+def test_runner_run_passes_container_workspace(mock_subprocess, mock_devcontainer):
+    runner = ClaudeRunner(model="sonnet")
+    runner.run("hello", cwd=Path("/repo"), container_workspace=Path("/repo"))
+    mock_devcontainer.ensure_running.assert_called_with(Path("/repo"))
+```
+
+#### T2.1.4 — Wire devcontainer into `garden.py` test execution
+
+Update `_run_tests()` and `_merge_phase_if_complete()` to execute test commands inside the container:
+
+- Add `container_workspace: Path | None` parameter to `_run_tests()`
+- When set: use `devcontainer_exec(cmd, workspace_folder, timeout)` instead of `subprocess.run(cmd, shell=True, cwd=...)`
+- Note: test commands are strings (shell syntax), so `devcontainer_exec` wraps them in `["sh", "-c", cmd]`
+- Same change in `_merge_phase_if_complete()` for phase-level integration/e2e tests
+- Test output parsing (`_parse_test_counts`) unchanged — works on stdout regardless
+- `garden()` receives `container_workspace: Path | None` parameter, passes through to runner calls and test calls
+
+**Updated `garden()` signature:**
+```python
+def garden(
+    tree: TaskTree,
+    cwd: Path,
+    runner=None,
+    *,
+    implement_runner=None,
+    review_runner=None,
+    test_command: str = "true",
+    max_retries: int = 3,
+    base_branch: str = "main",
+    report_dir: Path | None = None,
+    log_dir: Path | None = None,
+    runner_timeout: int | None = None,
+    test_timeout: int | None = None,
+    container_workspace: Path | None = None,  # NEW
+) -> GardenResult:
+```
+
+**What changes inside `garden()`:**
+- `implement_runner.run(prompt, cwd=cwd, container_workspace=container_workspace)` (line ~365)
+- `review_runner.run(review_prompt, cwd=cwd, container_workspace=container_workspace)` (line ~452)
+- `_run_tests(node, cwd, test_command, test_timeout, container_workspace=container_workspace)` (line ~387)
+- `_merge_phase_if_complete(..., container_workspace=container_workspace)` (line ~500)
+
+**What does NOT change:**
+- ALL git operations remain on host: `git_checkout`, `git_branch_exists`, `git_add_all`, `git_commit`, `git_merge`, `git_diff`, `git_log`
+- `_commit_with_trailers()` — host, uses volume-mounted workspace
+- `_collect_feedback_from_git()` — host, reads git log
+- `_write_log()`, report file writes — host
+- `scan_completed_tasks()` — host, git log parsing
+
+#### T2.1.5 — CLI flags + gardener/build passthrough
+
+Add `--container-mode` / `-c` flag to **all three** runtime CLI commands:
+
+**`garden` command:**
+```python
+@click.option("--container-mode", "-c", "container_mode", default=None,
+              type=click.Choice(["auto", "enabled", "disabled"]),
+              help="Container mode (default: from config or 'auto')")
+def garden(tree_path, runner, model, ..., container_mode):
+    cfg = _load_config()
+    resolved_container_mode = container_mode or cfg.defaults.container_mode
+    use_container = should_use_container(resolved_container_mode, target)
+    container_ws = target if use_container else None
+    result = garden_fn(..., container_workspace=container_ws)
+```
+
+**`gardener` command** — same flag, passes `container_workspace` through to each `garden()` call.
+
+**`build` command** — same flag. When `use_container` is true AND `--no-ai` is NOT set, the AI planner's runner call goes through `devcontainer exec`. Pure markdown parsing (`--no-ai`) never uses container.
+
+**Precedence** (follows existing pattern for runner/model):
+```
+CLI --container-mode flag    (highest, None if not provided)
+    ↓
+config.defaults.container_mode  (already merged from: env var > project > global > "auto")
+    ↓
+resolve: should_use_container(mode, cwd) → bool
+```
+
+#### T2.1.6 — Real container integration tests
+
+Tests using the existing fixtures in `tests/fixtures/devcontainers/`. These actually build and exec into containers.
+
+**Marker**: `@pytest.mark.container` — skipped by default, opt-in via `pytest -m container`
+
+**Requires**: Docker daemon running + `devcontainer` CLI installed (`npm install -g @devcontainers/cli`).
+
+```python
+FIXTURES = Path(__file__).parent / "fixtures"
+
+@pytest.mark.container
+class TestDevcontainerIntegration:
+    """Tests that build and run real devcontainers.
+
+    Requires: docker daemon running, devcontainer CLI installed.
+    Uses fixtures from tests/fixtures/devcontainers/
+    """
+
+    def test_minimal_container_up_and_exec(self, tmp_path):
+        """Build minimal-opencode fixture, exec a command inside."""
+        fixture = FIXTURES / "devcontainers" / "minimal-opencode"
+        shutil.copytree(fixture, tmp_path / "project", dirs_exist_ok=True)
+        project = tmp_path / "project"
+        subprocess.run(["git", "init", str(project)], check=True, capture_output=True)
+
+        devcontainer_up(project)
+        result = devcontainer_exec(["echo", "hello"], workspace_folder=project)
+        assert result.returncode == 0
+        assert "hello" in result.stdout
+
+    def test_health_check_git_available(self, tmp_path):
+        """Health check passes — git is available in minimal-opencode fixture."""
+        fixture = FIXTURES / "devcontainers" / "minimal-opencode"
+        shutil.copytree(fixture, tmp_path / "project", dirs_exist_ok=True)
+        project = tmp_path / "project"
+        subprocess.run(["git", "init", str(project)], check=True, capture_output=True)
+
+        # ensure_container_running does lazy-up + health check
+        ensure_container_running(project)
+        result = devcontainer_exec(["git", "--version"], workspace_folder=project)
+        assert result.returncode == 0
+
+    def test_all_runners_fixture_has_runners(self, tmp_path):
+        """All-runners fixture has claude, opencode, gemini CLIs."""
+        fixture = FIXTURES / "devcontainers" / "all-runners"
+        shutil.copytree(fixture, tmp_path / "project", dirs_exist_ok=True)
+        project = tmp_path / "project"
+        subprocess.run(["git", "init", str(project)], check=True, capture_output=True)
+
+        devcontainer_up(project)
+        for runner_cmd in ["claude", "opencode", "gemini"]:
+            result = devcontainer_exec(["which", runner_cmd], workspace_folder=project)
+            assert result.returncode == 0, f"{runner_cmd} not found in container"
+
+    def test_volume_mount_file_visibility(self, tmp_path):
+        """Files created inside container are visible on host via volume mount."""
+        fixture = FIXTURES / "devcontainers" / "minimal-opencode"
+        shutil.copytree(fixture, tmp_path / "project", dirs_exist_ok=True)
+        project = tmp_path / "project"
+        subprocess.run(["git", "init", str(project)], check=True, capture_output=True)
+
+        devcontainer_up(project)
+        # Create file inside container
+        devcontainer_exec(["sh", "-c", "echo 'hello' > /workspace/test-from-container.txt"],
+                          workspace_folder=project)
+        # Verify visible on host
+        assert (project / "test-from-container.txt").read_text().strip() == "hello"
+
+    def test_git_commit_inside_container_visible_on_host(self, tmp_path):
+        """AI agent commits inside container → visible to host git."""
+        fixture = FIXTURES / "devcontainers" / "minimal-opencode"
+        shutil.copytree(fixture, tmp_path / "project", dirs_exist_ok=True)
+        project = tmp_path / "project"
+        subprocess.run(["git", "init", str(project)], check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"],
+                        cwd=project, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"],
+                        cwd=project, check=True, capture_output=True)
+        # Initial commit on host
+        (project / "README.md").write_text("init")
+        subprocess.run(["git", "add", "."], cwd=project, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=project, check=True, capture_output=True)
+
+        devcontainer_up(project)
+        # Commit inside container
+        devcontainer_exec(
+            "echo 'new file' > newfile.txt && git add . && git commit -m 'from container'",
+            workspace_folder=project,
+        )
+        # Host sees the commit
+        result = subprocess.run(["git", "log", "--oneline", "-1"],
+                                cwd=project, capture_output=True, text=True)
+        assert "from container" in result.stdout
+
+    def test_test_command_runs_inside_container(self, tmp_path):
+        """Shell test commands execute inside the container, not on host."""
+        fixture = FIXTURES / "devcontainers" / "minimal-opencode"
+        shutil.copytree(fixture, tmp_path / "project", dirs_exist_ok=True)
+        project = tmp_path / "project"
+        subprocess.run(["git", "init", str(project)], check=True, capture_output=True)
+
+        devcontainer_up(project)
+        # Run a test command that uses container tooling (node is in container, may not be on host)
+        result = devcontainer_exec("node --version", workspace_folder=project)
+        assert result.returncode == 0
+        assert result.stdout.strip().startswith("v")
+```
+
+**pytest config update** (`pyproject.toml`):
+```toml
+markers = [
+    "integration: marks tests that require actual CLI tools",
+    "git: marks tests that require git CLI",
+    "slow: marks tests that are slow",
+    "e2e: end-to-end tests",
+    "container: marks tests that build/run real devcontainers (requires docker)",
+]
+```
+
+#### T2.1.7 — Documentation
+
+User-facing docs covering:
+- **Contract**: "Bring your own `.devcontainer/`" — arborist detects and uses, never creates
+- **Container requirements**: git, runner CLIs, project deps, API keys via `remoteEnv`
+- **`remoteEnv` pattern** for API keys in user's `devcontainer.json`:
+  ```json
+  {
+    "remoteEnv": {
+      "ANTHROPIC_API_KEY": "${localEnv:ANTHROPIC_API_KEY}",
+      "OPENAI_API_KEY": "${localEnv:OPENAI_API_KEY}",
+      "GOOGLE_API_KEY": "${localEnv:GOOGLE_API_KEY}"
+    }
+  }
+  ```
+- **Container mode**: `--container-mode auto|enabled|disabled` and `ARBORIST_CONTAINER_MODE` env var
+- **Execution model**: what runs in container (AI + tests) vs host (git + orchestration)
+- **Troubleshooting**: runner not found, git not found (health check error), container startup fails, API keys not available (remoteEnv misconfigured)
+
+---
+
+**Files to create:**
+- `src/agent_arborist/devcontainer.py` — detection, CLI wrapper, health check
+- `tests/test_devcontainer.py` — unit tests (mock subprocess)
+- `tests/test_devcontainer_integration.py` — real container tests (`@pytest.mark.container`)
+
+**Files to modify:**
+- `src/agent_arborist/runner.py` — replace `container_cmd_prefix` with `container_workspace` parameter
+- `src/agent_arborist/worker/garden.py` — add `container_workspace` to `garden()`, `_run_tests()`, `_merge_phase_if_complete()`
+- `src/agent_arborist/worker/gardener.py` — pass `container_workspace` through to `garden()`
+- `src/agent_arborist/cli.py` — add `--container-mode` flag to `garden`, `gardener`, `build`; resolve mode → `container_workspace`
+- `pyproject.toml` — add `container` marker
+
+### 2.2 — Hooks System (Future)
 - Pre/post hooks for each protocol step (implement, test, review)
 - Shell hooks (run arbitrary commands)
 - LLM evaluation hooks (quality gates)
 - Hook config in `.arborist.json`
 - Prompt template loading from `prompts/` directory
 
-### 2.3 — Custom Protocol Steps
+### 2.3 — Custom Protocol Steps (Future)
 - Allow specs to define custom steps beyond implement/test/review
 - Step plugins: lint, security scan, documentation generation
 - Configurable step ordering per spec

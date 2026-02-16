@@ -33,6 +33,35 @@ graph TD
 | `depends_on` | List of dependency node IDs |
 | `source_file` | Spec file this was extracted from |
 | `source_line` | Line number in the source file |
+| `test_commands` | List of test commands for this node (see below) |
+
+### Test Commands
+
+Each node can have per-node test commands. These override the global `--test-command` for that task:
+
+```json
+"test_commands": [
+  {
+    "type": "unit",
+    "command": "python -m pytest tests/ -x",
+    "framework": "pytest",
+    "timeout": 120
+  }
+]
+```
+
+| Field | Description |
+|-------|-------------|
+| `type` | `"unit"`, `"integration"`, or `"e2e"` |
+| `command` | Shell command to execute |
+| `framework` | Optional: `"pytest"`, `"jest"`, `"vitest"`, `"go"` — enables output parsing |
+| `timeout` | Optional: override timeout in seconds |
+
+**Rules:**
+- Leaf tasks typically have `unit` tests
+- Parent nodes can have `integration` or `e2e` tests that run before the phase branch merges
+- If a node has no `test_commands`, the global `--test-command` is used as a unit test fallback
+- The AI planner generates test commands automatically based on project context
 
 ## Execution Order
 
@@ -94,7 +123,10 @@ The `build` command produces a JSON file:
       "parent": "phase1",
       "children": [],
       "depends_on": [],
-      "is_leaf": true
+      "is_leaf": true,
+      "test_commands": [
+        {"type": "unit", "command": "python -m pytest tests/ -x", "framework": "pytest"}
+      ]
     }
   },
   "root_ids": ["phase1", "phase2"],

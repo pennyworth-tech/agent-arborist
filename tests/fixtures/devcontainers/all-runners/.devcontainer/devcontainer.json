@@ -1,17 +1,10 @@
 {
   "name": "test-fixture-all-runners",
-  "build": {
-    "dockerfile": "Dockerfile"
-  },
-  "runArgs": [
-    "--env-file",
-    ".devcontainer/.env"
-  ],
-  "workspaceFolder": "/workspace",
-  "postCreateCommand": "git config --global --add safe.directory /workspace",
-  "customizations": {
-    "vscode": {
-      "extensions": []
-    }
+  "image": "ghcr.io/pennyworth-tech/backlit-core/devcontainer:latest",
+  "remoteUser": "vscode",
+  "remoteEnv": {
+    "CLAUDE_CODE_OAUTH_TOKEN": "${localEnv:CLAUDE_CODE_OAUTH_TOKEN}",
+    "OPENAI_API_KEY": "${localEnv:OPENAI_API_KEY}",
+    "GOOGLE_API_KEY": "${localEnv:GOOGLE_API_KEY}"
   }
 }

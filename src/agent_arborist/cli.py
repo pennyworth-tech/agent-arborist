@@ -41,6 +41,17 @@ def _default_repo() -> str:
         return "."
 
 
+def _resolve_container_workspace(
+    cli_mode: str | None, cfg: ArboristConfig, target: Path,
+) -> Path | None:
+    """Resolve container mode and return workspace path or None."""
+    from agent_arborist.devcontainer import should_use_container
+    resolved_mode = cli_mode or cfg.defaults.container_mode
+    if should_use_container(resolved_mode, target):
+        return target
+    return None
+
+
 @click.group()
 @click.option(
     "--log-level",
@@ -159,7 +170,10 @@ def init():
 @click.option("--no-ai", is_flag=True, help="Disable AI planning; use markdown parser instead")
 @click.option("--runner", default=None, help="Runner for AI planning (default: from config or 'claude')")
 @click.option("--model", default=None, help="Model for AI planning (default: from config or 'opus')")
-def build(spec_dir, output, namespace, spec_id, no_ai, runner, model):
+@click.option("--container-mode", "-c", "container_mode", default=None,
+              type=click.Choice(["auto", "enabled", "disabled"]),
+              help="Container mode for AI planning (default: from config or 'auto')")
+def build(spec_dir, output, namespace, spec_id, no_ai, runner, model, container_mode):
     """Build a task tree from a spec directory and write it to a JSON file."""
     if spec_id is None:
         spec_id = spec_dir.name if spec_dir.name != "spec" else Path.cwd().resolve().name
@@ -179,12 +193,15 @@ def build(spec_dir, output, namespace, spec_id, no_ai, runner, model):
         resolved_model = model or cfg.defaults.model or DAG_DEFAULT_MODEL
         console.print(f"[bold]Planning task tree with AI ({resolved_runner}/{resolved_model})...[/bold]")
         runner, model = resolved_runner, resolved_model
+        target = Path.cwd().resolve()
+        container_ws = _resolve_container_workspace(container_mode, cfg, target)
         result = plan_tree(
             spec_dir=spec_dir,
             spec_id=spec_id,
             namespace=namespace,
             runner_type=runner,
             model=model,
+            container_workspace=container_ws,
         )
         if not result.success:
             console.print(f"[red]Error:[/red] {result.error}")
@@ -221,7 +238,10 @@ def build(spec_dir, output, namespace, spec_id, no_ai, runner, model):
               help="Directory for report JSON files (default: next to task tree)")
 @click.option("--log-dir", type=click.Path(path_type=Path), default=None,
               help="Directory for runner log files (default: .arborist/logs)")
-def garden(tree_path, runner, model, max_retries, test_command, target_repo, base_branch, report_dir, log_dir):
+@click.option("--container-mode", "-c", "container_mode", default=None,
+              type=click.Choice(["auto", "enabled", "disabled"]),
+              help="Container mode (default: from config or 'auto')")
+def garden(tree_path, runner, model, max_retries, test_command, target_repo, base_branch, report_dir, log_dir, container_mode):
     """Execute a single task."""
     from agent_arborist.runner import get_runner
     from agent_arborist.worker.garden import garden as garden_fn
@@ -244,6 +264,8 @@ def garden(tree_path, runner, model, max_retries, test_command, target_repo, bas
 
     impl_runner_instance = get_runner(impl_runner_name, impl_model)
     rev_runner_instance = get_runner(rev_runner_name, rev_model)
+    resolved_test_timeout = cfg.test.timeout or cfg.timeouts.test_command
+    container_ws = _resolve_container_workspace(container_mode, cfg, target)
     result = garden_fn(
         tree, target,
         implement_runner=impl_runner_instance,
@@ -254,6 +276,8 @@ def garden(tree_path, runner, model, max_retries, test_command, target_repo, bas
         report_dir=Path(report_dir).resolve(),
         log_dir=Path(log_dir).resolve(),
         runner_timeout=cfg.timeouts.runner_timeout,
+        test_timeout=resolved_test_timeout,
+        container_workspace=container_ws,
     )
 
     if result.success:
@@ -276,7 +300,10 @@ def garden(tree_path, runner, model, max_retries, test_command, target_repo, bas
               help="Directory for report JSON files (default: next to task tree)")
 @click.option("--log-dir", type=click.Path(path_type=Path), default=None,
               help="Directory for runner log files (default: .arborist/logs)")
-def gardener(tree_path, runner, model, max_retries, test_command, target_repo, base_branch, report_dir, log_dir):
+@click.option("--container-mode", "-c", "container_mode", default=None,
+              type=click.Choice(["auto", "enabled", "disabled"]),
+              help="Container mode (default: from config or 'auto')")
+def gardener(tree_path, runner, model, max_retries, test_command, target_repo, base_branch, report_dir, log_dir, container_mode):
     """Run the gardener loop to execute all tasks."""
     from agent_arborist.runner import get_runner
     from agent_arborist.worker.gardener import gardener as gardener_fn
@@ -297,8 +324,10 @@ def gardener(tree_path, runner, model, max_retries, test_command, target_repo, b
     if log_dir is None:
         log_dir = target / ".arborist" / "logs"
 
+    resolved_test_timeout = cfg.test.timeout or cfg.timeouts.test_command
     impl_runner_instance = get_runner(impl_runner_name, impl_model)
     rev_runner_instance = get_runner(rev_runner_name, rev_model)
+    container_ws = _resolve_container_workspace(container_mode, cfg, target)
     result = gardener_fn(
         tree, target,
         implement_runner=impl_runner_instance,
@@ -309,6 +338,8 @@ def gardener(tree_path, runner, model, max_retries, test_command, target_repo, b
         report_dir=Path(report_dir).resolve(),
         log_dir=Path(log_dir).resolve(),
         runner_timeout=cfg.timeouts.runner_timeout,
+        test_timeout=resolved_test_timeout,
+        container_workspace=container_ws,
     )
 
     if result.success:
@@ -350,6 +381,94 @@ def status(tree_path, target_repo):
         _add_status_subtree(rich_tree, root_id)
 
     console.print(rich_tree)
+
+
+@main.command()
+@click.option("--tree", "tree_path", type=click.Path(exists=True, path_type=Path), required=True,
+              help="Path to task-tree.json")
+@click.option("--task-id", required=True, help="Task ID to inspect (e.g. T003)")
+@click.option("--target-repo", type=click.Path(path_type=Path), default=None)
+def inspect(tree_path, task_id, target_repo):
+    """Deep-dive into a single task: metadata, commit history, trailers, and state."""
+    from agent_arborist.git.repo import git_log, git_branch_exists, GitError
+    from agent_arborist.git.state import get_task_trailers, task_state_from_trailers
+
+    target = target_repo.resolve() if target_repo else Path(_default_repo()).resolve()
+    tree = _load_tree(tree_path)
+
+    if task_id not in tree.nodes:
+        console.print(f"[red]Error:[/red] Task '{task_id}' not found in tree.")
+        console.print(f"Available tasks: {', '.join(sorted(tree.nodes.keys()))}")
+        sys.exit(1)
+
+    node = tree.nodes[task_id]
+
+    # --- Task metadata ---
+    console.print(f"\n[bold]Task: {task_id}[/bold] — {node.name}")
+    if node.description:
+        console.print(f"  Description: {node.description}")
+    console.print(f"  Leaf: {node.is_leaf}")
+    if node.parent:
+        console.print(f"  Parent: {node.parent}")
+    if node.children:
+        console.print(f"  Children: {', '.join(node.children)}")
+    if node.depends_on:
+        console.print(f"  Depends on: {', '.join(node.depends_on)}")
+
+    if node.test_commands:
+        console.print(f"  Test commands:")
+        for tc in node.test_commands:
+            fw = f" ({tc.framework})" if tc.framework else ""
+            to = f" timeout={tc.timeout}s" if tc.timeout else ""
+            console.print(f"    [{tc.type.value}] {tc.command}{fw}{to}")
+
+    branch = tree.branch_name(task_id)
+    console.print(f"  Branch: {branch}")
+
+    # --- Git state ---
+    try:
+        branch_exists = git_branch_exists(branch, target)
+    except GitError:
+        branch_exists = False
+
+    if not branch_exists:
+        console.print(f"\n[dim]Branch '{branch}' does not exist yet (task not started).[/dim]")
+        return
+
+    # Current state from most recent trailer
+    trailers = get_task_trailers(branch, task_id, target)
+    state = task_state_from_trailers(trailers)
+    console.print(f"\n[bold]State:[/bold] {state.value}")
+    if trailers:
+        console.print("[bold]Latest trailers:[/bold]")
+        for key, val in trailers.items():
+            console.print(f"  {key}: {val}")
+
+    # --- Full commit history for this task ---
+    console.print(f"\n[bold]Commit history[/bold] (branch: {branch}, grep: task({task_id}):)")
+    try:
+        log_output = git_log(
+            branch,
+            "%h %s%n%(trailers:key=Arborist-Step,key=Arborist-Result,key=Arborist-Test,key=Arborist-Review,key=Arborist-Retry,key=Arborist-Test-Type,key=Arborist-Test-Passed,key=Arborist-Test-Failed,key=Arborist-Test-Runtime)",
+            target,
+            n=50,
+            grep=f"task({task_id}):",
+        )
+        if log_output.strip():
+            for line in log_output.split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                if line.startswith("Arborist-"):
+                    console.print(f"    [dim]{line}[/dim]")
+                else:
+                    console.print(f"  [cyan]{line}[/cyan]")
+        else:
+            console.print("  [dim]No commits found for this task.[/dim]")
+    except GitError:
+        console.print("  [dim]No commits found for this task.[/dim]")
+
+    console.print()
 
 
 def _load_tree(tree_path: Path):
