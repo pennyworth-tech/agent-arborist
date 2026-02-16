@@ -198,3 +198,85 @@ class TestInitCommand:
         assert result.exit_code == 0
         assert not (tmp_path / ".arborist").exists()
         assert "Aborted" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Inspect command tests
+# ---------------------------------------------------------------------------
+
+def _make_tree_json(tmp_path):
+    """Helper: write a minimal task tree JSON and return the path."""
+    tree_path = tmp_path / "tree.json"
+    tree_path.write_text(json.dumps({
+        "spec_id": "test", "namespace": "feature",
+        "nodes": {
+            "phase1": {"id": "phase1", "name": "Phase 1", "children": ["T001", "T002"]},
+            "T001": {"id": "T001", "name": "First task", "parent": "phase1",
+                     "description": "Do the first thing", "depends_on": []},
+            "T002": {"id": "T002", "name": "Second task", "parent": "phase1",
+                     "description": "Do the second thing", "depends_on": ["T001"]},
+        },
+        "execution_order": ["T001", "T002"], "spec_files": [],
+    }))
+    return tree_path
+
+
+class TestInspectCommand:
+
+    def test_inspect_unknown_task_id(self, tmp_path):
+        """inspect with a bad task ID exits with error."""
+        tree_path = _make_tree_json(tmp_path)
+        runner = CliRunner()
+        with patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)):
+            result = runner.invoke(main, [
+                "inspect", "--tree", str(tree_path), "--task-id", "TXXX",
+            ])
+        assert result.exit_code != 0
+        assert "not found" in result.output
+
+    def test_inspect_shows_metadata(self, tmp_path):
+        """inspect displays task name, description, deps, and branch."""
+        tree_path = _make_tree_json(tmp_path)
+        runner = CliRunner()
+        with patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)), \
+             patch("agent_arborist.git.repo.git_branch_exists", return_value=False):
+            result = runner.invoke(main, [
+                "inspect", "--tree", str(tree_path), "--task-id", "T002",
+            ])
+        assert result.exit_code == 0, result.output
+        assert "T002" in result.output
+        assert "Second task" in result.output
+        assert "T001" in result.output  # depends_on
+        assert "arborist/test/phase1" in result.output  # branch name
+
+    def test_inspect_no_branch_yet(self, tmp_path):
+        """inspect shows 'not started' when branch doesn't exist."""
+        tree_path = _make_tree_json(tmp_path)
+        runner = CliRunner()
+        with patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)), \
+             patch("agent_arborist.git.repo.git_branch_exists", return_value=False):
+            result = runner.invoke(main, [
+                "inspect", "--tree", str(tree_path), "--task-id", "T001",
+            ])
+        assert result.exit_code == 0, result.output
+        assert "does not exist" in result.output
+
+    def test_inspect_shows_state_and_trailers(self, tmp_path):
+        """inspect shows state and trailers when branch exists."""
+        tree_path = _make_tree_json(tmp_path)
+        runner = CliRunner()
+        mock_trailers = {
+            "Arborist-Step": "review",
+            "Arborist-Review": "approve",
+        }
+        with patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)), \
+             patch("agent_arborist.git.repo.git_branch_exists", return_value=True), \
+             patch("agent_arborist.git.state.get_task_trailers", return_value=mock_trailers), \
+             patch("agent_arborist.git.repo.git_log", return_value="abc1234 task(T001): implement\n  Arborist-Step: implement"):
+            result = runner.invoke(main, [
+                "inspect", "--tree", str(tree_path), "--task-id", "T001",
+            ])
+        assert result.exit_code == 0, result.output
+        assert "reviewing" in result.output
+        assert "Arborist-Step" in result.output
+        assert "abc1234" in result.output

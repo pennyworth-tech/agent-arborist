@@ -150,3 +150,33 @@ Status icons:
 - `...` — in progress (implementing, testing, or reviewing)
 - `--` — pending
 - `FAIL` — failed after max retries
+
+---
+
+### `arborist inspect`
+
+Deep-dive into a single task: metadata, commit history, trailers, and current state.
+
+```bash
+arborist inspect [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--tree` | *(required)* | Path to `task-tree.json` |
+| `--task-id` | *(required)* | Task ID to inspect (e.g. `T003`) |
+| `--target-repo` | git root of cwd | Repository to check |
+
+**Output:**
+
+Shows task metadata (name, description, dependencies, branch), current state from git trailers, and full commit history for the task.
+
+**Examples:**
+
+```bash
+# Inspect a specific task
+arborist inspect --tree task-tree.json --task-id T003
+
+# Inspect in a different repo
+arborist inspect --tree task-tree.json --task-id T001 --target-repo /path/to/repo
+```

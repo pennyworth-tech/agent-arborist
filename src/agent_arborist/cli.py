@@ -352,6 +352,87 @@ def status(tree_path, target_repo):
     console.print(rich_tree)
 
 
+@main.command()
+@click.option("--tree", "tree_path", type=click.Path(exists=True, path_type=Path), required=True,
+              help="Path to task-tree.json")
+@click.option("--task-id", required=True, help="Task ID to inspect (e.g. T003)")
+@click.option("--target-repo", type=click.Path(path_type=Path), default=None)
+def inspect(tree_path, task_id, target_repo):
+    """Deep-dive into a single task: metadata, commit history, trailers, and state."""
+    from agent_arborist.git.repo import git_log, git_branch_exists, GitError
+    from agent_arborist.git.state import get_task_trailers, task_state_from_trailers
+
+    target = target_repo.resolve() if target_repo else Path(_default_repo()).resolve()
+    tree = _load_tree(tree_path)
+
+    if task_id not in tree.nodes:
+        console.print(f"[red]Error:[/red] Task '{task_id}' not found in tree.")
+        console.print(f"Available tasks: {', '.join(sorted(tree.nodes.keys()))}")
+        sys.exit(1)
+
+    node = tree.nodes[task_id]
+
+    # --- Task metadata ---
+    console.print(f"\n[bold]Task: {task_id}[/bold] — {node.name}")
+    if node.description:
+        console.print(f"  Description: {node.description}")
+    console.print(f"  Leaf: {node.is_leaf}")
+    if node.parent:
+        console.print(f"  Parent: {node.parent}")
+    if node.children:
+        console.print(f"  Children: {', '.join(node.children)}")
+    if node.depends_on:
+        console.print(f"  Depends on: {', '.join(node.depends_on)}")
+
+    branch = tree.branch_name(task_id)
+    console.print(f"  Branch: {branch}")
+
+    # --- Git state ---
+    try:
+        branch_exists = git_branch_exists(branch, target)
+    except GitError:
+        branch_exists = False
+
+    if not branch_exists:
+        console.print(f"\n[dim]Branch '{branch}' does not exist yet (task not started).[/dim]")
+        return
+
+    # Current state from most recent trailer
+    trailers = get_task_trailers(branch, task_id, target)
+    state = task_state_from_trailers(trailers)
+    console.print(f"\n[bold]State:[/bold] {state.value}")
+    if trailers:
+        console.print("[bold]Latest trailers:[/bold]")
+        for key, val in trailers.items():
+            console.print(f"  {key}: {val}")
+
+    # --- Full commit history for this task ---
+    console.print(f"\n[bold]Commit history[/bold] (branch: {branch}, grep: task({task_id}):)")
+    try:
+        log_output = git_log(
+            branch,
+            "%h %s%n%(trailers:key=Arborist-Step,key=Arborist-Result,key=Arborist-Test,key=Arborist-Review,key=Arborist-Retry)",
+            target,
+            n=50,
+            grep=f"task({task_id}):",
+        )
+        if log_output.strip():
+            for line in log_output.split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                if line.startswith("Arborist-"):
+                    console.print(f"    [dim]{line}[/dim]")
+                else:
+                    console.print(f"  [cyan]{line}[/cyan]")
+        else:
+            console.print("  [dim]No commits found for this task.[/dim]")
+    except GitError:
+        console.print("  [dim]No commits found for this task.[/dim]")
+
+    console.print()
+
+
 def _load_tree(tree_path: Path):
     from agent_arborist.tree.model import TaskTree
     if not tree_path.exists():
