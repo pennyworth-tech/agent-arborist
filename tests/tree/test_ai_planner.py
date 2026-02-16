@@ -49,3 +49,49 @@ def test_read_spec_contents_includes_line_numbers(tmp_path):
     assert "1: # Title" in result
     assert "2: - [ ] T001 Do thing" in result
     assert "--- tasks.md ---" in result
+
+
+def test_build_tree_from_json_with_test_commands():
+    data = {
+        "tasks": [
+            {
+                "id": "T001", "description": "Create API",
+                "test_commands": [
+                    {"type": "unit", "command": "pytest tests/ -x", "framework": "pytest"},
+                    {"type": "integration", "command": "pytest tests/integration/"},
+                ],
+            },
+        ]
+    }
+    tree = _build_tree_from_json(data, "test", "feature")
+    assert len(tree.nodes["T001"].test_commands) == 2
+    assert tree.nodes["T001"].test_commands[0].type.value == "unit"
+    assert tree.nodes["T001"].test_commands[0].framework == "pytest"
+    assert tree.nodes["T001"].test_commands[1].type.value == "integration"
+
+
+def test_build_tree_from_json_without_test_commands():
+    data = {
+        "tasks": [
+            {"id": "T001", "description": "Old format task"},
+        ]
+    }
+    tree = _build_tree_from_json(data, "test", "feature")
+    assert tree.nodes["T001"].test_commands == []
+
+
+def test_build_tree_from_json_invalid_test_command_skipped():
+    data = {
+        "tasks": [
+            {
+                "id": "T001", "description": "Task",
+                "test_commands": [
+                    {"type": "bogus", "command": "bad"},  # invalid type
+                    {"type": "unit", "command": "pytest"},  # valid
+                ],
+            },
+        ]
+    }
+    tree = _build_tree_from_json(data, "test", "feature")
+    assert len(tree.nodes["T001"].test_commands) == 1
+    assert tree.nodes["T001"].test_commands[0].command == "pytest"

@@ -18,8 +18,8 @@
 | Phase | Scope | Status |
 |:------|:------|:-------|
 | **Phase 1** | Git-native single-worker, tree builder, protocol commits | **Complete** ✅ |
- | **Phase 2** | Devcontainer support, hooks system | Future |
- | **Phase 3** | Parallel workers, locking, distributed coordination | Future |
+| **Phase 2** | First-class test commands, devcontainer support, hooks | **T2.0 Complete** ✅ |
+| **Phase 3** | Parallel workers, locking, distributed coordination | Future |
 
 ---
 
@@ -470,14 +470,14 @@ All data read from git log + trailers. Zero sidecar state.
 
 ✅ **COMPLETED**: `status` command in `cli.py` reads task state from git trailers and displays rich output. Tests verify correct state detection.
 
-#### T1.4.2 — `arborist inspect` CLI command ❌ **[NOT IMPLEMENTED]**
-Deep-dive into a single task is planned but not yet implemented:
+#### T1.4.2 — `arborist inspect` CLI command ✅
+Deep-dive into a single task:
 ```
 arborist inspect --tree task-tree.json --task-id T003
 ```
-Should show: full commit history, all trailers, diffs, test results, review feedback.
+Shows: task metadata, git state, full commit history with trailers, test commands, and test result metadata.
 
-**Implementation deferred** to Phase 2. Currently can inspect manually using `git log --grep="task(T003):"`.
+✅ **COMPLETED**: `inspect` command in `cli.py` shows full task details including test commands and result metadata.
 
 ---
 
@@ -560,22 +560,64 @@ Keep `runner.py` (Claude, OpenCode, Gemini runners) with minimal interface updat
 
 ---
 
-## Phase 2: Devcontainer Support & Hooks (Future)
+## Phase 2: First-Class Test Commands & Beyond
 
-### 2.1 — Devcontainer Integration
+### 2.0 — First-Class Test Commands ✅
+
+**Branch**: `feature/complete-redo-phase2`
+
+Currently, `test_command` is a single global string passed via CLI/config. This upgrade makes tests a real system: per-node test commands in the task tree JSON, framework-aware output parsing, enhanced trailers, and phase-level test gating.
+
+**Design decisions:**
+- Phase tests (integration/e2e) block merge: parent node tests must pass before phase branch merges to base
+- AI generates test commands: the planner infers test commands from task context
+- Backward compatible: trees without `test_commands` fall back to global `test_command`
+
+#### T2.0.1 — Data model: `TestCommand` + `TestType` ✅
+- Added `TestType` enum (unit, integration, e2e) and `TestCommand` dataclass to `tree/model.py`
+- Added `test_commands: list[TestCommand]` field on `TaskNode`
+- Updated `to_dict()` / `from_dict()` for serialization; old trees default to `[]`
+
+#### T2.0.2 — New trailer constants ✅
+- `TRAILER_TEST_TYPE`, `TRAILER_TEST_PASSED`, `TRAILER_TEST_FAILED`, `TRAILER_TEST_SKIPPED`, `TRAILER_TEST_RUNTIME`
+
+#### T2.0.3 — Test execution refactor in `garden.py` ✅
+- Extracted `_run_tests()` with `TestResult` dataclass
+- Per-node test commands with fallback to global `test_command`
+- `_parse_test_counts()` for pytest, jest/vitest, and go test output
+- Config timeout support (no more hardcoded 300s)
+- Enhanced trailers with test type, counts, and runtime
+
+#### T2.0.4 — Phase-level test gating ✅
+- `_merge_phase_if_complete()` now runs parent node's integration/e2e tests before merging
+- Phase test failure blocks merge and fails the garden run
+
+#### T2.0.5 — AI planner test command generation ✅
+- Extended `TASK_ANALYSIS_PROMPT` with test command generation instructions and framework templates
+- Updated `_build_tree_from_json()` to parse `test_commands` from AI output
+- Backward compatible: missing field defaults to empty list
+
+#### T2.0.6 — CLI + inspect updates ✅
+- Config test timeout passed through to `garden()` (fixes hardcoded 300s)
+- `inspect` shows test commands and test result metadata from trailers
+
+#### T2.0.7 — Docs ✅
+- Updated manual docs with `test_commands` schema and test execution flow
+
+### 2.1 — Devcontainer Integration (Future)
 - Detect `.devcontainer/` in target repo
 - Wrap runner commands with `devcontainer exec`
 - Container lifecycle management (build, start, stop)
 - Environment variable passthrough
 
-### 2.2 — Hooks System
+### 2.2 — Hooks System (Future)
 - Pre/post hooks for each protocol step (implement, test, review)
 - Shell hooks (run arbitrary commands)
 - LLM evaluation hooks (quality gates)
 - Hook config in `.arborist.json`
 - Prompt template loading from `prompts/` directory
 
-### 2.3 — Custom Protocol Steps
+### 2.3 — Custom Protocol Steps (Future)
 - Allow specs to define custom steps beyond implement/test/review
 - Step plugins: lint, security scan, documentation generation
 - Configurable step ordering per spec

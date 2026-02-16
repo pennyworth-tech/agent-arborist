@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import subprocess
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -19,6 +21,11 @@ from agent_arborist.constants import (
     TRAILER_REPORT,
     TRAILER_REVIEW_LOG,
     TRAILER_TEST_LOG,
+    TRAILER_TEST_TYPE,
+    TRAILER_TEST_PASSED,
+    TRAILER_TEST_FAILED,
+    TRAILER_TEST_SKIPPED,
+    TRAILER_TEST_RUNTIME,
 )
 from agent_arborist.git.repo import (
     git_add_all,
@@ -31,7 +38,7 @@ from agent_arborist.git.repo import (
     git_merge,
 )
 from agent_arborist.git.state import scan_completed_tasks, TaskState
-from agent_arborist.tree.model import TaskNode, TaskTree
+from agent_arborist.tree.model import TaskNode, TaskTree, TestCommand, TestType
 
 
 @dataclass
@@ -73,6 +80,99 @@ def _truncate_name(name: str, max_len: int = 50) -> str:
     return name[: max_len - 3] + "..."
 
 
+@dataclass
+class TestResult:
+    passed: bool
+    test_type: str  # "unit", "integration", "e2e"
+    stdout: str
+    stderr: str
+    runtime_secs: float
+    counts: dict | None = None  # {"passed": N, "failed": N, "skipped": N} or None
+
+
+def _parse_test_counts(output: str, framework: str | None) -> dict | None:
+    """Extract test counts from combined stdout+stderr based on framework."""
+    if not framework:
+        # Try all patterns
+        for fw in ("pytest", "jest", "go"):
+            result = _parse_test_counts(output, fw)
+            if result is not None:
+                return result
+        return None
+
+    if framework == "pytest":
+        # e.g. "5 passed, 2 failed, 1 skipped in 3.45s"
+        m = re.search(r"(\d+) passed", output)
+        f = re.search(r"(\d+) failed", output)
+        s = re.search(r"(\d+) skipped", output)
+        if m or f:
+            return {
+                "passed": int(m.group(1)) if m else 0,
+                "failed": int(f.group(1)) if f else 0,
+                "skipped": int(s.group(1)) if s else 0,
+            }
+
+    elif framework in ("jest", "vitest"):
+        # e.g. "Tests:  3 passed, 1 failed, 4 total"
+        m = re.search(r"Tests:\s+(\d+)\s+passed(?:,\s+(\d+)\s+failed)?(?:,\s+(\d+)\s+skipped)?", output)
+        if m:
+            return {
+                "passed": int(m.group(1)),
+                "failed": int(m.group(2)) if m.group(2) else 0,
+                "skipped": int(m.group(3)) if m.group(3) else 0,
+            }
+
+    elif framework == "go":
+        # e.g. "ok  	pkg	0.123s" or "FAIL	pkg	0.456s"
+        passed = len(re.findall(r"^ok\s+", output, re.MULTILINE))
+        failed = len(re.findall(r"^FAIL\s+", output, re.MULTILINE))
+        if passed or failed:
+            return {"passed": passed, "failed": failed, "skipped": 0}
+
+    return None
+
+
+def _run_tests(
+    node: TaskNode, cwd: Path, global_test_command: str, config_timeout: int | None,
+) -> list[TestResult]:
+    """Run test commands for a node. Falls back to global_test_command if no per-node tests."""
+    commands: list[tuple[str, str, str | None, int | None]] = []  # (command, type, framework, timeout)
+
+    if node.test_commands:
+        for tc in node.test_commands:
+            commands.append((tc.command, tc.type.value, tc.framework, tc.timeout))
+    else:
+        commands.append((global_test_command, "unit", None, None))
+
+    results: list[TestResult] = []
+    for cmd, test_type, framework, cmd_timeout in commands:
+        timeout = cmd_timeout or config_timeout or 300
+        start = time.monotonic()
+        try:
+            proc = subprocess.run(
+                cmd, shell=True, cwd=cwd,
+                capture_output=True, text=True, timeout=timeout,
+            )
+            elapsed = time.monotonic() - start
+            stdout = proc.stdout or ""
+            stderr = proc.stderr or ""
+            passed = proc.returncode == 0
+        except subprocess.TimeoutExpired:
+            elapsed = time.monotonic() - start
+            stdout = ""
+            stderr = f"Test timed out after {timeout}s"
+            passed = False
+
+        counts = _parse_test_counts(stdout + stderr, framework)
+        results.append(TestResult(
+            passed=passed, test_type=test_type,
+            stdout=stdout, stderr=stderr,
+            runtime_secs=round(elapsed, 3), counts=counts,
+        ))
+
+    return results
+
+
 def _commit_with_trailers(
     task_id: str, subject: str, cwd: Path,
     body: str | None = None, **trailers: str,
@@ -89,20 +189,48 @@ def _commit_with_trailers(
 
 
 def _merge_phase_if_complete(
-    tree: TaskTree, task_id: str, cwd: Path, base_branch: str
-) -> bool:
-    """If all leaves under the root phase are complete, merge phase branch to base."""
+    tree: TaskTree, task_id: str, cwd: Path, base_branch: str,
+    global_test_command: str = "true", config_timeout: int | None = None,
+) -> bool | str:
+    """If all leaves under the root phase are complete, merge phase branch to base.
+
+    Returns True on successful merge, False if not ready, or an error string
+    if phase tests failed.
+    """
     rp = tree.root_phase(task_id)
     if rp == task_id and tree.nodes[task_id].is_leaf:
-        # Standalone root leaf — no phase to merge
         return False
     phase_leaves = tree.leaves_under(rp)
     completed = scan_completed_tasks(tree, cwd)
-    if all(leaf.id in completed for leaf in phase_leaves):
+    if not all(leaf.id in completed for leaf in phase_leaves):
+        return False
+
+    # Run phase-level tests (integration/e2e) from the parent node
+    parent_node = tree.nodes[rp]
+    phase_tests = [tc for tc in parent_node.test_commands
+                   if tc.type in (TestType.INTEGRATION, TestType.E2E)]
+    if phase_tests:
         phase_branch = tree.branch_name(rp)
-        git_merge(phase_branch, cwd, message=f"merge: {phase_branch} complete")
-        return True
-    return False
+        git_checkout(phase_branch, cwd)
+        for tc in phase_tests:
+            timeout = tc.timeout or config_timeout or 300
+            start = time.monotonic()
+            try:
+                proc = subprocess.run(
+                    tc.command, shell=True, cwd=cwd,
+                    capture_output=True, text=True, timeout=timeout,
+                )
+                passed = proc.returncode == 0
+            except subprocess.TimeoutExpired:
+                passed = False
+            if not passed:
+                git_checkout(base_branch, cwd)
+                return f"Phase test failed: {tc.command} ({tc.type.value})"
+        git_checkout(base_branch, cwd)
+
+    phase_branch = tree.branch_name(rp)
+    git_merge(phase_branch, cwd, message=f"merge: {phase_branch} complete")
+    return True
 
 
 def _write_log(log_dir: Path | None, task_id: str, step: str, result) -> Path | None:
@@ -188,6 +316,7 @@ def garden(
     report_dir: Path | None = None,
     log_dir: Path | None = None,
     runner_timeout: int | None = None,
+    test_timeout: int | None = None,
 ) -> GardenResult:
     """Execute one task through the implement → test → review pipeline."""
     # Resolve runners: explicit implement/review runners take precedence,
@@ -255,43 +384,35 @@ def garden(
             )
 
             # --- test ---
-            try:
-                test_result = subprocess.run(
-                    test_command, shell=True, cwd=cwd,
-                    capture_output=True, text=True, timeout=300,
-                )
-                test_passed = test_result.returncode == 0
-                test_stdout = test_result.stdout or ""
-                test_stderr = test_result.stderr or ""
-            except subprocess.TimeoutExpired:
-                test_passed = False
-                test_stdout = ""
-                test_stderr = "Test timed out after 300s"
-
-            test_val = "pass" if test_passed else "fail"
+            test_results = _run_tests(task, cwd, test_command, test_timeout)
+            all_tests_passed = all(tr.passed for tr in test_results)
+            test_val = "pass" if all_tests_passed else "fail"
             logger.info("Task %s test %s", task.id, test_val)
 
+            # Build combined test body and trailers for each result
             test_body_parts = []
-            if not test_passed and test_stderr:
-                test_body_parts.append(f"Test stderr (last 1000 chars):\n{_truncate_output(test_stderr, 1000)}")
-            if test_stdout:
-                test_body_parts.append(f"Test stdout (last 1000 chars):\n{_truncate_output(test_stdout, 1000)}")
+            for tr in test_results:
+                if not tr.passed and tr.stderr:
+                    test_body_parts.append(f"Test ({tr.test_type}) stderr (last 1000 chars):\n{_truncate_output(tr.stderr, 1000)}")
+                if tr.stdout:
+                    test_body_parts.append(f"Test ({tr.test_type}) stdout (last 1000 chars):\n{_truncate_output(tr.stdout, 1000)}")
             test_body = "\n\n".join(test_body_parts) or None
 
             test_subject = f'tests {test_val} for "{tname}"'
-            if not test_passed:
+            if not all_tests_passed:
                 test_subject += f" (attempt {attempt + 1}/{max_retries})"
 
-            # Write test log file and get path for trailer
+            # Write test log file on failure
             test_log_path = None
-            if not test_passed and log_dir is not None:
+            if not all_tests_passed and log_dir is not None:
                 from datetime import datetime, timezone as _tz
                 log_dir.mkdir(parents=True, exist_ok=True)
                 _ts = datetime.now(_tz.utc).strftime("%Y%m%dT%H%M%S")
                 test_log_file = log_dir / f"{task.id}_test_{_ts}.log"
-                test_log_file.write_text(
-                    f"=== stdout ===\n{test_stdout}\n=== stderr ===\n{test_stderr}"
-                )
+                log_parts = []
+                for tr in test_results:
+                    log_parts.append(f"=== {tr.test_type} stdout ===\n{tr.stdout}\n=== {tr.test_type} stderr ===\n{tr.stderr}")
+                test_log_file.write_text("\n".join(log_parts))
                 try:
                     test_log_path = str(test_log_file.relative_to(cwd))
                 except ValueError:
@@ -300,12 +421,21 @@ def garden(
             test_trailers = {TRAILER_STEP: "test", TRAILER_TEST: test_val, TRAILER_RETRY: retry_trailer}
             if test_log_path:
                 test_trailers[TRAILER_TEST_LOG] = test_log_path
+            # Enhanced trailers from first (or only) test result
+            if test_results:
+                tr0 = test_results[0]
+                test_trailers[TRAILER_TEST_TYPE] = tr0.test_type
+                test_trailers[TRAILER_TEST_RUNTIME] = str(tr0.runtime_secs)
+                if tr0.counts is not None:
+                    test_trailers[TRAILER_TEST_PASSED] = str(tr0.counts["passed"])
+                    test_trailers[TRAILER_TEST_FAILED] = str(tr0.counts["failed"])
+                    test_trailers[TRAILER_TEST_SKIPPED] = str(tr0.counts["skipped"])
             _commit_with_trailers(
                 task.id, test_subject, cwd, body=test_body,
                 **test_trailers,
             )
 
-            if not test_passed:
+            if not all_tests_passed:
                 continue
 
             # --- review ---
@@ -367,9 +497,15 @@ def garden(
 
             logger.info("Task %s complete", task.id)
             git_checkout(base_branch, cwd)
-            merged = _merge_phase_if_complete(tree, task.id, cwd, base_branch)
-            if merged:
+            merge_result = _merge_phase_if_complete(
+                tree, task.id, cwd, base_branch,
+                global_test_command=test_command, config_timeout=test_timeout,
+            )
+            if merge_result is True:
                 logger.info("Phase merge completed for %s", task.id)
+            elif isinstance(merge_result, str):
+                logger.error("Phase merge blocked for %s: %s", task.id, merge_result)
+                return GardenResult(task_id=task.id, success=False, error=merge_result)
             return GardenResult(task_id=task.id, success=True)
 
         logger.info("Task %s failed after %d retries", task.id, max_retries)

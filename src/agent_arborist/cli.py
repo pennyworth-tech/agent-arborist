@@ -244,6 +244,7 @@ def garden(tree_path, runner, model, max_retries, test_command, target_repo, bas
 
     impl_runner_instance = get_runner(impl_runner_name, impl_model)
     rev_runner_instance = get_runner(rev_runner_name, rev_model)
+    resolved_test_timeout = cfg.test.timeout or cfg.timeouts.test_command
     result = garden_fn(
         tree, target,
         implement_runner=impl_runner_instance,
@@ -254,6 +255,7 @@ def garden(tree_path, runner, model, max_retries, test_command, target_repo, bas
         report_dir=Path(report_dir).resolve(),
         log_dir=Path(log_dir).resolve(),
         runner_timeout=cfg.timeouts.runner_timeout,
+        test_timeout=resolved_test_timeout,
     )
 
     if result.success:
@@ -297,6 +299,7 @@ def gardener(tree_path, runner, model, max_retries, test_command, target_repo, b
     if log_dir is None:
         log_dir = target / ".arborist" / "logs"
 
+    resolved_test_timeout = cfg.test.timeout or cfg.timeouts.test_command
     impl_runner_instance = get_runner(impl_runner_name, impl_model)
     rev_runner_instance = get_runner(rev_runner_name, rev_model)
     result = gardener_fn(
@@ -309,6 +312,7 @@ def gardener(tree_path, runner, model, max_retries, test_command, target_repo, b
         report_dir=Path(report_dir).resolve(),
         log_dir=Path(log_dir).resolve(),
         runner_timeout=cfg.timeouts.runner_timeout,
+        test_timeout=resolved_test_timeout,
     )
 
     if result.success:
@@ -384,6 +388,13 @@ def inspect(tree_path, task_id, target_repo):
     if node.depends_on:
         console.print(f"  Depends on: {', '.join(node.depends_on)}")
 
+    if node.test_commands:
+        console.print(f"  Test commands:")
+        for tc in node.test_commands:
+            fw = f" ({tc.framework})" if tc.framework else ""
+            to = f" timeout={tc.timeout}s" if tc.timeout else ""
+            console.print(f"    [{tc.type.value}] {tc.command}{fw}{to}")
+
     branch = tree.branch_name(task_id)
     console.print(f"  Branch: {branch}")
 
@@ -411,7 +422,7 @@ def inspect(tree_path, task_id, target_repo):
     try:
         log_output = git_log(
             branch,
-            "%h %s%n%(trailers:key=Arborist-Step,key=Arborist-Result,key=Arborist-Test,key=Arborist-Review,key=Arborist-Retry)",
+            "%h %s%n%(trailers:key=Arborist-Step,key=Arborist-Result,key=Arborist-Test,key=Arborist-Review,key=Arborist-Retry,key=Arborist-Test-Type,key=Arborist-Test-Passed,key=Arborist-Test-Failed,key=Arborist-Test-Runtime)",
             target,
             n=50,
             grep=f"task({task_id}):",
