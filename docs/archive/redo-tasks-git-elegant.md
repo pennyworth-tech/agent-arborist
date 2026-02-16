@@ -604,6 +604,12 @@ Currently, `test_command` is a single global string passed via CLI/config. This 
 #### T2.0.7 — Docs ✅
 - Updated manual docs with `test_commands` schema and test execution flow
 
+### 2.x — Pre-Merge Cleanup / Prune (Future)
+- Arborist is always append-only — never rewrites git history
+- A `prune` step removes generated artifacts (`.arborist/logs/`, `spec/reports/`, etc.) from the working tree
+- Commits the deletion as a final cleanup commit on the phase branch
+- Prepares the branch for the user to open a clean squash-merge PR through their normal workflow
+
 ### 2.1 — Devcontainer Integration (Future)
 - Detect `.devcontainer/` in target repo
 - Wrap runner commands with `devcontainer exec`
