@@ -28,10 +28,11 @@ packages = ["src/agent_arborist"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
-addopts = "-m 'not integration'"
+addopts = "-m 'not integration and not container'"
 markers = [
     "integration: marks tests that require actual CLI tools",
     "git: marks tests that require git CLI",
     "slow: marks tests that are slow",
     "e2e: end-to-end tests",
+    "container: marks tests that build/run real devcontainers (requires docker)",
 ]
