@@ -4,6 +4,38 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, field
+from enum import Enum
+
+
+class TestType(Enum):
+    UNIT = "unit"
+    INTEGRATION = "integration"
+    E2E = "e2e"
+
+
+@dataclass
+class TestCommand:
+    type: TestType
+    command: str
+    framework: str | None = None  # "pytest", "jest", "vitest", "go", etc.
+    timeout: int | None = None
+
+    def to_dict(self) -> dict:
+        result = {"type": self.type.value, "command": self.command}
+        if self.framework is not None:
+            result["framework"] = self.framework
+        if self.timeout is not None:
+            result["timeout"] = self.timeout
+        return result
+
+    @classmethod
+    def from_dict(cls, data: dict) -> TestCommand:
+        return cls(
+            type=TestType(data["type"]),
+            command=data["command"],
+            framework=data.get("framework"),
+            timeout=data.get("timeout"),
+        )
 
 
 @dataclass
@@ -16,6 +48,7 @@ class TaskNode:
     depends_on: list[str] = field(default_factory=list)
     source_file: str | None = None
     source_line: int | None = None
+    test_commands: list[TestCommand] = field(default_factory=list)
 
     @property
     def is_leaf(self) -> bool:
@@ -122,6 +155,7 @@ class TaskTree:
                     "source_file": n.source_file,
                     "source_line": n.source_line,
                     "is_leaf": n.is_leaf,
+                    "test_commands": [tc.to_dict() for tc in n.test_commands],
                 }
                 for nid, n in self.nodes.items()
             },
@@ -147,5 +181,9 @@ class TaskTree:
                 depends_on=nd.get("depends_on", []),
                 source_file=nd.get("source_file"),
                 source_line=nd.get("source_line"),
+                test_commands=[
+                    TestCommand.from_dict(tc)
+                    for tc in nd.get("test_commands", [])
+                ],
             )
         return tree

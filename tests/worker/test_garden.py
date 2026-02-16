@@ -1,9 +1,12 @@
 """Tests for worker/garden.py."""
 
-from agent_arborist.git.repo import git_current_branch
+from agent_arborist.git.repo import git_current_branch, git_log
 from agent_arborist.git.state import is_task_complete
-from agent_arborist.tree.model import TaskNode, TaskTree
-from agent_arborist.worker.garden import garden, find_next_task, GardenResult
+from agent_arborist.tree.model import TaskNode, TaskTree, TestCommand, TestType
+from agent_arborist.worker.garden import (
+    garden, find_next_task, GardenResult,
+    _run_tests, _parse_test_counts,
+)
 
 
 def _make_tree():
@@ -313,3 +316,137 @@ def test_no_feedback_on_first_attempt(git_repo, tmp_path):
     assert "Previous feedback" not in first_prompt, (
         f"First implement prompt should not contain previous feedback section"
     )
+
+
+# --- Test command parsing tests ---
+
+
+def test_parse_pytest_output():
+    output = "===== 5 passed, 2 failed, 1 skipped in 3.45s ====="
+    counts = _parse_test_counts(output, "pytest")
+    assert counts == {"passed": 5, "failed": 2, "skipped": 1}
+
+
+def test_parse_pytest_output_pass_only():
+    output = "===== 10 passed in 1.23s ====="
+    counts = _parse_test_counts(output, "pytest")
+    assert counts == {"passed": 10, "failed": 0, "skipped": 0}
+
+
+def test_parse_jest_output():
+    output = "Tests:  3 passed, 1 failed, 4 total"
+    counts = _parse_test_counts(output, "jest")
+    assert counts == {"passed": 3, "failed": 1, "skipped": 0}
+
+
+def test_parse_go_output():
+    output = "ok  \tpkg/foo\t0.123s\nFAIL\tpkg/bar\t0.456s\n"
+    counts = _parse_test_counts(output, "go")
+    assert counts == {"passed": 1, "failed": 1, "skipped": 0}
+
+
+def test_parse_unknown_output_returns_none():
+    counts = _parse_test_counts("some random output", "pytest")
+    assert counts is None
+
+
+def test_parse_auto_detect():
+    output = "===== 3 passed in 0.5s ====="
+    counts = _parse_test_counts(output, None)
+    assert counts is not None
+    assert counts["passed"] == 3
+
+
+# --- Per-node test commands tests ---
+
+
+def test_run_tests_uses_node_commands(git_repo):
+    node = TaskNode(
+        id="T001", name="Test",
+        test_commands=[TestCommand(type=TestType.UNIT, command="echo '3 passed in 0.1s'", framework="pytest")],
+    )
+    results = _run_tests(node, git_repo, "false", None)
+    assert len(results) == 1
+    assert results[0].passed is True
+    assert results[0].test_type == "unit"
+
+
+def test_run_tests_fallback_global(git_repo):
+    node = TaskNode(id="T001", name="Test")
+    results = _run_tests(node, git_repo, "echo ok", None)
+    assert len(results) == 1
+    assert results[0].passed is True
+    assert results[0].test_type == "unit"
+
+
+def test_run_tests_respects_timeout(git_repo):
+    node = TaskNode(
+        id="T001", name="Test",
+        test_commands=[TestCommand(type=TestType.UNIT, command="sleep 10", timeout=1)],
+    )
+    results = _run_tests(node, git_repo, "true", None)
+    assert results[0].passed is False
+    assert "timed out" in results[0].stderr
+
+
+def test_run_tests_config_timeout_used(git_repo):
+    node = TaskNode(
+        id="T001", name="Test",
+        test_commands=[TestCommand(type=TestType.UNIT, command="sleep 10")],
+    )
+    results = _run_tests(node, git_repo, "true", config_timeout=1)
+    assert results[0].passed is False
+
+
+def test_trailers_include_test_metadata(git_repo, mock_runner_all_pass):
+    tree = _make_tree()
+    tree.nodes["T001"].test_commands = [
+        TestCommand(type=TestType.UNIT, command="echo '5 passed in 0.3s'", framework="pytest"),
+    ]
+    result = garden(tree, git_repo, mock_runner_all_pass, base_branch="main")
+    assert result.success
+
+    branch = tree.branch_name("T001")
+    log_output = git_log(branch, "%B", git_repo, n=20, grep="tests pass")
+    assert "Arborist-Test-Type: unit" in log_output
+    assert "Arborist-Test-Passed: 5" in log_output
+    assert "Arborist-Test-Runtime:" in log_output
+
+
+# --- Phase test gating tests ---
+
+
+def test_phase_tests_block_merge_on_failure(git_repo, mock_runner_all_pass):
+    """Parent has integration tests that fail, merge does not happen."""
+    tree = TaskTree(spec_id="test", namespace="feature")
+    tree.nodes["phase1"] = TaskNode(
+        id="phase1", name="Phase 1", children=["T001"],
+        test_commands=[TestCommand(type=TestType.INTEGRATION, command="exit 1")],
+    )
+    tree.nodes["T001"] = TaskNode(id="T001", name="Task", parent="phase1", description="Do thing")
+    tree.compute_execution_order()
+
+    result = garden(tree, git_repo, mock_runner_all_pass, base_branch="main")
+    # Task itself succeeds but phase merge fails
+    assert not result.success
+    assert "Phase test failed" in result.error
+
+    main_log = git_log("main", "%s", git_repo, n=5)
+    assert "merge" not in main_log.lower()
+
+
+def test_phase_tests_pass_allows_merge(git_repo, mock_runner_all_pass):
+    """Parent has integration tests that pass, merge proceeds."""
+    tree = TaskTree(spec_id="test", namespace="feature")
+    tree.nodes["phase1"] = TaskNode(
+        id="phase1", name="Phase 1", children=["T001"],
+        test_commands=[TestCommand(type=TestType.INTEGRATION, command="exit 0")],
+    )
+    tree.nodes["T001"] = TaskNode(id="T001", name="Task", parent="phase1", description="Do thing")
+    tree.compute_execution_order()
+
+    result = garden(tree, git_repo, mock_runner_all_pass, base_branch="main")
+    assert result.success
+
+    main_log = git_log("main", "%s", git_repo, n=5)
+    assert "merge" in main_log.lower()
