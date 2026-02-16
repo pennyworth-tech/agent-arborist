@@ -126,6 +126,10 @@ Tasks under the same root phase share a git branch. When the **last leaf task** 
 2. If phase tests fail, the merge is blocked and the garden run fails
 3. If phase tests pass (or there are none), merge the phase branch back to the base branch
 
+> **Future work: pre-merge cleanup (prune)**
+>
+> During execution, Arborist generates intermediate artifacts on the phase branch — report JSON files (`spec/reports/T001_run_*.json`), test log files (`.arborist/logs/T001_test_*.log`), etc. Arborist itself is always append-only and never rewrites history. A future `prune` step would remove these generated files from the working tree and commit the deletion, preparing the branch for the user to open a clean squash-merge PR through their normal workflow.
+
 ```mermaid
 gitGraph
     commit id: "base"
