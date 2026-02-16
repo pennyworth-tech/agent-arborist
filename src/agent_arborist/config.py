@@ -1140,7 +1140,7 @@ def generate_config_template() -> dict[str, Any]:
             "quiet": False,
             "_comment_quiet": "Suppress non-essential output",
             "max_retries": 5,
-            "_comment_max_retries": "Max retries per task on failure (default: 3)",
+            "_comment_max_retries": "Max retries per task on failure (default: 5)",
         },
         "timeouts": {
             "task_run": 1800,

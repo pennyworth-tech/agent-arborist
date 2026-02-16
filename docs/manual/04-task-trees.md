@@ -1,0 +1,106 @@
+# Task Trees
+
+The task tree is the central data structure in Arborist. It represents your project as a hierarchy of tasks with dependency edges and a computed execution order.
+
+## Structure
+
+A task tree consists of **TaskNodes** organized in a parent-child hierarchy:
+
+```mermaid
+graph TD
+    R1["Phase 1: Database<br/><i>parent node</i>"] --> T001["T001: Create schema<br/><i>leaf — executable</i>"]
+    R1 --> T002["T002: Add migrations<br/><i>leaf — executable</i>"]
+    R2["Phase 2: API<br/><i>parent node</i>"] --> T003["T003: Build endpoints<br/><i>leaf — executable</i>"]
+    R2 --> T004["T004: Add tests<br/><i>leaf — executable</i>"]
+    T003 -.->|depends on| T001
+    T004 -.->|depends on| T003
+```
+
+### Node Types
+
+- **Parent nodes** — organizational groupings (phases, stories, epics). They are never executed directly.
+- **Leaf nodes** — actual work items. These are what Arborist sends to AI runners.
+
+### TaskNode Fields
+
+| Field | Description |
+|-------|-------------|
+| `id` | Unique identifier (e.g., `T001`, `phase1`) |
+| `name` | Human-readable name |
+| `description` | Detailed description (used as the AI prompt) |
+| `parent` | ID of the parent node (`null` for root nodes) |
+| `children` | List of child node IDs |
+| `depends_on` | List of dependency node IDs |
+| `source_file` | Spec file this was extracted from |
+| `source_line` | Line number in the source file |
+
+## Execution Order
+
+Arborist computes a **topological sort** over leaf tasks using Kahn's algorithm. This ensures every task's dependencies are satisfied before it runs.
+
+```mermaid
+flowchart LR
+    T001 --> T002
+    T001 --> T003
+    T003 --> T004
+
+    subgraph "Execution Order"
+        direction LR
+        E1["T001"] --> E2["T002"]
+        E2 --> E3["T003"]
+        E3 --> E4["T004"]
+    end
+```
+
+Only leaf nodes appear in the execution order. Parent nodes are organizational — they determine branch naming but aren't executed.
+
+## Phase Branching
+
+All leaf tasks under the same **root phase** (top-level parent) share a single git branch:
+
+```
+arborist/<spec-id>/<root-phase-id>
+```
+
+For example, if `T001` and `T002` are both under `phase1`:
+
+```
+arborist/my-project/phase1    ← branch for T001 and T002
+arborist/my-project/phase2    ← branch for T003 and T004
+```
+
+When all leaves under a phase are complete, the phase branch is merged back to the base branch.
+
+## The task-tree.json File
+
+The `build` command produces a JSON file:
+
+```json
+{
+  "spec_id": "my-project",
+  "nodes": {
+    "phase1": {
+      "id": "phase1",
+      "name": "Database Layer",
+      "parent": null,
+      "children": ["T001", "T002"],
+      "depends_on": [],
+      "is_leaf": false
+    },
+    "T001": {
+      "id": "T001",
+      "name": "Create schema",
+      "description": "Design and create the database schema...",
+      "parent": "phase1",
+      "children": [],
+      "depends_on": [],
+      "is_leaf": true
+    }
+  },
+  "root_ids": ["phase1", "phase2"],
+  "execution_order": ["T001", "T002", "T003", "T004"],
+  "spec_files": ["spec/tasks.md"]
+}
+```
+
+This file is the input to `garden` and `gardener` commands. You can inspect and even hand-edit it if the AI planner didn't get the structure right.
