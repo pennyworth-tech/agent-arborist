@@ -15,7 +15,7 @@ RUN npm install -g opencode-ai@latest
 RUN opencode --version
 
 # Set working directory
-WORKDIR /workspace
+WORKDIR /workspaces
 
 # Git configuration will be done in postCreateCommand
 # to ensure correct workspace path

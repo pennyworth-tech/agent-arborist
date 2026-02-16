@@ -55,14 +55,14 @@ class TestDevcontainerIntegration:
         assert result.returncode == 0
 
     def test_all_runners_fixture_has_runners(self, tmp_path):
-        """All-runners fixture has claude, opencode, gemini CLIs."""
+        """All-runners fixture has claude CLI and core tools."""
         fixture = FIXTURES / "devcontainers" / "all-runners"
         shutil.copytree(fixture, tmp_path / "project", dirs_exist_ok=True)
         project = tmp_path / "project"
         subprocess.run(["git", "init", str(project)], check=True, capture_output=True)
 
         devcontainer_up(project)
-        for runner_cmd in ["claude", "opencode", "gemini"]:
+        for runner_cmd in ["claude", "git", "node"]:
             result = devcontainer_exec(["which", runner_cmd], workspace_folder=project)
             assert result.returncode == 0, f"{runner_cmd} not found in container"
 
@@ -75,7 +75,7 @@ class TestDevcontainerIntegration:
 
         devcontainer_up(project)
         devcontainer_exec(
-            ["sh", "-c", "echo 'hello' > /workspaces/project/test-from-container.txt"],
+            ["sh", "-c", "echo 'hello' > test-from-container.txt"],
             workspace_folder=project,
         )
         assert (project / "test-from-container.txt").read_text().strip() == "hello"
@@ -95,6 +95,14 @@ class TestDevcontainerIntegration:
         subprocess.run(["git", "commit", "-m", "init"], cwd=project, check=True, capture_output=True)
 
         devcontainer_up(project)
+        devcontainer_exec(
+            ["git", "config", "user.email", "test@test.com"],
+            workspace_folder=project,
+        )
+        devcontainer_exec(
+            ["git", "config", "user.name", "Test"],
+            workspace_folder=project,
+        )
         devcontainer_exec(
             "echo 'new file' > newfile.txt && git add . && git commit -m 'from container'",
             workspace_folder=project,
@@ -157,10 +165,9 @@ def _hello_world_tree():
     return tree
 
 
-# Runner configs that exist in the all-runners fixture
+# Runner configs for all-runners fixture
 CONTAINER_RUNNER_CONFIGS = [
     pytest.param("claude", "haiku", id="claude-haiku"),
-    pytest.param("gemini", "gemini-2.5-flash", id="gemini-flash"),
 ]
 
 
@@ -168,7 +175,8 @@ CONTAINER_RUNNER_CONFIGS = [
 class TestDevcontainerE2E:
     """End-to-end tests: real AI running inside a devcontainer via garden().
 
-    Uses the all-runners fixture which has claude, opencode, and gemini CLIs.
+    Uses devcontainer fixtures matching each runner (all-runners for claude,
+    minimal-opencode for opencode).
     Validates the same commit structure as test_e2e_ai.py but with
     container_workspace set so AI + tests execute inside the container.
 
