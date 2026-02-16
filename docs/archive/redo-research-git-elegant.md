@@ -89,7 +89,8 @@ In this model, the execution system shifts from a "Task Queue" to a **"State Con
 4.  **Dispatch**: Allocate a Worker to perform the next action.
 
 ### The Worker Pool
-Workers are stateless "Compute Slots" that manage dedicated **Git Worktrees**. This allows Worker A to be on `task-1` and Worker B to be on `task-2` simultaneously within the same repository without cross-talk.
+**Phase 1 (Single Worker)**: Uses sequential branch checkout on the primary worktree.  
+**Phase 3 (Multi-Worker)**: Workers will manage dedicated **Git Worktrees**, allowing Worker A to be on `task-1` and Worker B to be on `task-2` simultaneously within the same repository without cross-talk.
 
 ---
 
@@ -110,21 +111,24 @@ To prevent "Zombie Workers" (slow agents writing to an expired task), every agen
 
 ---
 
-## 8. Jujutsu (jj): The Distributed State Engine
-**Jujutsu (jj)** transforms "Locking" from a blocking problem into a **Conflict Resolution Workflow**. 
+## 8. ~~Jujutsu (jj): The Distributed State Engine~~ **[REMOVED - Git-Only Architecture]**
 
-- **Committable Conflicts**: Unlike Git, JJ allows **conflicts to be committed and pushed**. If two agents diverge, the resulting conflict is pushed to the remote, allowing a specialized `ResolutionAgent` to pull and fix it asynchronously.
-- **Revset Engine as a Controller API**: The Controller uses JJ's functional query language to discover state across the entire distributed graph:
-  - *Ready Tasks*: `jj log -r "heads(namespace/spec::) & ~description(Arborist-Status: Success)"`
-  - *Diverged Work*: `jj log -r "remote_bookmarks() .. bookmarks()"`
-- **Working Copy as a Commit**: Every file save by an agent is a virtual commit. This provides a **Continuous Audit Trail**; if an agent crashes, its last "uncommitted" state is visible to the rest of the distributed system.
-- **Hybrid Architecture**: We recommend **JJ as the Local Worker Engine** for its robust state handling, with **Git as the Wire Protocol** for compatibility with central servers (GitHub/GitLab).
+**Jujutsu (jj) has been removed from the implementation.**
+
+The architecture is now **100% Git-native**. After Phase 1 implementation, we determined that:
+
+- **Simplified Dependency**: Git is universally available; jj adds a dependency barrier
+- **Sufficient Git Primitives**: Git's branch/commit/trailer mechanisms provide all necessary state management
+- **Direct GitHub/GitLab Compatibility**: Pure Git workflow integrates seamlessly with remote platforms without translation layers
+- **Revset Replacement**: Simple `git log --grep` patterns and trailer parsing provide equivalent query capabilities
+
+**Note on Distributed Coordination**: While jj's conflict handling was elegant, standard Git worktrees with `--force-with-lease` push validation provide sufficient coordination for single-worker Phase 1. Multi-worker parallelism (Phase 3) will use Git worktrees and atomic ref locks instead ofjj's committable conflicts.
 
 ---
 
 ## 9. Implementation Strategy: The "Merge-Bot" Runner
 Under this architecture, the **Arborist Runner** becomes a stateless loop:
-1. **Discover**: Scan `git branch` (or use `jj` revsets) for all active leaf branches.
-2. **Evaluate**: Read the last commit on each branch to determine the next step in the protocol.
-3. **Dispatch**: Spin up a `git worktree` (or JJ working copy) and invoke the required Agent (Implementer, Tester, Reviewer).
-4. **Merge**: Once a leaf branch contains all required "Success" signatures, merge it into its hierarchical parent.
+1. **Discover**: Scan `git branch` for all active task branches matching `{namespace}/{spec-id}/**` pattern.
+2. **Evaluate**: Read the last commit on each branch (using `git log --grep` for trailers) to determine the next step in the protocol.
+3. **Dispatch**: Check out the task branch and invoke the required Agent (Implementer, Tester, Reviewer).
+4. **Merge**: Once a leaf branch contains all required "Success" signatures, merge it into its hierarchical parent or base branch.
