@@ -134,6 +134,7 @@ def _parse_test_counts(output: str, framework: str | None) -> dict | None:
 
 def _run_tests(
     node: TaskNode, cwd: Path, global_test_command: str, config_timeout: int | None,
+    container_workspace: Path | None = None,
 ) -> list[TestResult]:
     """Run test commands for a node. Falls back to global_test_command if no per-node tests."""
     commands: list[tuple[str, str, str | None, int | None]] = []  # (command, type, framework, timeout)
@@ -149,10 +150,15 @@ def _run_tests(
         timeout = cmd_timeout or config_timeout or 300
         start = time.monotonic()
         try:
-            proc = subprocess.run(
-                cmd, shell=True, cwd=cwd,
-                capture_output=True, text=True, timeout=timeout,
-            )
+            if container_workspace:
+                from agent_arborist.devcontainer import ensure_container_running, devcontainer_exec
+                ensure_container_running(container_workspace)
+                proc = devcontainer_exec(cmd, container_workspace, timeout=timeout)
+            else:
+                proc = subprocess.run(
+                    cmd, shell=True, cwd=cwd,
+                    capture_output=True, text=True, timeout=timeout,
+                )
             elapsed = time.monotonic() - start
             stdout = proc.stdout or ""
             stderr = proc.stderr or ""
@@ -191,6 +197,7 @@ def _commit_with_trailers(
 def _merge_phase_if_complete(
     tree: TaskTree, task_id: str, cwd: Path, base_branch: str,
     global_test_command: str = "true", config_timeout: int | None = None,
+    container_workspace: Path | None = None,
 ) -> bool | str:
     """If all leaves under the root phase are complete, merge phase branch to base.
 
@@ -216,10 +223,15 @@ def _merge_phase_if_complete(
             timeout = tc.timeout or config_timeout or 300
             start = time.monotonic()
             try:
-                proc = subprocess.run(
-                    tc.command, shell=True, cwd=cwd,
-                    capture_output=True, text=True, timeout=timeout,
-                )
+                if container_workspace:
+                    from agent_arborist.devcontainer import ensure_container_running, devcontainer_exec
+                    ensure_container_running(container_workspace)
+                    proc = devcontainer_exec(tc.command, container_workspace, timeout=timeout)
+                else:
+                    proc = subprocess.run(
+                        tc.command, shell=True, cwd=cwd,
+                        capture_output=True, text=True, timeout=timeout,
+                    )
                 passed = proc.returncode == 0
             except subprocess.TimeoutExpired:
                 passed = False
@@ -317,6 +329,7 @@ def garden(
     log_dir: Path | None = None,
     runner_timeout: int | None = None,
     test_timeout: int | None = None,
+    container_workspace: Path | None = None,
 ) -> GardenResult:
     """Execute one task through the implement → test → review pipeline."""
     # Resolve runners: explicit implement/review runners take precedence,
@@ -359,7 +372,7 @@ def garden(
                 if feedback:
                     prompt += feedback
             logger.debug("Implement prompt: %.200s", prompt)
-            run_kwargs = {"cwd": cwd}
+            run_kwargs = {"cwd": cwd, "container_workspace": container_workspace}
             if runner_timeout is not None:
                 run_kwargs["timeout"] = runner_timeout
             result = implement_runner.run(prompt, **run_kwargs)
@@ -384,7 +397,7 @@ def garden(
             )
 
             # --- test ---
-            test_results = _run_tests(task, cwd, test_command, test_timeout)
+            test_results = _run_tests(task, cwd, test_command, test_timeout, container_workspace)
             all_tests_passed = all(tr.passed for tr in test_results)
             test_val = "pass" if all_tests_passed else "fail"
             logger.info("Task %s test %s", task.id, test_val)
@@ -500,6 +513,7 @@ def garden(
             merge_result = _merge_phase_if_complete(
                 tree, task.id, cwd, base_branch,
                 global_test_command=test_command, config_timeout=test_timeout,
+                container_workspace=container_workspace,
             )
             if merge_result is True:
                 logger.info("Phase merge completed for %s", task.id)
