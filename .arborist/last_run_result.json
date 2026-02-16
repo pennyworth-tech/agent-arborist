@@ -1,1 +1,0 @@
-{"success": false, "timestamp": "2026-02-08T16:32:48.253399", "error": "Cannot instantiate typing.Literal", "skipped": false, "skip_reason": null, "task_id": "T001", "message": "Task execution failed", "files_changed": 0, "commit_message": null, "summary": "", "runner": "claude", "model": "haiku", "duration_seconds": null}
