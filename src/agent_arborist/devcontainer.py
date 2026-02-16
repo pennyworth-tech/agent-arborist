@@ -1,0 +1,108 @@
+"""Devcontainer detection, mode resolution, and CLI wrapper."""
+
+import logging
+import subprocess
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+
+class DevcontainerError(Exception):
+    """Base error for container operations."""
+
+
+class DevcontainerNotFoundError(DevcontainerError):
+    """Raised when container mode is 'enabled' but no .devcontainer/ exists."""
+
+
+def has_devcontainer(cwd: Path) -> bool:
+    """Check if a devcontainer.json exists in the workspace."""
+    return (cwd / ".devcontainer" / "devcontainer.json").is_file()
+
+
+def should_use_container(mode: str, cwd: Path) -> bool:
+    """Resolve container mode against workspace detection.
+
+    Args:
+        mode: One of "auto", "enabled", "disabled".
+        cwd: Workspace root to check for .devcontainer/.
+
+    Returns:
+        True if container execution should be used.
+
+    Raises:
+        DevcontainerNotFoundError: If mode is "enabled" but no devcontainer found.
+    """
+    if mode == "disabled":
+        return False
+    if mode == "enabled":
+        if not has_devcontainer(cwd):
+            raise DevcontainerNotFoundError(
+                f"Container mode is 'enabled' but no .devcontainer/devcontainer.json "
+                f"found in {cwd}"
+            )
+        return True
+    # auto
+    return has_devcontainer(cwd)
+
+
+# --- CLI wrapper ---
+
+
+def devcontainer_up(workspace_folder: Path) -> None:
+    """Start container for workspace. Idempotent — safe to call if already running."""
+    logger.info("Starting devcontainer for %s", workspace_folder)
+    subprocess.run(
+        ["devcontainer", "up", "--workspace-folder", str(workspace_folder)],
+        check=True, capture_output=True, text=True,
+    )
+
+
+def devcontainer_exec(
+    cmd: list[str] | str,
+    workspace_folder: Path,
+    timeout: int | None = None,
+) -> subprocess.CompletedProcess:
+    """Run command inside the container.
+
+    Args:
+        cmd: Command as list or shell string. If str, wrapped in ["sh", "-c", cmd]
+             to support shell syntax (pipes, &&, etc.) needed by test commands.
+        workspace_folder: Path to the workspace (must contain .devcontainer/).
+        timeout: Optional timeout in seconds.
+    """
+    if isinstance(cmd, str):
+        cmd = ["sh", "-c", cmd]
+    args = ["devcontainer", "exec", "--workspace-folder", str(workspace_folder)]
+    args += cmd
+    kwargs: dict = {"capture_output": True, "text": True}
+    if timeout is not None:
+        kwargs["timeout"] = timeout
+    return subprocess.run(args, **kwargs)
+
+
+def is_container_running(workspace_folder: Path) -> bool:
+    """Check if a devcontainer is running for this workspace."""
+    result = subprocess.run(
+        ["devcontainer", "up", "--workspace-folder", str(workspace_folder),
+         "--expect-existing-container"],
+        capture_output=True, text=True,
+    )
+    return result.returncode == 0
+
+
+def ensure_container_running(workspace_folder: Path) -> None:
+    """Lazy up: start container if not already running. Health check on first start.
+
+    On first successful start, verifies git is available inside the container.
+    Raises DevcontainerError if git is not found.
+    """
+    if not is_container_running(workspace_folder):
+        devcontainer_up(workspace_folder)
+        # Health check: git must be available for AI agents to commit
+        result = devcontainer_exec(["git", "--version"], workspace_folder)
+        if result.returncode != 0:
+            raise DevcontainerError(
+                "git is not available inside the devcontainer. "
+                "AI agents need git to commit. Add git to your Dockerfile."
+            )
