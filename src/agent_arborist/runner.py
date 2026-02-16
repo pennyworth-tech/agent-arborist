@@ -83,7 +83,7 @@ def _execute_command(
     cmd: list[str],
     timeout: int,
     cwd: Path | None = None,
-    container_cmd_prefix: list[str] | None = None,
+    container_workspace: Path | None = None,
 ) -> RunResult:
     """Execute a command and return standardized result.
 
@@ -93,53 +93,51 @@ def _execute_command(
         cmd: Command and arguments to execute
         timeout: Timeout in seconds
         cwd: Working directory for execution
-        container_cmd_prefix: Optional prefix for container execution (e.g., ["devcontainer", "exec", ...])
-                             If provided, prepends this to cmd and cwd is handled by container
+        container_workspace: If set, run inside devcontainer for this workspace
 
     Returns:
         RunResult with success status, output, and error details
     """
     logger.info("Running %s (timeout=%ds)", cmd[0], timeout)
     logger.debug("Full command: %s", cmd)
-    # Apply container prefix if provided
-    if container_cmd_prefix:
-        cmd = container_cmd_prefix + cmd
-        # Container sets working directory, don't pass cwd to subprocess
-        cwd = None
 
-    try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            cwd=cwd,
-        )
+    if container_workspace:
+        from agent_arborist.devcontainer import ensure_container_running, devcontainer_exec
+        ensure_container_running(container_workspace)
+        result = devcontainer_exec(cmd, container_workspace, timeout=timeout)
+    else:
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=cwd,
+            )
+        except subprocess.TimeoutExpired:
+            logger.warning("Command timed out after %ds: %s", timeout, cmd[0])
+            return RunResult(
+                success=False,
+                output="",
+                error=f"Timeout after {timeout} seconds",
+                exit_code=-1,
+            )
+        except Exception as e:
+            logger.warning("Command error: %s", e)
+            return RunResult(
+                success=False,
+                output="",
+                error=str(e),
+                exit_code=-1,
+            )
 
-        logger.debug("Command output length: %d chars", len(result.stdout))
-        return RunResult(
-            success=result.returncode == 0,
-            output=result.stdout.strip(),
-            error=result.stderr.strip() if result.returncode != 0 else None,
-            exit_code=result.returncode,
-        )
-
-    except subprocess.TimeoutExpired:
-        logger.warning("Command timed out after %ds: %s", timeout, cmd[0])
-        return RunResult(
-            success=False,
-            output="",
-            error=f"Timeout after {timeout} seconds",
-            exit_code=-1,
-        )
-    except Exception as e:
-        logger.warning("Command error: %s", e)
-        return RunResult(
-            success=False,
-            output="",
-            error=str(e),
-            exit_code=-1,
-        )
+    logger.debug("Command output length: %d chars", len(result.stdout))
+    return RunResult(
+        success=result.returncode == 0,
+        output=result.stdout.strip(),
+        error=result.stderr.strip() if result.returncode != 0 else None,
+        exit_code=result.returncode,
+    )
 
 
 class Runner(ABC):
@@ -154,7 +152,7 @@ class Runner(ABC):
         prompt: str,
         timeout: int = 600,
         cwd: Path | None = None,
-        container_cmd_prefix: list[str] | None = None,
+        container_workspace: Path | None = None,
     ) -> RunResult:
         """Run a prompt and return the result.
 
@@ -162,7 +160,7 @@ class Runner(ABC):
             prompt: The prompt to execute
             timeout: Timeout in seconds
             cwd: Working directory for the runner (allows AI to explore files)
-            container_cmd_prefix: Optional prefix for container execution
+            container_workspace: Workspace path for devcontainer execution
         """
         pass
 
@@ -190,7 +188,7 @@ class ClaudeRunner(Runner):
         prompt: str,
         timeout: int = 600,
         cwd: Path | None = None,
-        container_cmd_prefix: list[str] | None = None,
+        container_workspace: Path | None = None,
     ) -> RunResult:
         """Run a prompt using Claude CLI.
 
@@ -200,7 +198,7 @@ class ClaudeRunner(Runner):
         if self.model:
             cmd.extend(["--model", self.model])
 
-        return _execute_command(cmd, timeout, cwd, container_cmd_prefix)
+        return _execute_command(cmd, timeout, cwd, container_workspace)
 
 
 class OpencodeRunner(Runner):
@@ -222,7 +220,7 @@ class OpencodeRunner(Runner):
         prompt: str,
         timeout: int = 600,
         cwd: Path | None = None,
-        container_cmd_prefix: list[str] | None = None,
+        container_workspace: Path | None = None,
     ) -> RunResult:
         """Run a prompt using OpenCode CLI."""
         # OpenCode uses 'run' subcommand for non-interactive mode
@@ -232,7 +230,7 @@ class OpencodeRunner(Runner):
             cmd.extend(["-m", self.model])
         cmd.append(prompt)
 
-        return _execute_command(cmd, timeout, cwd, container_cmd_prefix)
+        return _execute_command(cmd, timeout, cwd, container_workspace)
 
 
 class GeminiRunner(Runner):
@@ -254,7 +252,7 @@ class GeminiRunner(Runner):
         prompt: str,
         timeout: int = 600,
         cwd: Path | None = None,
-        container_cmd_prefix: list[str] | None = None,
+        container_workspace: Path | None = None,
     ) -> RunResult:
         """Run a prompt using Gemini CLI."""
         # Gemini CLI uses positional prompt argument
@@ -263,7 +261,7 @@ class GeminiRunner(Runner):
             cmd.extend(["-m", self.model])
         cmd.append(prompt)
 
-        return _execute_command(cmd, timeout, cwd, container_cmd_prefix)
+        return _execute_command(cmd, timeout, cwd, container_workspace)
 
 
 def get_runner(runner_type: RunnerType, model: str | None = None) -> Runner:
@@ -305,7 +303,7 @@ def run_ai_task(
     model: str | None = None,
     cwd: Path | None = None,
     timeout: int = 1800,
-    use_container: bool = False,
+    container_workspace: Path | None = None,
 ) -> AITaskResult:
     """Run an AI task using the specified runner.
 
@@ -317,7 +315,7 @@ def run_ai_task(
         model: Model to use
         cwd: Working directory for the AI to explore
         timeout: Timeout in seconds
-        use_container: Whether to use container execution
+        container_workspace: If set, run inside devcontainer for this workspace
 
     Returns:
         AITaskResult with success status and details
@@ -329,18 +327,11 @@ def run_ai_task(
     try:
         runner_instance = get_runner(runner, model)
 
-        # Get container command prefix if needed
-        container_cmd_prefix = None
-        if use_container and cwd:
-            from agent_arborist.container_runner import get_devcontainer_exec_prefix
-
-            container_cmd_prefix = get_devcontainer_exec_prefix(cwd)
-
         result = runner_instance.run(
             prompt=prompt,
             timeout=timeout,
             cwd=cwd,
-            container_cmd_prefix=container_cmd_prefix,
+            container_workspace=container_workspace,
         )
 
         duration = time.time() - start_time

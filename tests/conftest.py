@@ -51,7 +51,7 @@ class MockRunner:
     model: str = "mock-model"
     command: str = "mock"
 
-    def run(self, prompt, timeout=60, cwd=None, container_cmd_prefix=None):
+    def run(self, prompt, timeout=60, cwd=None, container_workspace=None):
         from agent_arborist.runner import RunResult
         if "Review" in prompt or "review" in prompt:
             if self.review_sequence:
@@ -98,7 +98,7 @@ class TrackingRunner:
     model: str = "mock-model"
     command: str = "mock"
 
-    def run(self, prompt, timeout=600, cwd=None, container_cmd_prefix=None):
+    def run(self, prompt, timeout=600, cwd=None, container_workspace=None):
         from agent_arborist.runner import RunResult
         self.prompts.append(prompt)
         self.timeouts.append(timeout)
@@ -120,7 +120,7 @@ class CrashingRunner:
     model: str = "mock-model"
     command: str = "mock"
 
-    def run(self, prompt, timeout=60, cwd=None, container_cmd_prefix=None):
+    def run(self, prompt, timeout=60, cwd=None, container_workspace=None):
         from agent_arborist.runner import RunResult
         self._call_count += 1
         if self._call_count > self.crash_after:
