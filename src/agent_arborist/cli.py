@@ -41,6 +41,17 @@ def _default_repo() -> str:
         return "."
 
 
+def _resolve_container_workspace(
+    cli_mode: str | None, cfg: ArboristConfig, target: Path,
+) -> Path | None:
+    """Resolve container mode and return workspace path or None."""
+    from agent_arborist.devcontainer import should_use_container
+    resolved_mode = cli_mode or cfg.defaults.container_mode
+    if should_use_container(resolved_mode, target):
+        return target
+    return None
+
+
 @click.group()
 @click.option(
     "--log-level",
@@ -159,7 +170,10 @@ def init():
 @click.option("--no-ai", is_flag=True, help="Disable AI planning; use markdown parser instead")
 @click.option("--runner", default=None, help="Runner for AI planning (default: from config or 'claude')")
 @click.option("--model", default=None, help="Model for AI planning (default: from config or 'opus')")
-def build(spec_dir, output, namespace, spec_id, no_ai, runner, model):
+@click.option("--container-mode", "-c", "container_mode", default=None,
+              type=click.Choice(["auto", "enabled", "disabled"]),
+              help="Container mode for AI planning (default: from config or 'auto')")
+def build(spec_dir, output, namespace, spec_id, no_ai, runner, model, container_mode):
     """Build a task tree from a spec directory and write it to a JSON file."""
     if spec_id is None:
         spec_id = spec_dir.name if spec_dir.name != "spec" else Path.cwd().resolve().name
@@ -179,12 +193,15 @@ def build(spec_dir, output, namespace, spec_id, no_ai, runner, model):
         resolved_model = model or cfg.defaults.model or DAG_DEFAULT_MODEL
         console.print(f"[bold]Planning task tree with AI ({resolved_runner}/{resolved_model})...[/bold]")
         runner, model = resolved_runner, resolved_model
+        target = Path.cwd().resolve()
+        container_ws = _resolve_container_workspace(container_mode, cfg, target)
         result = plan_tree(
             spec_dir=spec_dir,
             spec_id=spec_id,
             namespace=namespace,
             runner_type=runner,
             model=model,
+            container_workspace=container_ws,
         )
         if not result.success:
             console.print(f"[red]Error:[/red] {result.error}")
@@ -221,7 +238,10 @@ def build(spec_dir, output, namespace, spec_id, no_ai, runner, model):
               help="Directory for report JSON files (default: next to task tree)")
 @click.option("--log-dir", type=click.Path(path_type=Path), default=None,
               help="Directory for runner log files (default: .arborist/logs)")
-def garden(tree_path, runner, model, max_retries, test_command, target_repo, base_branch, report_dir, log_dir):
+@click.option("--container-mode", "-c", "container_mode", default=None,
+              type=click.Choice(["auto", "enabled", "disabled"]),
+              help="Container mode (default: from config or 'auto')")
+def garden(tree_path, runner, model, max_retries, test_command, target_repo, base_branch, report_dir, log_dir, container_mode):
     """Execute a single task."""
     from agent_arborist.runner import get_runner
     from agent_arborist.worker.garden import garden as garden_fn
@@ -245,6 +265,7 @@ def garden(tree_path, runner, model, max_retries, test_command, target_repo, bas
     impl_runner_instance = get_runner(impl_runner_name, impl_model)
     rev_runner_instance = get_runner(rev_runner_name, rev_model)
     resolved_test_timeout = cfg.test.timeout or cfg.timeouts.test_command
+    container_ws = _resolve_container_workspace(container_mode, cfg, target)
     result = garden_fn(
         tree, target,
         implement_runner=impl_runner_instance,
@@ -256,6 +277,7 @@ def garden(tree_path, runner, model, max_retries, test_command, target_repo, bas
         log_dir=Path(log_dir).resolve(),
         runner_timeout=cfg.timeouts.runner_timeout,
         test_timeout=resolved_test_timeout,
+        container_workspace=container_ws,
     )
 
     if result.success:
@@ -278,7 +300,10 @@ def garden(tree_path, runner, model, max_retries, test_command, target_repo, bas
               help="Directory for report JSON files (default: next to task tree)")
 @click.option("--log-dir", type=click.Path(path_type=Path), default=None,
               help="Directory for runner log files (default: .arborist/logs)")
-def gardener(tree_path, runner, model, max_retries, test_command, target_repo, base_branch, report_dir, log_dir):
+@click.option("--container-mode", "-c", "container_mode", default=None,
+              type=click.Choice(["auto", "enabled", "disabled"]),
+              help="Container mode (default: from config or 'auto')")
+def gardener(tree_path, runner, model, max_retries, test_command, target_repo, base_branch, report_dir, log_dir, container_mode):
     """Run the gardener loop to execute all tasks."""
     from agent_arborist.runner import get_runner
     from agent_arborist.worker.gardener import gardener as gardener_fn
@@ -302,6 +327,7 @@ def gardener(tree_path, runner, model, max_retries, test_command, target_repo, b
     resolved_test_timeout = cfg.test.timeout or cfg.timeouts.test_command
     impl_runner_instance = get_runner(impl_runner_name, impl_model)
     rev_runner_instance = get_runner(rev_runner_name, rev_model)
+    container_ws = _resolve_container_workspace(container_mode, cfg, target)
     result = gardener_fn(
         tree, target,
         implement_runner=impl_runner_instance,
@@ -313,6 +339,7 @@ def gardener(tree_path, runner, model, max_retries, test_command, target_repo, b
         log_dir=Path(log_dir).resolve(),
         runner_timeout=cfg.timeouts.runner_timeout,
         test_timeout=resolved_test_timeout,
+        container_workspace=container_ws,
     )
 
     if result.success:

@@ -137,6 +137,7 @@ def plan_tree(
     runner_type: RunnerType = DAG_DEFAULT_RUNNER,
     model: str = DAG_DEFAULT_MODEL,
     timeout: int = 120,
+    container_workspace: Path | None = None,
 ) -> PlanResult:
     """Use AI to generate a TaskTree from a spec directory."""
     runner_instance = runner or get_runner(runner_type, model)
@@ -149,7 +150,8 @@ def plan_tree(
         spec_contents=spec_contents,
     )
     logger.debug("Prompt length: %d chars", len(prompt))
-    result = runner_instance.run(prompt, timeout=timeout, cwd=spec_dir)
+    result = runner_instance.run(prompt, timeout=timeout, cwd=spec_dir,
+                                 container_workspace=container_workspace)
 
     if not result.success:
         return PlanResult(
