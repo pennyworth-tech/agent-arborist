@@ -18,7 +18,9 @@
 | Phase | Scope | Status |
 |:------|:------|:-------|
 | **Phase 1** | Git-native single-worker, tree builder, protocol commits | **Complete** ✅ |
-| **Phase 2** | First-class test commands, devcontainer support, hooks | **T2.0 Complete** ✅ |
+| **Phase 2.0** | First-class test commands, per-node tests, output parsing, phase gating | **Complete** ✅ |
+| **Phase 2.1** | Devcontainer support (detection, CLI wrapper, runtime wiring) | **Complete** ✅ |
+| **Phase 2.2–2.3** | Hooks system, custom protocol steps | Future |
 | **Phase 3** | Parallel workers, locking, distributed coordination | Future |
 
 ---
@@ -610,11 +612,455 @@ Currently, `test_command` is a single global string passed via CLI/config. This 
 - Commits the deletion as a final cleanup commit on the phase branch
 - Prepares the branch for the user to open a clean squash-merge PR through their normal workflow
 
-### 2.1 — Devcontainer Integration (Future)
-- Detect `.devcontainer/` in target repo
-- Wrap runner commands with `devcontainer exec`
-- Container lifecycle management (build, start, stop)
-- Environment variable passthrough
+### 2.1 — Devcontainer Integration
+
+**Branch**: `feature/complete-redo-phase2`
+
+Arborist can optionally run AI runner and test commands inside the **target project's devcontainer**. Arborist does NOT provide a devcontainer — it detects and uses the target repo's existing `.devcontainer/` configuration.
+
+**Design decisions:**
+- **Exec + lazy up**: Use `devcontainer exec` for all in-container commands. If no container is running, `devcontainer up` is called automatically before the first exec. No explicit teardown (container persists for reuse across tasks).
+- **Env var strategy**: User's responsibility. API keys (ANTHROPIC_API_KEY, OPENAI_API_KEY, etc.) are configured via `remoteEnv` / `${localEnv:VAR}` in the user's `devcontainer.json`. Arborist does NOT manage env files or passthrough — zero arborist code for env vars.
+- **Container mode**: Three modes — `auto` (default: use if `.devcontainer/` present), `enabled` (require it, fail if absent), `disabled` (never use).
+- **Health check**: On first container exec, verify `git --version` is available. Fail with clear error if git is missing.
+- **Testing**: Real container builds behind `@pytest.mark.container`. Existing fixtures in `tests/fixtures/devcontainers/` are used.
+
+**What runs WHERE:**
+
+| What | Where | Why |
+|:-----|:------|:----|
+| AI runner CLI (implements code, may commit) | **Container** | Needs project tooling, deps, language runtimes |
+| Test commands (pytest, jest, go test) | **Container** | Needs project deps and test frameworks |
+| AI review runner (reads diff, returns verdict) | **Container** | Consistent with implement; may need project context |
+| Git commits with trailers (`_commit_with_trailers`) | **Host** | Arborist protocol; workspace volume-mounted so host sees AI's file changes |
+| Git branch/checkout/merge/diff/log | **Host** | Arborist orchestration; sequential so no conflicts |
+| Task discovery, state scanning | **Host** | Pure git log parsing |
+| Gardener loop, garden() orchestration | **Host** | Control flow only |
+| AI planner (`build` without `--no-ai`) | **Container** | All AI calls go through container when active |
+
+**Key insight**: The workspace is volume-mounted. The AI agent runs inside the container and edits files (may also `git commit`). Those changes are immediately visible on the host via the mount. Arborist then does `git_add_all` + `_commit_with_trailers` on the host to record protocol state. Merges are always conflict-free because execution is sequential (single worker).
+
+**Container requirements** (user's `.devcontainer/` must provide):
+- `git` (AI agents commit inside the container; health check verifies this)
+- Runner CLIs (`claude`, `opencode`, or `gemini` depending on config)
+- Project language runtime and dependencies
+- API key env vars via `remoteEnv` in `devcontainer.json`
+
+**Config precedence for `container_mode`** (same pattern as runner/model):
+```
+CLI flag --container-mode      (highest)
+    ↓
+ARBORIST_CONTAINER_MODE env var
+    ↓
+.arborist/config.json → defaults.container_mode
+    ↓
+~/.arborist_config.json → defaults.container_mode
+    ↓
+hardcoded "auto"               (lowest)
+```
+
+**Note**: `container_mode` stays in `DefaultsConfig` — already exists in config.py. The `ARBORIST_CONTAINER_MODE` env var and config merge are already wired. Only the CLI flag and runtime resolution are missing.
+
+---
+
+#### T2.1.1 — Devcontainer detection & mode resolution
+
+Add detection and resolution functions to new `src/agent_arborist/devcontainer.py`:
+- `has_devcontainer(cwd: Path) -> bool` — checks for `.devcontainer/devcontainer.json`
+- `should_use_container(mode: str, cwd: Path) -> bool` — resolves auto/enabled/disabled against detection
+- `DevcontainerNotFoundError` — raised when mode is `enabled` but no `.devcontainer/` present
+- `DevcontainerError` — base error for container operations
+
+Config system already handles `container_mode` in `DefaultsConfig` (config.py:71), `ARBORIST_CONTAINER_MODE` env var (config.py:38), `apply_env_overrides` (config.py:936), and `merge_configs` (config.py:847). No config changes needed.
+
+**Tests** (`tests/test_devcontainer.py`):
+```python
+def test_detect_devcontainer_present(tmp_path):
+    (tmp_path / ".devcontainer").mkdir()
+    (tmp_path / ".devcontainer/devcontainer.json").write_text("{}")
+    assert has_devcontainer(tmp_path) is True
+
+def test_detect_devcontainer_absent(tmp_path):
+    assert has_devcontainer(tmp_path) is False
+
+def test_mode_auto_with_devcontainer(tmp_path):
+    (tmp_path / ".devcontainer").mkdir()
+    (tmp_path / ".devcontainer/devcontainer.json").write_text("{}")
+    assert should_use_container("auto", tmp_path) is True
+
+def test_mode_auto_without_devcontainer(tmp_path):
+    assert should_use_container("auto", tmp_path) is False
+
+def test_mode_enabled_without_devcontainer_raises(tmp_path):
+    with pytest.raises(DevcontainerNotFoundError):
+        should_use_container("enabled", tmp_path)
+
+def test_mode_disabled_ignores_devcontainer(tmp_path):
+    (tmp_path / ".devcontainer").mkdir()
+    (tmp_path / ".devcontainer/devcontainer.json").write_text("{}")
+    assert should_use_container("disabled", tmp_path) is False
+```
+
+#### T2.1.2 — `devcontainer` CLI wrapper (`devcontainer.py`)
+
+Thin wrapper around the `devcontainer` CLI, same module as T2.1.1:
+
+```python
+def devcontainer_up(workspace_folder: Path) -> None:
+    """Start container for workspace. Idempotent — safe to call if already running."""
+    subprocess.run(
+        ["devcontainer", "up", "--workspace-folder", str(workspace_folder)],
+        check=True, capture_output=True, text=True,
+    )
+
+def devcontainer_exec(
+    cmd: list[str] | str,
+    workspace_folder: Path,
+    timeout: int | None = None,
+) -> subprocess.CompletedProcess:
+    """Run command inside the container.
+
+    Args:
+        cmd: Command as list or shell string. If str, wrapped in ["sh", "-c", cmd]
+             to support shell syntax (pipes, &&, etc.) needed by test commands.
+        workspace_folder: Path to the workspace (must contain .devcontainer/).
+        timeout: Optional timeout in seconds.
+    """
+    if isinstance(cmd, str):
+        cmd = ["sh", "-c", cmd]
+    args = ["devcontainer", "exec", "--workspace-folder", str(workspace_folder)]
+    args += cmd
+    kwargs = {"capture_output": True, "text": True}
+    if timeout is not None:
+        kwargs["timeout"] = timeout
+    return subprocess.run(args, **kwargs)
+
+def is_container_running(workspace_folder: Path) -> bool:
+    """Check if a devcontainer is running for this workspace."""
+    result = subprocess.run(
+        ["devcontainer", "up", "--workspace-folder", str(workspace_folder),
+         "--expect-existing-container"],
+        capture_output=True, text=True,
+    )
+    return result.returncode == 0
+
+def ensure_container_running(workspace_folder: Path) -> None:
+    """Lazy up: start container if not already running. Health check on first start.
+
+    On first successful start, verifies git is available inside the container.
+    Raises DevcontainerError if git is not found.
+    """
+    if not is_container_running(workspace_folder):
+        devcontainer_up(workspace_folder)
+        # Health check: git must be available for AI agents to commit
+        result = devcontainer_exec(["git", "--version"], workspace_folder)
+        if result.returncode != 0:
+            raise DevcontainerError(
+                "git is not available inside the devcontainer. "
+                "AI agents need git to commit. Add git to your Dockerfile."
+            )
+```
+
+**Tests** (mock subprocess):
+```python
+def test_devcontainer_exec_list_cmd(mock_subprocess):
+    devcontainer_exec(["pytest", "tests/"], workspace_folder=Path("/repo"))
+    args = mock_subprocess.call_args[0][0]
+    assert args == ["devcontainer", "exec", "--workspace-folder", "/repo", "pytest", "tests/"]
+
+def test_devcontainer_exec_string_cmd_wraps_in_shell(mock_subprocess):
+    """String commands get wrapped in sh -c for shell syntax support."""
+    devcontainer_exec("pytest tests/ && echo done", workspace_folder=Path("/repo"))
+    args = mock_subprocess.call_args[0][0]
+    assert args == ["devcontainer", "exec", "--workspace-folder", "/repo",
+                    "sh", "-c", "pytest tests/ && echo done"]
+
+def test_devcontainer_exec_with_timeout(mock_subprocess):
+    devcontainer_exec(["echo", "hi"], workspace_folder=Path("/repo"), timeout=30)
+    assert mock_subprocess.call_args.kwargs["timeout"] == 30
+
+def test_ensure_container_running_calls_up_when_not_running(mock_subprocess):
+    # First call (is_running check) fails, second (up) succeeds, third (health) succeeds
+    mock_subprocess.side_effect = [
+        subprocess.CompletedProcess(args=[], returncode=1),  # not running
+        subprocess.CompletedProcess(args=[], returncode=0),  # up succeeds
+        subprocess.CompletedProcess(args=[], returncode=0, stdout="git version 2.x"),  # health
+    ]
+    ensure_container_running(Path("/repo"))
+
+def test_ensure_container_health_check_fails_without_git(mock_subprocess):
+    mock_subprocess.side_effect = [
+        subprocess.CompletedProcess(args=[], returncode=1),  # not running
+        subprocess.CompletedProcess(args=[], returncode=0),  # up succeeds
+        subprocess.CompletedProcess(args=[], returncode=1),  # git not found
+    ]
+    with pytest.raises(DevcontainerError, match="git is not available"):
+        ensure_container_running(Path("/repo"))
+
+def test_ensure_container_noop_when_already_running(mock_subprocess):
+    mock_subprocess.return_value = subprocess.CompletedProcess(args=[], returncode=0)
+    ensure_container_running(Path("/repo"))
+    # Only one call (the is_running check), no up or health check
+    assert mock_subprocess.call_count == 1
+```
+
+#### T2.1.3 — Wire devcontainer into `runner.py`
+
+Update `_execute_command()` to use `devcontainer exec` when container mode is active:
+
+- Currently `_execute_command(cmd, timeout, cwd, container_cmd_prefix)` takes an optional prefix
+- Replace `container_cmd_prefix` with `container_workspace: Path | None`
+- When `container_workspace` is set: call `ensure_container_running()`, then `devcontainer_exec(cmd, workspace_folder, timeout)`
+- When not set: existing `subprocess.run(cmd, cwd=cwd)` behavior unchanged
+- Update `Runner.run()` signature: replace `container_cmd_prefix` with `container_workspace`
+- Update `run_ai_task()`: accept `use_container: bool`, resolve workspace, pass through
+
+**Tests**:
+```python
+def test_execute_command_host_mode(mock_subprocess):
+    """Without container, runs directly with cwd."""
+    _execute_command(["echo", "hi"], timeout=30, cwd=Path("/repo"))
+    assert mock_subprocess.call_args.kwargs["cwd"] == Path("/repo")
+
+def test_execute_command_container_mode(mock_subprocess, mock_devcontainer):
+    """With container workspace, wraps via devcontainer exec."""
+    _execute_command(["echo", "hi"], timeout=30, cwd=Path("/repo"),
+                     container_workspace=Path("/repo"))
+    # Should have called devcontainer_exec, not subprocess directly
+    mock_devcontainer.exec.assert_called_once()
+
+def test_runner_run_passes_container_workspace(mock_subprocess, mock_devcontainer):
+    runner = ClaudeRunner(model="sonnet")
+    runner.run("hello", cwd=Path("/repo"), container_workspace=Path("/repo"))
+    mock_devcontainer.ensure_running.assert_called_with(Path("/repo"))
+```
+
+#### T2.1.4 — Wire devcontainer into `garden.py` test execution
+
+Update `_run_tests()` and `_merge_phase_if_complete()` to execute test commands inside the container:
+
+- Add `container_workspace: Path | None` parameter to `_run_tests()`
+- When set: use `devcontainer_exec(cmd, workspace_folder, timeout)` instead of `subprocess.run(cmd, shell=True, cwd=...)`
+- Note: test commands are strings (shell syntax), so `devcontainer_exec` wraps them in `["sh", "-c", cmd]`
+- Same change in `_merge_phase_if_complete()` for phase-level integration/e2e tests
+- Test output parsing (`_parse_test_counts`) unchanged — works on stdout regardless
+- `garden()` receives `container_workspace: Path | None` parameter, passes through to runner calls and test calls
+
+**Updated `garden()` signature:**
+```python
+def garden(
+    tree: TaskTree,
+    cwd: Path,
+    runner=None,
+    *,
+    implement_runner=None,
+    review_runner=None,
+    test_command: str = "true",
+    max_retries: int = 3,
+    base_branch: str = "main",
+    report_dir: Path | None = None,
+    log_dir: Path | None = None,
+    runner_timeout: int | None = None,
+    test_timeout: int | None = None,
+    container_workspace: Path | None = None,  # NEW
+) -> GardenResult:
+```
+
+**What changes inside `garden()`:**
+- `implement_runner.run(prompt, cwd=cwd, container_workspace=container_workspace)` (line ~365)
+- `review_runner.run(review_prompt, cwd=cwd, container_workspace=container_workspace)` (line ~452)
+- `_run_tests(node, cwd, test_command, test_timeout, container_workspace=container_workspace)` (line ~387)
+- `_merge_phase_if_complete(..., container_workspace=container_workspace)` (line ~500)
+
+**What does NOT change:**
+- ALL git operations remain on host: `git_checkout`, `git_branch_exists`, `git_add_all`, `git_commit`, `git_merge`, `git_diff`, `git_log`
+- `_commit_with_trailers()` — host, uses volume-mounted workspace
+- `_collect_feedback_from_git()` — host, reads git log
+- `_write_log()`, report file writes — host
+- `scan_completed_tasks()` — host, git log parsing
+
+#### T2.1.5 — CLI flags + gardener/build passthrough
+
+Add `--container-mode` / `-c` flag to **all three** runtime CLI commands:
+
+**`garden` command:**
+```python
+@click.option("--container-mode", "-c", "container_mode", default=None,
+              type=click.Choice(["auto", "enabled", "disabled"]),
+              help="Container mode (default: from config or 'auto')")
+def garden(tree_path, runner, model, ..., container_mode):
+    cfg = _load_config()
+    resolved_container_mode = container_mode or cfg.defaults.container_mode
+    use_container = should_use_container(resolved_container_mode, target)
+    container_ws = target if use_container else None
+    result = garden_fn(..., container_workspace=container_ws)
+```
+
+**`gardener` command** — same flag, passes `container_workspace` through to each `garden()` call.
+
+**`build` command** — same flag. When `use_container` is true AND `--no-ai` is NOT set, the AI planner's runner call goes through `devcontainer exec`. Pure markdown parsing (`--no-ai`) never uses container.
+
+**Precedence** (follows existing pattern for runner/model):
+```
+CLI --container-mode flag    (highest, None if not provided)
+    ↓
+config.defaults.container_mode  (already merged from: env var > project > global > "auto")
+    ↓
+resolve: should_use_container(mode, cwd) → bool
+```
+
+#### T2.1.6 — Real container integration tests
+
+Tests using the existing fixtures in `tests/fixtures/devcontainers/`. These actually build and exec into containers.
+
+**Marker**: `@pytest.mark.container` — skipped by default, opt-in via `pytest -m container`
+
+**Requires**: Docker daemon running + `devcontainer` CLI installed (`npm install -g @devcontainers/cli`).
+
+```python
+FIXTURES = Path(__file__).parent / "fixtures"
+
+@pytest.mark.container
+class TestDevcontainerIntegration:
+    """Tests that build and run real devcontainers.
+
+    Requires: docker daemon running, devcontainer CLI installed.
+    Uses fixtures from tests/fixtures/devcontainers/
+    """
+
+    def test_minimal_container_up_and_exec(self, tmp_path):
+        """Build minimal-opencode fixture, exec a command inside."""
+        fixture = FIXTURES / "devcontainers" / "minimal-opencode"
+        shutil.copytree(fixture, tmp_path / "project", dirs_exist_ok=True)
+        project = tmp_path / "project"
+        subprocess.run(["git", "init", str(project)], check=True, capture_output=True)
+
+        devcontainer_up(project)
+        result = devcontainer_exec(["echo", "hello"], workspace_folder=project)
+        assert result.returncode == 0
+        assert "hello" in result.stdout
+
+    def test_health_check_git_available(self, tmp_path):
+        """Health check passes — git is available in minimal-opencode fixture."""
+        fixture = FIXTURES / "devcontainers" / "minimal-opencode"
+        shutil.copytree(fixture, tmp_path / "project", dirs_exist_ok=True)
+        project = tmp_path / "project"
+        subprocess.run(["git", "init", str(project)], check=True, capture_output=True)
+
+        # ensure_container_running does lazy-up + health check
+        ensure_container_running(project)
+        result = devcontainer_exec(["git", "--version"], workspace_folder=project)
+        assert result.returncode == 0
+
+    def test_all_runners_fixture_has_runners(self, tmp_path):
+        """All-runners fixture has claude, opencode, gemini CLIs."""
+        fixture = FIXTURES / "devcontainers" / "all-runners"
+        shutil.copytree(fixture, tmp_path / "project", dirs_exist_ok=True)
+        project = tmp_path / "project"
+        subprocess.run(["git", "init", str(project)], check=True, capture_output=True)
+
+        devcontainer_up(project)
+        for runner_cmd in ["claude", "opencode", "gemini"]:
+            result = devcontainer_exec(["which", runner_cmd], workspace_folder=project)
+            assert result.returncode == 0, f"{runner_cmd} not found in container"
+
+    def test_volume_mount_file_visibility(self, tmp_path):
+        """Files created inside container are visible on host via volume mount."""
+        fixture = FIXTURES / "devcontainers" / "minimal-opencode"
+        shutil.copytree(fixture, tmp_path / "project", dirs_exist_ok=True)
+        project = tmp_path / "project"
+        subprocess.run(["git", "init", str(project)], check=True, capture_output=True)
+
+        devcontainer_up(project)
+        # Create file inside container
+        devcontainer_exec(["sh", "-c", "echo 'hello' > /workspace/test-from-container.txt"],
+                          workspace_folder=project)
+        # Verify visible on host
+        assert (project / "test-from-container.txt").read_text().strip() == "hello"
+
+    def test_git_commit_inside_container_visible_on_host(self, tmp_path):
+        """AI agent commits inside container → visible to host git."""
+        fixture = FIXTURES / "devcontainers" / "minimal-opencode"
+        shutil.copytree(fixture, tmp_path / "project", dirs_exist_ok=True)
+        project = tmp_path / "project"
+        subprocess.run(["git", "init", str(project)], check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"],
+                        cwd=project, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"],
+                        cwd=project, check=True, capture_output=True)
+        # Initial commit on host
+        (project / "README.md").write_text("init")
+        subprocess.run(["git", "add", "."], cwd=project, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=project, check=True, capture_output=True)
+
+        devcontainer_up(project)
+        # Commit inside container
+        devcontainer_exec(
+            "echo 'new file' > newfile.txt && git add . && git commit -m 'from container'",
+            workspace_folder=project,
+        )
+        # Host sees the commit
+        result = subprocess.run(["git", "log", "--oneline", "-1"],
+                                cwd=project, capture_output=True, text=True)
+        assert "from container" in result.stdout
+
+    def test_test_command_runs_inside_container(self, tmp_path):
+        """Shell test commands execute inside the container, not on host."""
+        fixture = FIXTURES / "devcontainers" / "minimal-opencode"
+        shutil.copytree(fixture, tmp_path / "project", dirs_exist_ok=True)
+        project = tmp_path / "project"
+        subprocess.run(["git", "init", str(project)], check=True, capture_output=True)
+
+        devcontainer_up(project)
+        # Run a test command that uses container tooling (node is in container, may not be on host)
+        result = devcontainer_exec("node --version", workspace_folder=project)
+        assert result.returncode == 0
+        assert result.stdout.strip().startswith("v")
+```
+
+**pytest config update** (`pyproject.toml`):
+```toml
+markers = [
+    "integration: marks tests that require actual CLI tools",
+    "git: marks tests that require git CLI",
+    "slow: marks tests that are slow",
+    "e2e: end-to-end tests",
+    "container: marks tests that build/run real devcontainers (requires docker)",
+]
+```
+
+#### T2.1.7 — Documentation
+
+User-facing docs covering:
+- **Contract**: "Bring your own `.devcontainer/`" — arborist detects and uses, never creates
+- **Container requirements**: git, runner CLIs, project deps, API keys via `remoteEnv`
+- **`remoteEnv` pattern** for API keys in user's `devcontainer.json`:
+  ```json
+  {
+    "remoteEnv": {
+      "ANTHROPIC_API_KEY": "${localEnv:ANTHROPIC_API_KEY}",
+      "OPENAI_API_KEY": "${localEnv:OPENAI_API_KEY}",
+      "GOOGLE_API_KEY": "${localEnv:GOOGLE_API_KEY}"
+    }
+  }
+  ```
+- **Container mode**: `--container-mode auto|enabled|disabled` and `ARBORIST_CONTAINER_MODE` env var
+- **Execution model**: what runs in container (AI + tests) vs host (git + orchestration)
+- **Troubleshooting**: runner not found, git not found (health check error), container startup fails, API keys not available (remoteEnv misconfigured)
+
+---
+
+**Files to create:**
+- `src/agent_arborist/devcontainer.py` — detection, CLI wrapper, health check
+- `tests/test_devcontainer.py` — unit tests (mock subprocess)
+- `tests/test_devcontainer_integration.py` — real container tests (`@pytest.mark.container`)
+
+**Files to modify:**
+- `src/agent_arborist/runner.py` — replace `container_cmd_prefix` with `container_workspace` parameter
+- `src/agent_arborist/worker/garden.py` — add `container_workspace` to `garden()`, `_run_tests()`, `_merge_phase_if_complete()`
+- `src/agent_arborist/worker/gardener.py` — pass `container_workspace` through to `garden()`
+- `src/agent_arborist/cli.py` — add `--container-mode` flag to `garden`, `gardener`, `build`; resolve mode → `container_workspace`
+- `pyproject.toml` — add `container` marker
 
 ### 2.2 — Hooks System (Future)
 - Pre/post hooks for each protocol step (implement, test, review)
