@@ -14,3 +14,4 @@
 8. [Runners](08-runners.md) — Claude, Gemini, OpenCode — setup and per-step overrides
 9. [CLI Reference](09-cli-reference.md) — Complete command and option reference
 10. [Troubleshooting](10-troubleshooting.md) — Common issues and FAQ
+11. [Devcontainers](11-devcontainers.md) — Running AI agents in isolated containers
