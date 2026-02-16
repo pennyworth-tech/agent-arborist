@@ -50,6 +50,14 @@ Trailers are structured key-value metadata appended to commit messages. Arborist
 | `Arborist-Test-Log` | `<path>` | Path to test output log |
 | `Arborist-Review-Log` | `<path>` | Path to review output log |
 
+## Append-Only State Model
+
+Unlike tools that use `git commit --amend` or force-pushes to "clean up" work, Arborist is strictly append-only.
+
+- **No Rewrites:** Failed implementation attempts and rejected reviews stay in the Git history.
+- **Latest Wins:** The current status of a task is always derived from the *most recent* commit matching the `task(ID):` pattern.
+- **Failures as Context:** When a task retries, Arborist reads the immutable body of previous failure commits to provide "lessons learned" to the next AI implementation pass.
+
 ## State Recovery
 
 Arborist determines task state by reading trailers from git history:
