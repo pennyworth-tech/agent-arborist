@@ -52,10 +52,17 @@ def should_use_container(mode: str, cwd: Path) -> bool:
 def devcontainer_up(workspace_folder: Path) -> None:
     """Start container for workspace. Idempotent — safe to call if already running."""
     logger.info("Starting devcontainer for %s", workspace_folder)
-    subprocess.run(
+    result = subprocess.run(
         ["devcontainer", "up", "--workspace-folder", str(workspace_folder)],
-        check=True, capture_output=True, text=True,
+        capture_output=True, text=True,
     )
+    if result.returncode != 0:
+        raise DevcontainerError(
+            f"devcontainer up failed (exit {result.returncode}) "
+            f"for {workspace_folder}\n"
+            f"stdout: {result.stdout}\n"
+            f"stderr: {result.stderr}"
+        )
 
 
 def devcontainer_exec(
