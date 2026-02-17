@@ -86,8 +86,8 @@ arborist build --spec-dir spec/
 # Use a different runner/model for planning
 arborist build --spec-dir spec/ --runner gemini --model gemini-2.5-pro
 
-# Custom output path and namespace
-arborist build --spec-dir spec/ -o my-tree.json --namespace myproject
+# Custom output path
+arborist build --spec-dir spec/ -o my-tree.json
 ```
 
 ## Tips for Better Specs
@@ -95,7 +95,7 @@ arborist build --spec-dir spec/ -o my-tree.json --namespace myproject
 1. **Be specific in task descriptions** — the AI runner will use these as implementation prompts
 2. **Keep tasks small** — each leaf task should be a single coherent change
 3. **Declare dependencies explicitly** — don't rely on ordering alone
-4. **Group related tasks** under phases — they'll share a git branch
+4. **Group related tasks** under phases — they enable phase-level testing
 5. **Include context** — additional markdown files in the spec directory provide background for the planner
 
 ---

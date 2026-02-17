@@ -111,7 +111,7 @@ Loops continuously:
 5. If it fails → stop with error
 6. If it succeeds → continue to next task
 
-The gardener is idempotent — if interrupted, just run it again. It reads completion state from git trailers and picks up where it left off.
+The gardener is idempotent — if interrupted, just run it again. It reads completion state from git trailers and picks up where it left off. Queries are scoped to commits after the task-tree.json was last modified, so old runs with the same task IDs don't cause false positives (see [Git Integration](06-git-integration.md#anchor-sha-scoping)).
 
 ## Phase Completion
 

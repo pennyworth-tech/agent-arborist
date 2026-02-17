@@ -82,6 +82,12 @@ By default in a `reports/` directory next to your `task-tree.json`. Each complet
 }
 ```
 
+### Tasks show as complete from a previous run
+
+**Cause:** The `task-tree.json` file wasn't committed before running, so there's no anchor SHA and Arborist sees the full history.
+
+**Fix:** Commit your `task-tree.json` before running `gardener`. The commit that touches the tree file becomes the anchor — only commits after it are considered. See [Anchor-SHA Scoping](06-git-integration.md#anchor-sha-scoping).
+
 ### Can I use Arborist without AI for planning?
 
 Yes: `arborist build --no-ai`. This uses a deterministic markdown parser that requires a strict format (see `--no-ai` in [CLI Reference](09-cli-reference.md)). Useful for CI/CD or reproducible builds.

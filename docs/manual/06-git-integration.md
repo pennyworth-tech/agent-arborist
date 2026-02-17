@@ -51,7 +51,7 @@ Arborist determines task state by reading trailers from git history on the curre
 
 ```mermaid
 flowchart TD
-    A["Read commits on HEAD<br/>matching task(ID):"] --> B{Found<br/>Arborist-Step: complete?}
+    A["Read commits in anchor..HEAD<br/>matching task(ID):"] --> B{Found<br/>Arborist-Step: complete?}
     B -- Yes --> C{Arborist-Result?}
     C -- pass --> D["COMPLETE"]
     C -- fail --> E["FAILED"]
@@ -69,6 +69,14 @@ Task states:
 - **reviewing** — last commit was a review step
 - **complete** — `Arborist-Step: complete` with `Arborist-Result: pass`
 - **failed** — `Arborist-Step: complete` with `Arborist-Result: fail`
+
+## Anchor-SHA Scoping
+
+When querying git history, Arborist only considers commits from the **current run**. It finds the SHA of the commit that last modified the `task-tree.json` file (the "anchor") and scopes all trailer queries to `anchor..HEAD`.
+
+This prevents false positives when a branch has old arborist commits from a previous run that used the same task IDs. Without scoping, `git log --grep="task(T001):"` would match stale commits and incorrectly report tasks as complete.
+
+If no anchor commit is found (e.g., the tree file hasn't been committed yet), Arborist falls back to scanning all of `HEAD`.
 
 ## Crash Recovery
 
