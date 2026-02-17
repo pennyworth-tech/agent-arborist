@@ -82,7 +82,7 @@ def devcontainer_exec(
         cmd = ["sh", "-c", cmd]
     args = ["devcontainer", "exec", "--workspace-folder", str(workspace_folder)]
     args += cmd
-    kwargs: dict = {"capture_output": True, "text": True}
+    kwargs: dict = {"capture_output": True, "text": True, "stdin": subprocess.DEVNULL}
     if timeout is not None:
         kwargs["timeout"] = timeout
     return subprocess.run(args, **kwargs)
