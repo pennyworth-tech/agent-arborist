@@ -77,11 +77,11 @@ jobs:
         if: inputs.container_mode != 'disabled'
         run: npm install -g @devcontainers/cli
 
-      - name: Configure environment
-        run: |
-          echo "CLAUDE_CODE_OAUTH_TOKEN=${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}" > .env
-          mkdir -p .devcontainer
-          cp .env .devcontainer/.env
+      # - name: Configure environment
+      #   run: |
+      #     echo "CLAUDE_CODE_OAUTH_TOKEN=${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}" > .env
+      #     mkdir -p .devcontainer
+      #     cp .env .devcontainer/.env
 
       # ── Execute ────────────────────────────────────
       - name: Run gardener
