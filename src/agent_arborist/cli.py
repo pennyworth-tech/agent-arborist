@@ -77,9 +77,6 @@ def init():
 
     arborist_dir = root / ".arborist"
     config_path = arborist_dir / "config.json"
-    logs_dir = arborist_dir / "logs"
-    gitignore_path = root / ".gitignore"
-
     # --- .arborist/ directory ---
     if arborist_dir.exists():
         console.print(f"[dim].arborist/ already exists at {arborist_dir}[/dim]")
@@ -90,29 +87,6 @@ def init():
         else:
             console.print("[yellow]Aborted.[/yellow]")
             return
-
-    # --- logs/ directory ---
-    if logs_dir.exists():
-        console.print("[dim].arborist/logs/ already exists[/dim]")
-    else:
-        logs_dir.mkdir(parents=True, exist_ok=True)
-        console.print("[green]Created[/green] .arborist/logs/")
-
-    # --- .gitignore entry ---
-    ignore_entry = ".arborist/logs/"
-    already_ignored = False
-    if gitignore_path.exists():
-        content = gitignore_path.read_text()
-        already_ignored = ignore_entry in content
-    if already_ignored:
-        console.print("[dim].arborist/logs/ already in .gitignore[/dim]")
-    else:
-        if click.confirm("Add .arborist/logs/ to .gitignore?", default=True):
-            with open(gitignore_path, "a") as f:
-                if gitignore_path.exists() and not gitignore_path.read_text().endswith("\n"):
-                    f.write("\n")
-                f.write(f"\n# Arborist runner logs\n{ignore_entry}\n")
-            console.print("[green]Added[/green] .arborist/logs/ to .gitignore")
 
     # --- config.json ---
     if config_path.exists():
@@ -163,8 +137,8 @@ def init():
 
 @main.command()
 @click.option("--spec-dir", type=click.Path(exists=True, path_type=Path), default="spec")
-@click.option("--output", "-o", type=click.Path(path_type=Path), default="task-tree.json",
-              help="Output path for the task tree JSON file")
+@click.option("--output", "-o", type=click.Path(path_type=Path), default=None,
+              help="Output path (default: specs/{branch}/task-tree.json)")
 @click.option("--namespace", default=DEFAULT_NAMESPACE)
 @click.option("--spec-id", default=None)
 @click.option("--no-ai", is_flag=True, help="Disable AI planning; use markdown parser instead")
@@ -175,6 +149,9 @@ def init():
               help="Container mode for AI planning (default: from config or 'auto')")
 def build(spec_dir, output, namespace, spec_id, no_ai, runner, model, container_mode):
     """Build a task tree from a spec directory and write it to a JSON file."""
+    if output is None:
+        branch = git_current_branch(Path.cwd())
+        output = Path("specs") / branch / "task-tree.json"
     if spec_id is None:
         spec_id = spec_dir.name if spec_dir.name != "spec" else Path.cwd().resolve().name
 
@@ -226,22 +203,21 @@ def build(spec_dir, output, namespace, spec_id, no_ai, runner, model, container_
 
 
 @main.command()
-@click.option("--tree", "tree_path", type=click.Path(exists=True, path_type=Path), required=True,
-              help="Path to task-tree.json")
+@click.option("--tree", "tree_path", type=click.Path(exists=True, path_type=Path), default=None,
+              help="Path to task-tree.json (default: specs/{branch}/task-tree.json)")
 @click.option("--runner-type", "runner", default=None, help="Runner type (default: from config or 'claude')")
 @click.option("--model", default=None, help="Model name (default: from config or 'sonnet')")
 @click.option("--max-retries", default=None, type=int, help="Max retries per task (default: from config or 5)")
-@click.option("--test-command", default=None, help="Test command (default: from config or 'true')")
 @click.option("--target-repo", type=click.Path(path_type=Path), default=None)
 @click.option("--base-branch", default=None, help="Base branch (default: current branch)")
 @click.option("--report-dir", type=click.Path(path_type=Path), default=None,
               help="Directory for report JSON files (default: next to task tree)")
 @click.option("--log-dir", type=click.Path(path_type=Path), default=None,
-              help="Directory for runner log files (default: .arborist/logs)")
+              help="Directory for runner log files (default: next to task tree)")
 @click.option("--container-mode", "-c", "container_mode", default=None,
               type=click.Choice(["auto", "enabled", "disabled"]),
               help="Container mode (default: from config or 'auto')")
-def garden(tree_path, runner, model, max_retries, test_command, target_repo, base_branch, report_dir, log_dir, container_mode):
+def garden(tree_path, runner, model, max_retries, target_repo, base_branch, report_dir, log_dir, container_mode):
     """Execute a single task."""
     from agent_arborist.runner import get_runner
     from agent_arborist.worker.garden import garden as garden_fn
@@ -249,18 +225,19 @@ def garden(tree_path, runner, model, max_retries, test_command, target_repo, bas
     cfg = _load_config()
     impl_runner_name, impl_model = get_step_runner_model(cfg, "implement", runner, model, fallback_step="run")
     rev_runner_name, rev_model = get_step_runner_model(cfg, "review", runner, model, fallback_step="run")
-    resolved_test_command = test_command or cfg.test.command or "true"
     resolved_max_retries = max_retries if max_retries is not None else cfg.defaults.max_retries
 
     target = target_repo.resolve() if target_repo else Path(_default_repo()).resolve()
     if base_branch is None:
         base_branch = git_current_branch(target)
+    if tree_path is None:
+        tree_path = Path("specs") / base_branch / "task-tree.json"
     tree = _load_tree(tree_path)
 
     if report_dir is None:
         report_dir = tree_path.resolve().parent / "reports"
     if log_dir is None:
-        log_dir = target / ".arborist" / "logs"
+        log_dir = tree_path.resolve().parent / "logs"
 
     impl_runner_instance = get_runner(impl_runner_name, impl_model)
     rev_runner_instance = get_runner(rev_runner_name, rev_model)
@@ -270,7 +247,7 @@ def garden(tree_path, runner, model, max_retries, test_command, target_repo, bas
         tree, target,
         implement_runner=impl_runner_instance,
         review_runner=rev_runner_instance,
-        test_command=resolved_test_command,
+        test_command="true",
         max_retries=resolved_max_retries,
         base_branch=base_branch,
         report_dir=Path(report_dir).resolve(),
@@ -288,22 +265,21 @@ def garden(tree_path, runner, model, max_retries, test_command, target_repo, bas
 
 
 @main.command()
-@click.option("--tree", "tree_path", type=click.Path(exists=True, path_type=Path), required=True,
-              help="Path to task-tree.json")
+@click.option("--tree", "tree_path", type=click.Path(exists=True, path_type=Path), default=None,
+              help="Path to task-tree.json (default: specs/{branch}/task-tree.json)")
 @click.option("--runner-type", "runner", default=None, help="Runner type (default: from config or 'claude')")
 @click.option("--model", default=None, help="Model name (default: from config or 'sonnet')")
 @click.option("--max-retries", default=None, type=int, help="Max retries per task (default: from config or 5)")
-@click.option("--test-command", default=None, help="Test command (default: from config or 'true')")
 @click.option("--target-repo", type=click.Path(path_type=Path), default=None)
 @click.option("--base-branch", default=None, help="Base branch (default: current branch)")
 @click.option("--report-dir", type=click.Path(path_type=Path), default=None,
               help="Directory for report JSON files (default: next to task tree)")
 @click.option("--log-dir", type=click.Path(path_type=Path), default=None,
-              help="Directory for runner log files (default: .arborist/logs)")
+              help="Directory for runner log files (default: next to task tree)")
 @click.option("--container-mode", "-c", "container_mode", default=None,
               type=click.Choice(["auto", "enabled", "disabled"]),
               help="Container mode (default: from config or 'auto')")
-def gardener(tree_path, runner, model, max_retries, test_command, target_repo, base_branch, report_dir, log_dir, container_mode):
+def gardener(tree_path, runner, model, max_retries, target_repo, base_branch, report_dir, log_dir, container_mode):
     """Run the gardener loop to execute all tasks."""
     from agent_arborist.runner import get_runner
     from agent_arborist.worker.gardener import gardener as gardener_fn
@@ -311,18 +287,19 @@ def gardener(tree_path, runner, model, max_retries, test_command, target_repo, b
     cfg = _load_config()
     impl_runner_name, impl_model = get_step_runner_model(cfg, "implement", runner, model, fallback_step="run")
     rev_runner_name, rev_model = get_step_runner_model(cfg, "review", runner, model, fallback_step="run")
-    resolved_test_command = test_command or cfg.test.command or "true"
     resolved_max_retries = max_retries if max_retries is not None else cfg.defaults.max_retries
 
     target = target_repo.resolve() if target_repo else Path(_default_repo()).resolve()
     if base_branch is None:
         base_branch = git_current_branch(target)
+    if tree_path is None:
+        tree_path = Path("specs") / base_branch / "task-tree.json"
     tree = _load_tree(tree_path)
 
     if report_dir is None:
         report_dir = tree_path.resolve().parent / "reports"
     if log_dir is None:
-        log_dir = target / ".arborist" / "logs"
+        log_dir = tree_path.resolve().parent / "logs"
 
     resolved_test_timeout = cfg.test.timeout or cfg.timeouts.test_command
     impl_runner_instance = get_runner(impl_runner_name, impl_model)
@@ -332,7 +309,7 @@ def gardener(tree_path, runner, model, max_retries, test_command, target_repo, b
         tree, target,
         implement_runner=impl_runner_instance,
         review_runner=rev_runner_instance,
-        test_command=resolved_test_command,
+        test_command="true",
         max_retries=resolved_max_retries,
         base_branch=base_branch,
         report_dir=Path(report_dir).resolve(),
@@ -352,14 +329,16 @@ def gardener(tree_path, runner, model, max_retries, test_command, target_repo, b
 
 
 @main.command()
-@click.option("--tree", "tree_path", type=click.Path(exists=True, path_type=Path), required=True,
-              help="Path to task-tree.json")
+@click.option("--tree", "tree_path", type=click.Path(exists=True, path_type=Path), default=None,
+              help="Path to task-tree.json (default: specs/{branch}/task-tree.json)")
 @click.option("--target-repo", type=click.Path(path_type=Path), default=None)
 def status(tree_path, target_repo):
     """Show current status of all tasks."""
     from agent_arborist.git.state import scan_completed_tasks, TaskState, get_task_trailers, task_state_from_trailers
 
     target = target_repo.resolve() if target_repo else Path(_default_repo()).resolve()
+    if tree_path is None:
+        tree_path = Path("specs") / git_current_branch(target) / "task-tree.json"
     tree = _load_tree(tree_path)
 
     rich_tree = RichTree(f"[bold]{tree.namespace}/{tree.spec_id}[/bold]")
@@ -384,8 +363,8 @@ def status(tree_path, target_repo):
 
 
 @main.command()
-@click.option("--tree", "tree_path", type=click.Path(exists=True, path_type=Path), required=True,
-              help="Path to task-tree.json")
+@click.option("--tree", "tree_path", type=click.Path(exists=True, path_type=Path), default=None,
+              help="Path to task-tree.json (default: specs/{branch}/task-tree.json)")
 @click.option("--task-id", required=True, help="Task ID to inspect (e.g. T003)")
 @click.option("--target-repo", type=click.Path(path_type=Path), default=None)
 def inspect(tree_path, task_id, target_repo):
@@ -394,6 +373,8 @@ def inspect(tree_path, task_id, target_repo):
     from agent_arborist.git.state import get_task_trailers, task_state_from_trailers
 
     target = target_repo.resolve() if target_repo else Path(_default_repo()).resolve()
+    if tree_path is None:
+        tree_path = Path("specs") / git_current_branch(target) / "task-tree.json"
     tree = _load_tree(tree_path)
 
     if task_id not in tree.nodes:

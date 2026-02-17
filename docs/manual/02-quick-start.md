@@ -82,7 +82,7 @@ Task Tree: your-project
 ## 5. Execute All Tasks
 
 ```bash
-arborist gardener --tree task-tree.json --test-command "pytest -x"
+arborist gardener --tree task-tree.json
 ```
 
 Arborist loops through each leaf task in order. For each one:

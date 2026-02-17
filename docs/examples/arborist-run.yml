@@ -1,0 +1,108 @@
+name: Arborist Run
+on:
+  workflow_dispatch:
+    inputs:
+      spec_branch:
+        description: 'Branch with task-tree.json'
+        required: true
+        type: string
+      runner_type:
+        description: 'AI runner override (claude, gemini, opencode)'
+        required: false
+        type: string
+      model:
+        description: 'Model name override'
+        required: false
+        type: string
+      max_retries:
+        description: 'Max retries per task override'
+        required: false
+        type: string
+      container_mode:
+        description: 'Container mode override (auto, enabled, disabled)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  run-arborist:
+    runs-on: ubuntu-latest-m
+    timeout-minutes: 720
+
+    steps:
+      # ── Setup ──────────────────────────────────────
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.spec_branch }}
+          fetch-depth: 0
+
+      - name: Pull existing arborist branches (resume support)
+        run: |
+          echo "Fetching arborist/* branches for resume support..."
+          git fetch origin 'refs/heads/arborist/*:refs/remotes/origin/arborist/*' 2>/dev/null || true
+          for rb in $(git branch -r --list 'origin/arborist/*' 2>/dev/null); do
+            branch="${rb#origin/}"
+            if ! git rev-parse --verify "$branch" >/dev/null 2>&1; then
+              git branch "$branch" "$rb"
+              echo "  Restored: $branch"
+            fi
+          done
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Install agent-arborist
+        run: pip install git+https://${{ secrets.GH_PAT_ARBORIST_RO }}@github.com/pennyworth-tech/agent-arborist.git
+
+      - name: Install Claude Code
+        if: inputs.runner_type == 'claude' || inputs.runner_type == ''
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Install devcontainer CLI
+        if: inputs.container_mode != 'disabled'
+        run: npm install -g @devcontainers/cli
+
+      # - name: Configure environment
+      #   run: |
+      #     echo "CLAUDE_CODE_OAUTH_TOKEN=${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}" > .env
+      #     mkdir -p .devcontainer
+      #     cp .env .devcontainer/.env
+
+      # ── Execute ────────────────────────────────────
+      - name: Run gardener
+        run: |
+          cmd="arborist gardener --base-branch '${{ inputs.spec_branch }}'"
+          [ -n "${{ inputs.runner_type }}" ]    && cmd="$cmd --runner-type '${{ inputs.runner_type }}'"
+          [ -n "${{ inputs.model }}" ]           && cmd="$cmd --model '${{ inputs.model }}'"
+          [ -n "${{ inputs.max_retries }}" ]     && cmd="$cmd --max-retries ${{ inputs.max_retries }}"
+          [ -n "${{ inputs.container_mode }}" ]  && cmd="$cmd --container-mode '${{ inputs.container_mode }}'"
+          eval $cmd
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+
+      # ── Teardown (always, even on failure) ─────────
+      - name: Push arborist branches + base
+        if: always()
+        run: |
+          echo "Pushing arborist branches to preserve progress..."
+          for branch in $(git branch --list 'arborist/*' 2>/dev/null); do
+            branch=$(echo "$branch" | xargs)
+            git push origin "$branch" --force-with-lease 2>/dev/null || echo "  skip: $branch"
+          done
+          git push origin "${{ inputs.spec_branch }}" --force-with-lease 2>/dev/null || echo "  skip: base branch"

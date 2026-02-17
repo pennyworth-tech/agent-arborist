@@ -1,14 +1,34 @@
-"""Tests for CLI --no-ai flag and basic build command."""
+"""Tests for CLI commands: build, garden, gardener, status, inspect, init."""
 
 import json
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
+import pytest
 from click.testing import CliRunner
 
 from agent_arborist.cli import main
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _make_tree_at(base_dir, branch="my-branch"):
+    """Write a minimal task tree at specs/{branch}/task-tree.json and return the path."""
+    tree_path = base_dir / "specs" / branch / "task-tree.json"
+    tree_path.parent.mkdir(parents=True, exist_ok=True)
+    tree_path.write_text(json.dumps({
+        "spec_id": "test", "namespace": "feature",
+        "nodes": {
+            "phase1": {"id": "phase1", "name": "P1", "children": ["T001"]},
+            "T001": {"id": "T001", "name": "Task", "parent": "phase1", "description": "Do it"},
+        },
+        "execution_order": ["T001"], "spec_files": [],
+    }))
+    return tree_path
 
 
 def test_build_no_ai_produces_valid_json(tmp_path):
@@ -153,31 +173,25 @@ class TestBaseBranchDefault:
 class TestInitCommand:
 
     def test_init_creates_directory_and_config(self, tmp_path):
-        """init creates .arborist/, logs/, config.json, and updates .gitignore."""
+        """init creates .arborist/ and config.json."""
         runner = CliRunner()
         with patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)):
-            result = runner.invoke(main, ["init"], input="y\ny\nclaude\nsonnet\ny\n")
+            result = runner.invoke(main, ["init"], input="y\nclaude\nsonnet\ny\n")
 
         assert result.exit_code == 0, result.output
         assert (tmp_path / ".arborist").is_dir()
-        assert (tmp_path / ".arborist" / "logs").is_dir()
         assert (tmp_path / ".arborist" / "config.json").exists()
 
         config = json.loads((tmp_path / ".arborist" / "config.json").read_text())
         assert config["defaults"]["runner"] == "claude"
         assert config["defaults"]["model"] == "sonnet"
 
-        gitignore = (tmp_path / ".gitignore").read_text()
-        assert ".arborist/logs/" in gitignore
-
     def test_init_skips_existing(self, tmp_path):
         """init does not overwrite existing .arborist/ or config.json."""
         arborist_dir = tmp_path / ".arborist"
         arborist_dir.mkdir()
-        (arborist_dir / "logs").mkdir()
         config_path = arborist_dir / "config.json"
         config_path.write_text('{"version": "1", "defaults": {"runner": "gemini"}}')
-        (tmp_path / ".gitignore").write_text(".arborist/logs/\n")
 
         runner = CliRunner()
         with patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)):
@@ -280,3 +294,217 @@ class TestInspectCommand:
         assert "reviewing" in result.output
         assert "Arborist-Step" in result.output
         assert "abc1234" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Default tree path: specs/{branch}/task-tree.json
+# ---------------------------------------------------------------------------
+
+class TestDefaultTreePath:
+    """When --tree is omitted, CLI derives path from current/base branch."""
+
+    def test_build_default_output_uses_branch(self, tmp_path):
+        """build without -o writes to specs/{branch}/task-tree.json."""
+        runner = CliRunner()
+        with patch("agent_arborist.cli.git_current_branch", return_value="spec/my-feature"), \
+             patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)):
+            result = runner.invoke(main, [
+                "build", "--no-ai",
+                "--spec-dir", str(FIXTURES),
+                "--spec-id", "test",
+            ])
+        assert result.exit_code == 0, result.output
+        expected = Path("specs/spec/my-feature/task-tree.json")
+        assert expected.exists()
+
+    def test_build_explicit_output_overrides_default(self, tmp_path):
+        """build with -o ignores the branch-based default."""
+        output = tmp_path / "custom.json"
+        runner = CliRunner()
+        result = runner.invoke(main, [
+            "build", "--no-ai",
+            "--spec-dir", str(FIXTURES),
+            "--output", str(output),
+            "--spec-id", "test",
+        ])
+        assert result.exit_code == 0, result.output
+        assert output.exists()
+
+    def test_garden_default_tree_from_base_branch(self, tmp_path):
+        """garden without --tree uses specs/{base_branch}/task-tree.json."""
+        _make_tree_at(tmp_path, "my-branch")
+        runner = CliRunner()
+        with patch("agent_arborist.cli.git_current_branch", return_value="my-branch"), \
+             patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)), \
+             patch("agent_arborist.worker.garden.garden") as mock_garden:
+            mock_garden.return_value = MagicMock(success=True, task_id="T001")
+            result = runner.invoke(main, ["garden"], catch_exceptions=False)
+        assert result.exit_code == 0, result.output
+        mock_garden.assert_called_once()
+
+    def test_garden_explicit_tree_overrides_default(self, tmp_path):
+        """garden with --tree uses the explicit path."""
+        tree_path = _make_tree_json(tmp_path)
+        runner = CliRunner()
+        with patch("agent_arborist.cli.git_current_branch", return_value="other-branch"), \
+             patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)), \
+             patch("agent_arborist.worker.garden.garden") as mock_garden:
+            mock_garden.return_value = MagicMock(success=True, task_id="T001")
+            result = runner.invoke(main, ["garden", "--tree", str(tree_path)])
+        assert result.exit_code == 0, result.output
+
+    def test_gardener_default_tree_from_base_branch(self, tmp_path):
+        """gardener without --tree uses specs/{base_branch}/task-tree.json."""
+        _make_tree_at(tmp_path, "spec/feat")
+        runner = CliRunner()
+        with patch("agent_arborist.cli.git_current_branch", return_value="spec/feat"), \
+             patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)), \
+             patch("agent_arborist.worker.gardener.gardener") as mock_gardener:
+            mock_gardener.return_value = MagicMock(success=True, tasks_completed=1, order=["T001"])
+            result = runner.invoke(main, ["gardener"], catch_exceptions=False)
+        assert result.exit_code == 0, result.output
+        mock_gardener.assert_called_once()
+
+    def test_gardener_base_branch_override_changes_tree_path(self, tmp_path):
+        """gardener --base-branch X uses specs/X/task-tree.json."""
+        _make_tree_at(tmp_path, "other")
+        runner = CliRunner()
+        with patch("agent_arborist.cli.git_current_branch", return_value="main"), \
+             patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)), \
+             patch("agent_arborist.worker.gardener.gardener") as mock_gardener:
+            mock_gardener.return_value = MagicMock(success=True, tasks_completed=1, order=["T001"])
+            result = runner.invoke(main, ["gardener", "--base-branch", "other"], catch_exceptions=False)
+        assert result.exit_code == 0, result.output
+
+    def test_status_default_tree_from_branch(self, tmp_path):
+        """status without --tree uses specs/{branch}/task-tree.json."""
+        _make_tree_at(tmp_path, "spec/feat")
+        runner = CliRunner()
+        with patch("agent_arborist.cli.git_current_branch", return_value="spec/feat"), \
+             patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)), \
+             patch("agent_arborist.git.state.get_task_trailers", return_value={}), \
+             patch("agent_arborist.git.state.task_state_from_trailers") as mock_state:
+            from agent_arborist.git.state import TaskState
+            mock_state.return_value = TaskState.PENDING
+            result = runner.invoke(main, ["status"], catch_exceptions=False)
+        assert result.exit_code == 0, result.output
+        assert "test" in result.output  # spec_id
+
+    def test_inspect_default_tree_from_branch(self, tmp_path):
+        """inspect without --tree uses specs/{branch}/task-tree.json."""
+        _make_tree_at(tmp_path, "spec/feat")
+        runner = CliRunner()
+        with patch("agent_arborist.cli.git_current_branch", return_value="spec/feat"), \
+             patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)), \
+             patch("agent_arborist.git.repo.git_branch_exists", return_value=False):
+            result = runner.invoke(main, ["inspect", "--task-id", "T001"], catch_exceptions=False)
+        assert result.exit_code == 0, result.output
+        assert "T001" in result.output
+
+    def test_garden_missing_default_tree_errors(self, tmp_path):
+        """garden without --tree errors when specs/{branch}/task-tree.json doesn't exist."""
+        runner = CliRunner()
+        with patch("agent_arborist.cli.git_current_branch", return_value="no-such-branch"), \
+             patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)):
+            result = runner.invoke(main, ["garden"])
+        assert result.exit_code != 0
+
+    def test_build_with_slash_branch(self, tmp_path):
+        """build with a branch like spec/feat/sub creates nested dirs."""
+        runner = CliRunner()
+        with patch("agent_arborist.cli.git_current_branch", return_value="spec/feat/sub"), \
+             patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)):
+            result = runner.invoke(main, [
+                "build", "--no-ai",
+                "--spec-dir", str(FIXTURES),
+                "--spec-id", "test",
+            ])
+        assert result.exit_code == 0, result.output
+        assert Path("specs/spec/feat/sub/task-tree.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# Init: no logs dir, no gitignore
+# ---------------------------------------------------------------------------
+
+class TestInitNoLogs:
+    """init no longer creates .arborist/logs/ or modifies .gitignore."""
+
+    def test_init_does_not_create_logs_dir(self, tmp_path):
+        """init should NOT create .arborist/logs/."""
+        runner = CliRunner()
+        with patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)):
+            result = runner.invoke(main, ["init"], input="y\nclaude\nsonnet\ny\n")
+        assert result.exit_code == 0, result.output
+        assert not (tmp_path / ".arborist" / "logs").exists()
+
+    def test_init_does_not_create_gitignore(self, tmp_path):
+        """init should NOT create or modify .gitignore."""
+        runner = CliRunner()
+        with patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)):
+            result = runner.invoke(main, ["init"], input="y\nclaude\nsonnet\ny\n")
+        assert result.exit_code == 0, result.output
+        assert not (tmp_path / ".gitignore").exists()
+
+    def test_init_does_not_mention_logs(self, tmp_path):
+        """init output should not reference logs."""
+        runner = CliRunner()
+        with patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)):
+            result = runner.invoke(main, ["init"], input="y\nclaude\nsonnet\ny\n")
+        assert result.exit_code == 0, result.output
+        assert "logs" not in result.output.lower()
+        assert "gitignore" not in result.output.lower()
+
+    def test_init_does_not_prompt_for_gitignore(self, tmp_path):
+        """init should only prompt for dir creation and config, not gitignore."""
+        runner = CliRunner()
+        with patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)):
+            # Only 3 inputs needed: create dir (y), runner, model, confirm config
+            result = runner.invoke(main, ["init"], input="y\nclaude\nsonnet\ny\n")
+        assert result.exit_code == 0, result.output
+
+
+# ---------------------------------------------------------------------------
+# Config: TestingConfig without command field
+# ---------------------------------------------------------------------------
+
+class TestTestingConfigNoCommand:
+    """TestingConfig no longer has a command field."""
+
+    def test_testing_config_has_no_command_attr(self):
+        from agent_arborist.config import TestingConfig
+        tc = TestingConfig()
+        assert not hasattr(tc, "command")
+
+    def test_testing_config_to_dict_no_command(self):
+        from agent_arborist.config import TestingConfig
+        tc = TestingConfig(timeout=30)
+        d = tc.to_dict()
+        assert "command" not in d
+        assert d["timeout"] == 30
+
+    def test_testing_config_from_dict_ignores_legacy_command(self):
+        """Legacy config with 'command' field should not raise in strict mode."""
+        from agent_arborist.config import TestingConfig
+        tc = TestingConfig.from_dict({"command": "pytest", "timeout": 60}, strict=True)
+        assert tc.timeout == 60
+        assert not hasattr(tc, "command")
+
+    def test_testing_config_strict_rejects_unknown_fields(self):
+        from agent_arborist.config import TestingConfig, ConfigValidationError
+        with pytest.raises(ConfigValidationError, match="Unknown fields"):
+            TestingConfig.from_dict({"bogus": True}, strict=True)
+
+    def test_config_template_has_no_test_command(self):
+        from agent_arborist.config import generate_config_template
+        template = generate_config_template()
+        assert "command" not in template.get("test", {})
+
+    def test_env_override_no_test_command(self):
+        """ARBORIST_TEST_COMMAND env var should have no effect."""
+        import os
+        from agent_arborist.config import ArboristConfig, apply_env_overrides
+        cfg = ArboristConfig()
+        with patch.dict(os.environ, {"ARBORIST_TEST_COMMAND": "pytest -v"}):
+            result = apply_env_overrides(cfg)
+        assert not hasattr(result.test, "command")

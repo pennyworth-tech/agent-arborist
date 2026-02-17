@@ -15,3 +15,4 @@
 9. [CLI Reference](09-cli-reference.md) — Complete command and option reference
 10. [Troubleshooting](10-troubleshooting.md) — Common issues and FAQ
 11. [Devcontainers](11-devcontainers.md) — Running AI agents in isolated containers
+12. [GitHub Action](12-github-action.md) — CI workflow template for running arborist in GitHub Actions
