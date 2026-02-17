@@ -78,13 +78,16 @@ def is_task_complete(branch: str, task_id: str, cwd: Path) -> bool:
     return state == TaskState.COMPLETE
 
 
-def scan_completed_tasks(tree, cwd: Path) -> set[str]:
-    """Scan all leaf tasks across the tree and return IDs of completed ones."""
+def scan_completed_tasks(tree, cwd: Path, *, since: str | None = None) -> set[str]:
+    """Scan all leaf tasks on HEAD and return IDs of completed ones.
+
+    If *since* is given, only commits after that SHA are considered.
+    """
+    rev = f"{since}..HEAD" if since else "HEAD"
     completed = set()
     for node in tree.leaves():
-        branch = tree.branch_name(node.id)
         try:
-            if is_task_complete(branch, node.id, cwd):
+            if is_task_complete(rev, node.id, cwd):
                 completed.add(node.id)
         except GitError:
             pass

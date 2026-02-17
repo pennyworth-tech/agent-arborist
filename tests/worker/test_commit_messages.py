@@ -85,7 +85,7 @@ def test_build_commit_message_without_body(git_repo):
 
 
 def _make_tree():
-    tree = TaskTree(spec_id="test", namespace="feature")
+    tree = TaskTree(spec_id="test")
     tree.nodes["phase1"] = TaskNode(id="phase1", name="Phase 1", children=["T001"])
     tree.nodes["T001"] = TaskNode(
         id="T001", name="Create user auth module", parent="phase1",
@@ -122,7 +122,7 @@ def _find_commit_containing(commits, substring):
 @pytest.mark.integration
 def test_implement_commit_contains_runner_output(git_repo, mock_runner_all_pass):
     tree = _make_tree()
-    garden(tree, git_repo, mock_runner_all_pass, base_branch="main")
+    garden(tree, git_repo, mock_runner_all_pass)
     commits = _get_all_commits(git_repo)
     msg = _find_commit_containing(commits, "implement")
     assert msg is not None
@@ -133,7 +133,7 @@ def test_implement_commit_contains_runner_output(git_repo, mock_runner_all_pass)
 @pytest.mark.integration
 def test_test_commit_contains_stdout(git_repo, mock_runner_all_pass):
     tree = _make_tree()
-    garden(tree, git_repo, mock_runner_all_pass, test_command="echo 'all tests passed'", base_branch="main")
+    garden(tree, git_repo, mock_runner_all_pass, test_command="echo 'all tests passed'")
     commits = _get_all_commits(git_repo)
     msg = _find_commit_containing(commits, "tests pass")
     assert msg is not None
@@ -143,7 +143,7 @@ def test_test_commit_contains_stdout(git_repo, mock_runner_all_pass):
 @pytest.mark.integration
 def test_review_commit_contains_review_text(git_repo, mock_runner_all_pass):
     tree = _make_tree()
-    garden(tree, git_repo, mock_runner_all_pass, base_branch="main")
+    garden(tree, git_repo, mock_runner_all_pass)
     commits = _get_all_commits(git_repo)
     msg = _find_commit_containing(commits, "review approved")
     assert msg is not None
@@ -155,9 +155,8 @@ def test_failed_implement_commit_contains_error(git_repo):
     from tests.conftest import MockRunner
     runner = MockRunner(implement_ok=False)
     tree = _make_tree()
-    garden(tree, git_repo, runner, max_retries=1, base_branch="main")
-    branch = tree.branch_name("phase1")
-    commits = _get_all_commits(git_repo, branch=branch)
+    garden(tree, git_repo, runner, max_retries=1)
+    commits = _get_all_commits(git_repo)
     msg = _find_commit_containing(commits, "implement")
     assert msg is not None
     assert "Runner error" in msg
@@ -167,7 +166,7 @@ def test_failed_implement_commit_contains_error(git_repo):
 @pytest.mark.integration
 def test_commit_subjects_include_task_name(git_repo, mock_runner_all_pass):
     tree = _make_tree()
-    garden(tree, git_repo, mock_runner_all_pass, base_branch="main")
+    garden(tree, git_repo, mock_runner_all_pass)
     subjects = _get_all_subjects(git_repo)
     assert "Create user auth module" in subjects
 
@@ -177,7 +176,7 @@ def test_retry_commits_show_attempt_number(git_repo):
     from tests.conftest import MockRunner
     runner = MockRunner(implement_ok=True, review_sequence=[False, True])
     tree = _make_tree()
-    garden(tree, git_repo, runner, base_branch="main")
+    garden(tree, git_repo, runner)
     subjects = _get_all_subjects(git_repo)
     assert "attempt 1/" in subjects
 
@@ -200,7 +199,7 @@ def test_long_output_truncated_in_commit(git_repo):
 
     tree = _make_tree()
     runner = BigOutputRunner()
-    garden(tree, git_repo, runner, base_branch="main")
+    garden(tree, git_repo, runner)
     commits = _get_all_commits(git_repo)
     msg = _find_commit_containing(commits, "implement")
     assert msg is not None
@@ -210,7 +209,7 @@ def test_long_output_truncated_in_commit(git_repo):
 @pytest.mark.integration
 def test_trailers_still_parseable(git_repo, mock_runner_all_pass):
     tree = _make_tree()
-    garden(tree, git_repo, mock_runner_all_pass, base_branch="main")
+    garden(tree, git_repo, mock_runner_all_pass)
     # Check trailers on complete commit
     result = subprocess.run(
         ["git", "log", "--format=%(trailers)", "--all"],

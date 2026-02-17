@@ -29,13 +29,10 @@ from agent_arborist.constants import (
 )
 from agent_arborist.git.repo import (
     git_add_all,
-    git_branch_exists,
-    git_checkout,
     git_commit,
-    git_current_branch,
     git_diff,
     git_log,
-    git_merge,
+    git_rev_parse,
 )
 from agent_arborist.git.state import scan_completed_tasks, TaskState
 from agent_arborist.tree.model import TaskNode, TaskTree, TestCommand, TestType
@@ -48,9 +45,9 @@ class GardenResult:
     error: str | None = None
 
 
-def find_next_task(tree: TaskTree, cwd: Path) -> TaskNode | None:
+def find_next_task(tree: TaskTree, cwd: Path, *, since: str | None = None) -> TaskNode | None:
     """Find the next task to execute based on execution order and completed state."""
-    completed = scan_completed_tasks(tree, cwd)
+    completed = scan_completed_tasks(tree, cwd, since=since)
     for task_id in tree.execution_order:
         if task_id in completed:
             continue
@@ -194,21 +191,20 @@ def _commit_with_trailers(
     return git_commit(message, cwd, allow_empty=True)
 
 
-def _merge_phase_if_complete(
-    tree: TaskTree, task_id: str, cwd: Path, base_branch: str,
-    global_test_command: str = "true", config_timeout: int | None = None,
+def _run_phase_tests_if_complete(
+    tree: TaskTree, task_id: str, cwd: Path,
+    config_timeout: int | None = None,
     container_workspace: Path | None = None,
+    since: str | None = None,
 ) -> bool | str:
-    """If all leaves under the root phase are complete, merge phase branch to base.
+    """If all leaves under the root phase are complete, run phase-level tests.
 
-    Returns True on successful merge, False if not ready, or an error string
-    if phase tests failed.
+    Returns True if phase tests passed (or no tests needed), False if not ready,
+    or an error string if phase tests failed.
     """
     rp = tree.root_phase(task_id)
-    if rp == task_id and tree.nodes[task_id].is_leaf:
-        return False
     phase_leaves = tree.leaves_under(rp)
-    completed = scan_completed_tasks(tree, cwd)
+    completed = scan_completed_tasks(tree, cwd, since=since)
     if not all(leaf.id in completed for leaf in phase_leaves):
         return False
 
@@ -217,11 +213,8 @@ def _merge_phase_if_complete(
     phase_tests = [tc for tc in parent_node.test_commands
                    if tc.type in (TestType.INTEGRATION, TestType.E2E)]
     if phase_tests:
-        phase_branch = tree.branch_name(rp)
-        git_checkout(phase_branch, cwd)
         for tc in phase_tests:
             timeout = tc.timeout or config_timeout or 300
-            start = time.monotonic()
             try:
                 if container_workspace:
                     from agent_arborist.devcontainer import ensure_container_running, devcontainer_exec
@@ -236,12 +229,13 @@ def _merge_phase_if_complete(
             except subprocess.TimeoutExpired:
                 passed = False
             if not passed:
-                git_checkout(base_branch, cwd)
                 return f"Phase test failed: {tc.command} ({tc.type.value})"
-        git_checkout(base_branch, cwd)
 
-    phase_branch = tree.branch_name(rp)
-    git_merge(phase_branch, cwd, message=f"merge: {phase_branch} complete")
+    # Commit a phase-complete marker
+    git_add_all(cwd)
+    trailer_block = _build_trailers(**{TRAILER_STEP: "phase-complete", TRAILER_RESULT: "pass"})
+    message = f"phase({rp}): complete\n\n{trailer_block}"
+    git_commit(message, cwd, allow_empty=True)
     return True
 
 
@@ -264,7 +258,7 @@ def _write_log(log_dir: Path | None, task_id: str, step: str, result) -> Path | 
     return None
 
 
-def _collect_feedback_from_git(task_id: str, cwd: Path) -> str:
+def _collect_feedback_from_git(task_id: str, cwd: Path, *, since: str | None = None) -> str:
     """Collect previous review/test feedback from git commit history.
 
     Reads commit bodies for this task's review-rejected and test-fail commits,
@@ -274,8 +268,9 @@ def _collect_feedback_from_git(task_id: str, cwd: Path) -> str:
 
     # Get all commits for this task on the current branch
     try:
+        rev = f"{since}..HEAD" if since else "HEAD"
         raw = git_log(
-            "HEAD", "%B---COMMIT_SEP---", cwd,
+            rev, "%B---COMMIT_SEP---", cwd,
             n=50, grep=f"task({task_id}):", fixed_strings=True,
         )
     except Exception:
@@ -324,12 +319,12 @@ def garden(
     review_runner=None,
     test_command: str = "true",
     max_retries: int = 3,
-    base_branch: str = "main",
     report_dir: Path | None = None,
     log_dir: Path | None = None,
     runner_timeout: int | None = None,
     test_timeout: int | None = None,
     container_workspace: Path | None = None,
+    since: str | None = None,
 ) -> GardenResult:
     """Execute one task through the implement → test → review pipeline."""
     # Resolve runners: explicit implement/review runners take precedence,
@@ -339,22 +334,16 @@ def garden(
     if review_runner is None:
         review_runner = runner
 
-    task = find_next_task(tree, cwd)
+    task = find_next_task(tree, cwd, since=since)
     if task is None:
         return GardenResult(task_id="", success=False, error="no ready task")
 
     _impl_id = f"{getattr(implement_runner, 'name', '?')}/{getattr(implement_runner, 'model', '?')}"
     _rev_id = f"{getattr(review_runner, 'name', '?')}/{getattr(review_runner, 'model', '?')}"
     logger.info("Starting task %s: %s (implement=%s, review=%s)", task.id, task.name, _impl_id, _rev_id)
-    phase_branch = tree.branch_name(task.id)
 
-    # Lazy branch creation
-    if not git_branch_exists(phase_branch, cwd):
-        logger.debug("Creating branch %s from %s", phase_branch, base_branch)
-        git_checkout(phase_branch, cwd, create=True, start_point=base_branch)
-    else:
-        logger.debug("Checking out existing branch %s", phase_branch)
-        git_checkout(phase_branch, cwd)
+    # Save start SHA for scoping review diffs to this task only
+    start_sha = git_rev_parse("HEAD", cwd)
 
     try:
         for attempt in range(max_retries):
@@ -368,7 +357,7 @@ def garden(
                 f"Work in the current directory. Make all necessary file changes."
             )
             if attempt > 0:
-                feedback = _collect_feedback_from_git(task.id, cwd)
+                feedback = _collect_feedback_from_git(task.id, cwd, since=since)
                 if feedback:
                     prompt += feedback
             logger.debug("Implement prompt: %.200s", prompt)
@@ -453,7 +442,7 @@ def garden(
 
             # --- review ---
             try:
-                diff = git_diff(base_branch, "HEAD", cwd)
+                diff = git_diff(start_sha, "HEAD", cwd)
             except Exception:
                 diff = "(no diff available)"
 
@@ -509,17 +498,17 @@ def garden(
             )
 
             logger.info("Task %s complete", task.id)
-            git_checkout(base_branch, cwd)
-            merge_result = _merge_phase_if_complete(
-                tree, task.id, cwd, base_branch,
-                global_test_command=test_command, config_timeout=test_timeout,
+            phase_result = _run_phase_tests_if_complete(
+                tree, task.id, cwd,
+                config_timeout=test_timeout,
                 container_workspace=container_workspace,
+                since=since,
             )
-            if merge_result is True:
-                logger.info("Phase merge completed for %s", task.id)
-            elif isinstance(merge_result, str):
-                logger.error("Phase merge blocked for %s: %s", task.id, merge_result)
-                return GardenResult(task_id=task.id, success=False, error=merge_result)
+            if phase_result is True:
+                logger.info("Phase tests passed for %s", task.id)
+            elif isinstance(phase_result, str):
+                logger.error("Phase tests blocked for %s: %s", task.id, phase_result)
+                return GardenResult(task_id=task.id, success=False, error=phase_result)
             return GardenResult(task_id=task.id, success=True)
 
         logger.info("Task %s failed after %d retries", task.id, max_retries)
@@ -529,13 +518,7 @@ def garden(
             **{TRAILER_STEP: "complete", TRAILER_RESULT: "fail"},
         )
 
-        git_checkout(base_branch, cwd)
         return GardenResult(task_id=task.id, success=False, error=f"failed after {max_retries} retries")
 
     except Exception:
-        # Ensure we return to base branch on unexpected errors
-        try:
-            git_checkout(base_branch, cwd)
-        except Exception:
-            pass
         raise

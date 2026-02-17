@@ -87,7 +87,7 @@ def test_git_repo_logs_debug(caplog, git_repo):
 def test_git_state_scan_logs_debug(caplog, git_repo):
     """scan_completed_tasks should emit DEBUG."""
     from agent_arborist.git.state import scan_completed_tasks
-    tree = TaskTree(spec_id="test", namespace="feature")
+    tree = TaskTree(spec_id="test")
     tree.nodes["T001"] = TaskNode(id="T001", name="Task 1")
     tree.compute_execution_order()
     with caplog.at_level(logging.DEBUG, logger="agent_arborist.git.state"):
@@ -112,7 +112,7 @@ def test_runner_logs_warning_on_timeout(caplog):
 
 
 def _make_tree():
-    tree = TaskTree(spec_id="test", namespace="feature")
+    tree = TaskTree(spec_id="test")
     tree.nodes["phase1"] = TaskNode(id="phase1", name="Phase 1", children=["T001"])
     tree.nodes["T001"] = TaskNode(id="T001", name="Task", parent="phase1", description="Do stuff")
     tree.compute_execution_order()

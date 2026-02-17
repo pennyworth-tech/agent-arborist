@@ -50,18 +50,6 @@ def test_ready_leaves_skips_completed():
     assert ready == []
 
 
-def test_branch_name_phase():
-    tree = _make_tree()
-    assert tree.branch_name("phase1") == "arborist/test/phase1"
-
-
-def test_branch_name_leaf_inherits_parent():
-    tree = _make_tree()
-    # Leaf tasks inherit their parent's branch
-    assert tree.branch_name("T001") == "arborist/test/phase1"
-    assert tree.branch_name("T002") == "arborist/test/phase1"
-
-
 def test_compute_execution_order_respects_deps():
     tree = _make_tree()
     order = tree.compute_execution_order()
@@ -99,21 +87,6 @@ def test_to_dict_includes_execution_order():
     assert data["execution_order"] == ["T001", "T002"]
 
 
-def test_to_dict_does_not_serialize_namespace():
-    tree = _make_tree()
-    data = tree.to_dict()
-    assert "namespace" not in data
-
-
-def test_from_dict_ignores_legacy_namespace():
-    """Old JSON files with a namespace key should not break deserialization."""
-    tree = _make_tree()
-    data = tree.to_dict()
-    data["namespace"] = "old-value"
-    restored = TaskTree.from_dict(data)
-    assert restored.namespace == "arborist"
-
-
 def _deep_tree():
     """Ragged deep tree: phase1 -> group1 -> T001, T002; phase1 -> T003."""
     tree = TaskTree(spec_id="test")
@@ -138,14 +111,6 @@ def test_root_phase_resolves_deep_descendants():
     assert tree.root_phase("phase1") == "phase1"
 
 
-def test_branch_name_deep_tree():
-    tree = _deep_tree()
-    assert tree.branch_name("T001") == "arborist/test/phase1"
-    assert tree.branch_name("T002") == "arborist/test/phase1"
-    assert tree.branch_name("T003") == "arborist/test/phase1"
-    assert tree.branch_name("group1") == "arborist/test/phase1"
-
-
 def test_leaves_under_collects_all_deep_leaves():
     tree = _deep_tree()
     leaves = tree.leaves_under("phase1")
@@ -168,7 +133,6 @@ def test_to_dict_and_from_dict_roundtrip():
     assert set(restored.nodes.keys()) == set(tree.nodes.keys())
     assert restored.nodes["T002"].depends_on == ["T001"]
     assert restored.execution_order == ["T001", "T002"]
-    assert restored.branch_name("T001") == tree.branch_name("T001")
 
 
 # --- TestCommand / TestType tests ---

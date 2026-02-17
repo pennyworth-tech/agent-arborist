@@ -2,22 +2,9 @@
 
 Arborist is **git-native** — all task state lives in the repository itself. No database, no state files, no daemon. Everything is recoverable from git history.
 
-## Branching Strategy
+## Linear Commit History
 
-Each root phase gets one branch:
-
-```
-<namespace>/<spec-id>/<root-phase-id>
-```
-
-Examples:
-```
-arborist/my-project/phase1
-arborist/my-project/phase2
-arborist/my-project/setup
-```
-
-All leaf tasks under a phase are implemented sequentially on that branch. When the last leaf completes, the branch is merged back to the base branch.
+All task commits land directly on the current (initiating) branch. There are no per-phase branches — execution is sequential and the commit history is linear.
 
 ## Commit Convention
 
@@ -41,7 +28,7 @@ Trailers are structured key-value metadata appended to commit messages. Arborist
 
 | Trailer | Values | Description |
 |---------|--------|-------------|
-| `Arborist-Step` | `implement`, `test`, `review`, `complete` | Which pipeline phase this commit represents |
+| `Arborist-Step` | `implement`, `test`, `review`, `complete`, `phase-complete` | Which pipeline phase this commit represents |
 | `Arborist-Result` | `pass`, `fail` | Whether the step succeeded |
 | `Arborist-Test` | `pass`, `fail` | Test command result |
 | `Arborist-Review` | `approved`, `rejected` | Code review result |
@@ -60,11 +47,11 @@ Unlike tools that use `git commit --amend` or force-pushes to "clean up" work, A
 
 ## State Recovery
 
-Arborist determines task state by reading trailers from git history:
+Arborist determines task state by reading trailers from git history on the current branch:
 
 ```mermaid
 flowchart TD
-    A["Read commits on phase branch<br/>matching task(ID):"] --> B{Found<br/>Arborist-Step: complete?}
+    A["Read commits on HEAD<br/>matching task(ID):"] --> B{Found<br/>Arborist-Step: complete?}
     B -- Yes --> C{Arborist-Result?}
     C -- pass --> D["COMPLETE"]
     C -- fail --> E["FAILED"]
@@ -87,19 +74,29 @@ Task states:
 
 Because state is in git, recovery is automatic:
 
-1. Process crashes mid-task → branch has partial commits
+1. Process crashes mid-task — branch has partial commits
 2. Run `arborist gardener` again
-3. Arborist scans git for completed tasks
+3. Arborist scans git for completed tasks on the current branch
 4. Skips completed tasks, finds the next ready one
-5. Creates or checks out the phase branch
-6. Continues from the next task (the partial task's branch may have incomplete work, but a fresh implement pass will overwrite it)
+5. Continues from the next task (partial work from the crashed task stays in history, but a fresh implement pass will overwrite the files)
 
-## Merging
+## Phase Completion
 
-When all leaf tasks under a root phase complete:
+When all leaf tasks under a root phase complete, Arborist:
 
-1. Arborist checks out the base branch
-2. Merges the phase branch with `--no-ff` (preserves branch history)
-3. Merge commit message: `merge: <phase-branch> complete`
+1. Runs any phase-level tests (`integration` or `e2e` test commands on the parent node)
+2. If phase tests fail, the gardener run fails
+3. If phase tests pass (or there are none), commits a `phase(<id>): complete` marker with `Arborist-Step: phase-complete`
 
-This keeps the git history clean — each phase is a discrete merge commit on the base branch.
+```mermaid
+gitGraph
+    commit id: "base"
+    commit id: "T001: implement"
+    commit id: "T001: complete"
+    commit id: "T002: implement"
+    commit id: "T002: complete"
+    commit id: "phase1: complete"
+    commit id: "T003: implement"
+    commit id: "T003: complete"
+    commit id: "phase2: complete"
+```

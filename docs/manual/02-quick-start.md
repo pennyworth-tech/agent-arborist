@@ -87,13 +87,12 @@ arborist gardener --tree task-tree.json
 
 Arborist loops through each leaf task in order. For each one:
 
-1. Creates a git branch (`arborist/your-project/phase1`)
-2. Sends the task to the AI runner for implementation
-3. Runs your test command
-4. Sends the diff for AI code review
-5. On success: commits with trailers and merges
+1. Sends the task to the AI runner for implementation
+2. Runs your test command
+3. Sends the diff for AI code review
+4. On success: commits with trailers marking the task complete
 
-If a step fails, Arborist retries (up to 5 times by default) with feedback from the failure.
+All commits land directly on the current branch. If a step fails, Arborist retries (up to 5 times by default) with feedback from the failure.
 
 ## 6. Check Progress
 
@@ -104,7 +103,7 @@ arborist status --tree task-tree.json
 Shows a tree with status icons:
 
 ```
-arborist/your-project
+your-project
 ├── phase1 Foundation
 │   ├── OK T001 Create the data models (complete)
 │   └── OK T002 Add unit tests for models (complete)

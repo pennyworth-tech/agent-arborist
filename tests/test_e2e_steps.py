@@ -56,7 +56,7 @@ def _skip_if_missing(cli_binary: str):
 
 
 def _simple_tree() -> TaskTree:
-    tree = TaskTree(spec_id="steps", namespace="feature")
+    tree = TaskTree(spec_id="steps")
     tree.nodes["phase1"] = TaskNode(id="phase1", name="Setup", children=["T001"])
     tree.nodes["T001"] = TaskNode(
         id="T001", name="Create a greeting file", parent="phase1",
@@ -66,7 +66,7 @@ def _simple_tree() -> TaskTree:
 
 
 def _two_task_tree() -> TaskTree:
-    tree = TaskTree(spec_id="steps", namespace="feature")
+    tree = TaskTree(spec_id="steps")
     tree.nodes["phase1"] = TaskNode(id="phase1", name="Setup", children=["T001", "T002"])
     tree.nodes["T001"] = TaskNode(
         id="T001", name="Create a file", parent="phase1",
@@ -113,8 +113,7 @@ def test_ai_garden_mixed_runners(
         tree, git_repo,
         implement_runner=impl_runner,
         review_runner=rev_runner,
-        base_branch="main",
-    )
+            )
 
     assert result.success, f"garden() failed: {result.error}"
     assert result.task_id == "T001"
@@ -151,8 +150,7 @@ def test_ai_gardener_mixed_runners(
         tree, git_repo,
         implement_runner=impl_runner,
         review_runner=rev_runner,
-        base_branch="main",
-    )
+            )
 
     assert result.success, f"gardener() failed: {result.error}"
     assert result.tasks_completed == 2
@@ -189,8 +187,7 @@ def test_ai_garden_same_runner_both_steps(
         tree, git_repo,
         implement_runner=impl_runner,
         review_runner=rev_runner,
-        base_branch="main",
-    )
+            )
 
     assert result.success, f"garden() failed: {result.error}"
     assert result.task_id == "T001"

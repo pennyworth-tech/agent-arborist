@@ -58,7 +58,6 @@ class TaskNode:
 @dataclass
 class TaskTree:
     spec_id: str
-    namespace: str = "arborist"
     nodes: dict[str, TaskNode] = field(default_factory=dict)
     execution_order: list[str] = field(default_factory=list)
     spec_files: list[str] = field(default_factory=list)
@@ -97,15 +96,6 @@ class TaskTree:
         for child_id in node.children:
             result.extend(self.leaves_under(child_id))
         return result
-
-    def branch_name(self, node_id: str) -> str:
-        """Get the git branch name for a node.
-
-        All descendants of a root phase share one branch.
-        """
-        rp = self.root_phase(node_id)
-        parts = [p for p in (self.namespace, self.spec_id, rp) if p]
-        return "/".join(parts)
 
     def compute_execution_order(self) -> list[str]:
         """Compute topological execution order using Kahn's algorithm.

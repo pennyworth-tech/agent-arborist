@@ -11,7 +11,7 @@ from agent_arborist.worker.garden import (
 
 def _make_tree():
     """phase1 -> T001, T002 (T002 depends on T001)."""
-    tree = TaskTree(spec_id="test", namespace="feature")
+    tree = TaskTree(spec_id="test")
     tree.nodes["phase1"] = TaskNode(id="phase1", name="Phase 1", children=["T001", "T002"])
     tree.nodes["T001"] = TaskNode(id="T001", name="Create files", parent="phase1", description="Create initial files")
     tree.nodes["T002"] = TaskNode(id="T002", name="Add tests", parent="phase1", depends_on=["T001"], description="Add test files")
@@ -28,13 +28,11 @@ def test_find_next_task_returns_first_ready(git_repo):
 
 def test_find_next_task_returns_none_when_all_done(git_repo):
     tree = _make_tree()
-    # Manually mark both complete by committing trailers
-    from agent_arborist.git.repo import git_checkout, git_add_all, git_commit
-    git_checkout("feature/test/phase1", git_repo, create=True)
+    # Manually mark both complete by committing trailers on current branch
+    from agent_arborist.git.repo import git_add_all, git_commit
     git_add_all(git_repo)
     git_commit("task(T001): complete\n\nArborist-Step: complete\nArborist-Result: pass", git_repo, allow_empty=True)
     git_commit("task(T002): complete\n\nArborist-Step: complete\nArborist-Result: pass", git_repo, allow_empty=True)
-    git_checkout("main", git_repo)
 
     task = find_next_task(tree, git_repo)
     assert task is None
@@ -42,33 +40,37 @@ def test_find_next_task_returns_none_when_all_done(git_repo):
 
 def test_garden_executes_task_successfully(git_repo, mock_runner_all_pass):
     tree = _make_tree()
-    result = garden(tree, git_repo, mock_runner_all_pass, base_branch="main")
+    result = garden(tree, git_repo, mock_runner_all_pass)
 
     assert result.success
     assert result.task_id == "T001"
+    # Commits land on the current (base) branch — no branch switching
     assert git_current_branch(git_repo) == "main"
 
 
-def test_garden_creates_phase_branch(git_repo, mock_runner_all_pass):
+def test_garden_commits_on_current_branch(git_repo, mock_runner_all_pass):
+    """All commits land on the current branch, no phase branches created."""
     tree = _make_tree()
     from agent_arborist.git.repo import git_branch_exists
+    garden(tree, git_repo, mock_runner_all_pass)
+    # No phase branch should exist
     assert not git_branch_exists("feature/test/phase1", git_repo)
-
-    garden(tree, git_repo, mock_runner_all_pass, base_branch="main")
-    assert git_branch_exists("feature/test/phase1", git_repo)
+    # Commits should be on main
+    log = git_log("main", "%s", git_repo, n=10)
+    assert "task(T001):" in log
 
 
 def test_garden_marks_task_complete(git_repo, mock_runner_all_pass):
     tree = _make_tree()
-    garden(tree, git_repo, mock_runner_all_pass, base_branch="main")
+    garden(tree, git_repo, mock_runner_all_pass)
 
-    assert is_task_complete("feature/test/phase1", "T001", git_repo)
+    assert is_task_complete("HEAD", "T001", git_repo)
 
 
 def test_garden_writes_report(git_repo, mock_runner_all_pass, tmp_path):
     tree = _make_tree()
     report_dir = tmp_path / "reports"
-    garden(tree, git_repo, mock_runner_all_pass, base_branch="main", report_dir=report_dir)
+    garden(tree, git_repo, mock_runner_all_pass, report_dir=report_dir)
 
     # Report should be written to report_dir
     reports = list(report_dir.glob("T001_run_*.json"))
@@ -84,13 +86,13 @@ def test_garden_retries_on_test_failure(git_repo, mock_runner_all_pass):
     counter_file.write_text("0")
     test_cmd = f'c=$(cat {counter_file}); echo $((c+1)) > {counter_file}; [ "$c" -gt "0" ]'
 
-    result = garden(tree, git_repo, mock_runner_all_pass, test_command=test_cmd, max_retries=3, base_branch="main")
+    result = garden(tree, git_repo, mock_runner_all_pass, test_command=test_cmd, max_retries=3)
     assert result.success
 
 
 def test_garden_fails_after_max_retries(git_repo, mock_runner_always_reject):
     tree = _make_tree()
-    result = garden(tree, git_repo, mock_runner_always_reject, max_retries=2, base_branch="main")
+    result = garden(tree, git_repo, mock_runner_always_reject, max_retries=2)
 
     assert not result.success
     assert "failed after 2 retries" in result.error
@@ -99,7 +101,7 @@ def test_garden_fails_after_max_retries(git_repo, mock_runner_always_reject):
 
 def _deep_tree():
     """Ragged: phase1 -> group1 -> T001, T002; phase1 -> T003."""
-    tree = TaskTree(spec_id="test", namespace="feature")
+    tree = TaskTree(spec_id="test")
     tree.nodes["phase1"] = TaskNode(id="phase1", name="Phase 1", children=["group1", "T003"])
     tree.nodes["group1"] = TaskNode(id="group1", name="Group 1", parent="phase1", children=["T001", "T002"])
     tree.nodes["T001"] = TaskNode(id="T001", name="Schema", parent="group1", description="Create schema")
@@ -109,26 +111,25 @@ def _deep_tree():
     return tree
 
 
-def test_deep_tree_merge_waits_for_all_leaves(git_repo, mock_runner_all_pass):
-    """Phase should not merge until ALL deep leaves are complete."""
+def test_deep_tree_phase_complete_after_all_leaves(git_repo, mock_runner_all_pass):
+    """Phase-complete marker should only appear after ALL deep leaves are complete."""
     tree = _deep_tree()
 
-    # Complete T001 — phase should NOT merge yet
-    r1 = garden(tree, git_repo, mock_runner_all_pass, base_branch="main")
+    # Complete T001 — phase should NOT be marked complete yet
+    r1 = garden(tree, git_repo, mock_runner_all_pass)
     assert r1.success
-    from agent_arborist.git.repo import git_log
-    main_log = git_log("main", "%s", git_repo, n=5)
-    assert "merge" not in main_log.lower()
+    main_log = git_log("main", "%s", git_repo, n=10)
+    assert "phase(" not in main_log
 
     # Complete T003
-    r2 = garden(tree, git_repo, mock_runner_all_pass, base_branch="main")
+    r2 = garden(tree, git_repo, mock_runner_all_pass)
     assert r2.success
 
-    # Complete T002 — now all leaves done, phase should merge
-    r3 = garden(tree, git_repo, mock_runner_all_pass, base_branch="main")
+    # Complete T002 — now all leaves done, phase-complete marker should appear
+    r3 = garden(tree, git_repo, mock_runner_all_pass)
     assert r3.success
-    main_log = git_log("main", "%s", git_repo, n=5)
-    assert "merge" in main_log.lower()
+    main_log = git_log("main", "%s", git_repo, n=15)
+    assert "phase(phase1): complete" in main_log
 
 
 # --- Feedback passthrough tests ---
@@ -145,12 +146,11 @@ def test_review_log_trailer_in_commit(git_repo, tmp_path):
     log_dir = tmp_path / "logs"
 
     runner = TrackingRunner(implement_ok=True, review_ok=True)
-    result = garden(tree, git_repo, runner, max_retries=3, base_branch="main", log_dir=log_dir)
+    result = garden(tree, git_repo, runner, max_retries=3, log_dir=log_dir)
     assert result.success
 
-    # Check the review commit on the phase branch has the trailer
-    branch = tree.branch_name("T001")
-    log_output = git_log(branch, "%B", git_repo, n=10, grep="review")
+    # Check the review commit on HEAD has the trailer
+    log_output = git_log("HEAD", "%B", git_repo, n=10, grep="review")
     assert "Arborist-Review-Log:" in log_output, (
         f"Review commit should have Arborist-Review-Log trailer, got:\n{log_output}"
     )
@@ -171,11 +171,10 @@ def test_test_log_trailer_in_commit(git_repo, tmp_path):
     counter_file.write_text("0")
     test_cmd = f'c=$(cat {counter_file}); echo "SOME_TEST_ERROR"; echo $((c+1)) > {counter_file}; [ "$c" -gt "0" ]'
 
-    result = garden(tree, git_repo, runner, test_command=test_cmd, max_retries=3, base_branch="main", log_dir=log_dir)
+    result = garden(tree, git_repo, runner, test_command=test_cmd, max_retries=3, log_dir=log_dir)
     assert result.success
 
-    branch = tree.branch_name("T001")
-    log_output = git_log(branch, "%B", git_repo, n=10, grep="tests fail")
+    log_output = git_log("HEAD", "%B", git_repo, n=10, grep="tests fail")
     assert "Arborist-Test-Log:" in log_output, (
         f"Test-fail commit should have Arborist-Test-Log trailer, got:\n{log_output}"
     )
@@ -204,11 +203,10 @@ def test_review_body_contains_output(git_repo, tmp_path):
 
     runner.run = patched_run
 
-    result = garden(tree, git_repo, runner, max_retries=3, base_branch="main", log_dir=log_dir)
+    result = garden(tree, git_repo, runner, max_retries=3, log_dir=log_dir)
     assert result.success
 
-    branch = tree.branch_name("T001")
-    log_output = git_log(branch, "%B", git_repo, n=10, grep="review rejected")
+    log_output = git_log("HEAD", "%B", git_repo, n=10, grep="review rejected")
     assert "variable naming is inconsistent" in log_output, (
         f"Review commit body should contain review output, got:\n{log_output}"
     )
@@ -236,7 +234,7 @@ def test_feedback_from_git_history_on_retry(git_repo, tmp_path):
 
     runner.run = patched_run
 
-    result = garden(tree, git_repo, runner, max_retries=3, base_branch="main", log_dir=log_dir)
+    result = garden(tree, git_repo, runner, max_retries=3, log_dir=log_dir)
     assert result.success
 
     implement_prompts = [p for p in runner.prompts if p.startswith("Implement")]
@@ -261,7 +259,7 @@ def test_test_failure_feedback_from_git_on_retry(git_repo, tmp_path):
     counter_file.write_text("0")
     test_cmd = f'c=$(cat {counter_file}); echo "SOME_TEST_ERROR: assertion failed"; echo $((c+1)) > {counter_file}; [ "$c" -gt "0" ]'
 
-    result = garden(tree, git_repo, runner, test_command=test_cmd, max_retries=3, base_branch="main", log_dir=log_dir)
+    result = garden(tree, git_repo, runner, test_command=test_cmd, max_retries=3, log_dir=log_dir)
     assert result.success
 
     implement_prompts = [p for p in runner.prompts if p.startswith("Implement")]
@@ -280,7 +278,7 @@ def test_runner_timeout_passed_to_runner(git_repo, tmp_path):
     tree = _make_tree()
     runner = TrackingRunner(implement_ok=True, review_ok=True)
 
-    result = garden(tree, git_repo, runner, max_retries=3, base_branch="main", runner_timeout=120)
+    result = garden(tree, git_repo, runner, max_retries=3, runner_timeout=120)
     assert result.success
     assert all(t == 120 for t in runner.timeouts), f"Expected all timeouts to be 120, got {runner.timeouts}"
 
@@ -292,7 +290,7 @@ def test_runner_timeout_default_when_none(git_repo, tmp_path):
     tree = _make_tree()
     runner = TrackingRunner(implement_ok=True, review_ok=True)
 
-    result = garden(tree, git_repo, runner, max_retries=3, base_branch="main")
+    result = garden(tree, git_repo, runner, max_retries=3)
     assert result.success
     assert all(t == 600 for t in runner.timeouts), f"Expected default timeout 600, got {runner.timeouts}"
 
@@ -306,7 +304,7 @@ def test_no_feedback_on_first_attempt(git_repo, tmp_path):
 
     runner = TrackingRunner(implement_ok=True, review_ok=True)
 
-    result = garden(tree, git_repo, runner, max_retries=3, base_branch="main", log_dir=log_dir)
+    result = garden(tree, git_repo, runner, max_retries=3, log_dir=log_dir)
     assert result.success
 
     implement_prompts = [p for p in runner.prompts if p.startswith("Implement")]
@@ -403,11 +401,10 @@ def test_trailers_include_test_metadata(git_repo, mock_runner_all_pass):
     tree.nodes["T001"].test_commands = [
         TestCommand(type=TestType.UNIT, command="echo '5 passed in 0.3s'", framework="pytest"),
     ]
-    result = garden(tree, git_repo, mock_runner_all_pass, base_branch="main")
+    result = garden(tree, git_repo, mock_runner_all_pass)
     assert result.success
 
-    branch = tree.branch_name("T001")
-    log_output = git_log(branch, "%B", git_repo, n=20, grep="tests pass")
+    log_output = git_log("HEAD", "%B", git_repo, n=20, grep="tests pass")
     assert "Arborist-Test-Type: unit" in log_output
     assert "Arborist-Test-Passed: 5" in log_output
     assert "Arborist-Test-Runtime:" in log_output
@@ -416,9 +413,9 @@ def test_trailers_include_test_metadata(git_repo, mock_runner_all_pass):
 # --- Phase test gating tests ---
 
 
-def test_phase_tests_block_merge_on_failure(git_repo, mock_runner_all_pass):
-    """Parent has integration tests that fail, merge does not happen."""
-    tree = TaskTree(spec_id="test", namespace="feature")
+def test_phase_tests_block_on_failure(git_repo, mock_runner_all_pass):
+    """Parent has integration tests that fail, task reports failure."""
+    tree = TaskTree(spec_id="test")
     tree.nodes["phase1"] = TaskNode(
         id="phase1", name="Phase 1", children=["T001"],
         test_commands=[TestCommand(type=TestType.INTEGRATION, command="exit 1")],
@@ -426,18 +423,15 @@ def test_phase_tests_block_merge_on_failure(git_repo, mock_runner_all_pass):
     tree.nodes["T001"] = TaskNode(id="T001", name="Task", parent="phase1", description="Do thing")
     tree.compute_execution_order()
 
-    result = garden(tree, git_repo, mock_runner_all_pass, base_branch="main")
-    # Task itself succeeds but phase merge fails
+    result = garden(tree, git_repo, mock_runner_all_pass)
+    # Task itself succeeds but phase tests fail
     assert not result.success
     assert "Phase test failed" in result.error
 
-    main_log = git_log("main", "%s", git_repo, n=5)
-    assert "merge" not in main_log.lower()
 
-
-def test_phase_tests_pass_allows_merge(git_repo, mock_runner_all_pass):
-    """Parent has integration tests that pass, merge proceeds."""
-    tree = TaskTree(spec_id="test", namespace="feature")
+def test_phase_tests_pass_commits_marker(git_repo, mock_runner_all_pass):
+    """Parent has integration tests that pass, phase-complete marker committed."""
+    tree = TaskTree(spec_id="test")
     tree.nodes["phase1"] = TaskNode(
         id="phase1", name="Phase 1", children=["T001"],
         test_commands=[TestCommand(type=TestType.INTEGRATION, command="exit 0")],
@@ -445,8 +439,8 @@ def test_phase_tests_pass_allows_merge(git_repo, mock_runner_all_pass):
     tree.nodes["T001"] = TaskNode(id="T001", name="Task", parent="phase1", description="Do thing")
     tree.compute_execution_order()
 
-    result = garden(tree, git_repo, mock_runner_all_pass, base_branch="main")
+    result = garden(tree, git_repo, mock_runner_all_pass)
     assert result.success
 
-    main_log = git_log("main", "%s", git_repo, n=5)
-    assert "merge" in main_log.lower()
+    main_log = git_log("main", "%s", git_repo, n=10)
+    assert "phase(phase1): complete" in main_log

@@ -15,11 +15,8 @@ from agent_arborist.config import (
     get_config, get_step_runner_model, ArboristConfig,
     VALID_RUNNERS, generate_config_template,
 )
-from agent_arborist.constants import DEFAULT_NAMESPACE
 from agent_arborist.git.repo import (
-    git_current_branch, git_toplevel, git_branch_list, git_branch_exists,
-    git_fetch, git_push as git_push_fn, git_remote_branch_list,
-    git_checkout, git_merge_ff_only, GitError,
+    git_current_branch, git_last_commit_for_file, git_toplevel, GitError,
 )
 
 
@@ -143,7 +140,6 @@ def init():
 @click.option("--spec-dir", type=click.Path(exists=True, path_type=Path), default="spec")
 @click.option("--output", "-o", type=click.Path(path_type=Path), default=None,
               help="Output path (default: specs/{branch}/task-tree.json)")
-@click.option("--namespace", default=DEFAULT_NAMESPACE)
 @click.option("--spec-id", default=None)
 @click.option("--no-ai", is_flag=True, help="Disable AI planning; use markdown parser instead")
 @click.option("--runner", default=None, help="Runner for AI planning (default: from config or 'claude')")
@@ -151,7 +147,7 @@ def init():
 @click.option("--container-mode", "-c", "container_mode", default=None,
               type=click.Choice(["auto", "enabled", "disabled"]),
               help="Container mode for AI planning (default: from config or 'auto')")
-def build(spec_dir, output, namespace, spec_id, no_ai, runner, model, container_mode):
+def build(spec_dir, output, spec_id, no_ai, runner, model, container_mode):
     """Build a task tree from a spec directory and write it to a JSON file."""
     if output is None:
         branch = git_current_branch(Path.cwd())
@@ -165,7 +161,7 @@ def build(spec_dir, output, namespace, spec_id, no_ai, runner, model, container_
         if not spec_files:
             console.print(f"[red]Error:[/red] No markdown files found in {spec_dir}")
             sys.exit(1)
-        tree = parse_spec(spec_files[0], spec_id=spec_id, namespace=namespace)
+        tree = parse_spec(spec_files[0], spec_id=spec_id)
     else:
         from agent_arborist.tree.ai_planner import plan_tree, DAG_DEFAULT_RUNNER, DAG_DEFAULT_MODEL
         # Resolve runner/model: CLI flag > config > DAG defaults
@@ -179,7 +175,6 @@ def build(spec_dir, output, namespace, spec_id, no_ai, runner, model, container_
         result = plan_tree(
             spec_dir=spec_dir,
             spec_id=spec_id,
-            namespace=namespace,
             runner_type=runner,
             model=model,
             container_workspace=container_ws,
@@ -246,6 +241,7 @@ def garden(tree_path, runner, model, max_retries, target_repo, base_branch, repo
     impl_runner_instance = get_runner(impl_runner_name, impl_model)
     rev_runner_instance = get_runner(rev_runner_name, rev_model)
     resolved_test_timeout = cfg.test.timeout or cfg.timeouts.test_command
+    anchor_sha = git_last_commit_for_file(str(tree_path), target)
     container_ws = _resolve_container_workspace(container_mode, cfg, target)
     result = garden_fn(
         tree, target,
@@ -253,12 +249,12 @@ def garden(tree_path, runner, model, max_retries, target_repo, base_branch, repo
         review_runner=rev_runner_instance,
         test_command="true",
         max_retries=resolved_max_retries,
-        base_branch=base_branch,
         report_dir=Path(report_dir).resolve(),
         log_dir=Path(log_dir).resolve(),
         runner_timeout=cfg.timeouts.runner_timeout,
         test_timeout=resolved_test_timeout,
         container_workspace=container_ws,
+        since=anchor_sha,
     )
 
     if result.success:
@@ -308,6 +304,7 @@ def gardener(tree_path, runner, model, max_retries, target_repo, base_branch, re
     resolved_test_timeout = cfg.test.timeout or cfg.timeouts.test_command
     impl_runner_instance = get_runner(impl_runner_name, impl_model)
     rev_runner_instance = get_runner(rev_runner_name, rev_model)
+    anchor_sha = git_last_commit_for_file(str(tree_path), target)
     container_ws = _resolve_container_workspace(container_mode, cfg, target)
     result = gardener_fn(
         tree, target,
@@ -315,12 +312,12 @@ def gardener(tree_path, runner, model, max_retries, target_repo, base_branch, re
         review_runner=rev_runner_instance,
         test_command="true",
         max_retries=resolved_max_retries,
-        base_branch=base_branch,
         report_dir=Path(report_dir).resolve(),
         log_dir=Path(log_dir).resolve(),
         runner_timeout=cfg.timeouts.runner_timeout,
         test_timeout=resolved_test_timeout,
         container_workspace=container_ws,
+        since=anchor_sha,
     )
 
     if result.success:
@@ -344,14 +341,15 @@ def status(tree_path, target_repo):
     if tree_path is None:
         tree_path = Path("specs") / git_current_branch(target) / "task-tree.json"
     tree = _load_tree(tree_path)
+    anchor_sha = git_last_commit_for_file(str(tree_path), target)
+    rev = f"{anchor_sha}..HEAD" if anchor_sha else "HEAD"
 
-    rich_tree = RichTree(f"[bold]{tree.namespace}/{tree.spec_id}[/bold]")
+    rich_tree = RichTree(f"[bold]{tree.spec_id}[/bold]")
 
     def _add_status_subtree(rich_node, node_id):
         node = tree.nodes[node_id]
         if node.is_leaf:
-            phase_branch = tree.branch_name(node_id)
-            trailers = get_task_trailers(phase_branch, node_id, target)
+            trailers = get_task_trailers(rev, node_id, target)
             state = task_state_from_trailers(trailers)
             icon = _status_icon(state)
             rich_node.add(f"{icon} [dim]{node.id}[/dim] {node.name} ({state.value})")
@@ -373,13 +371,15 @@ def status(tree_path, target_repo):
 @click.option("--target-repo", type=click.Path(path_type=Path), default=None)
 def inspect(tree_path, task_id, target_repo):
     """Deep-dive into a single task: metadata, commit history, trailers, and state."""
-    from agent_arborist.git.repo import git_log, git_branch_exists, GitError
+    from agent_arborist.git.repo import git_log, GitError
     from agent_arborist.git.state import get_task_trailers, task_state_from_trailers
 
     target = target_repo.resolve() if target_repo else Path(_default_repo()).resolve()
     if tree_path is None:
         tree_path = Path("specs") / git_current_branch(target) / "task-tree.json"
     tree = _load_tree(tree_path)
+    anchor_sha = git_last_commit_for_file(str(tree_path), target)
+    rev = f"{anchor_sha}..HEAD" if anchor_sha else "HEAD"
 
     if task_id not in tree.nodes:
         console.print(f"[red]Error:[/red] Task '{task_id}' not found in tree.")
@@ -407,22 +407,13 @@ def inspect(tree_path, task_id, target_repo):
             to = f" timeout={tc.timeout}s" if tc.timeout else ""
             console.print(f"    [{tc.type.value}] {tc.command}{fw}{to}")
 
-    branch = tree.branch_name(task_id)
-    console.print(f"  Branch: {branch}")
-
-    # --- Git state ---
-    try:
-        branch_exists = git_branch_exists(branch, target)
-    except GitError:
-        branch_exists = False
-
-    if not branch_exists:
-        console.print(f"\n[dim]Branch '{branch}' does not exist yet (task not started).[/dim]")
+    # Current state from most recent trailer
+    trailers = get_task_trailers(rev, task_id, target)
+    state = task_state_from_trailers(trailers)
+    if not trailers:
+        console.print(f"\n[dim]No commits found for this task (not started).[/dim]")
         return
 
-    # Current state from most recent trailer
-    trailers = get_task_trailers(branch, task_id, target)
-    state = task_state_from_trailers(trailers)
     console.print(f"\n[bold]State:[/bold] {state.value}")
     if trailers:
         console.print("[bold]Latest trailers:[/bold]")
@@ -430,10 +421,10 @@ def inspect(tree_path, task_id, target_repo):
             console.print(f"  {key}: {val}")
 
     # --- Full commit history for this task ---
-    console.print(f"\n[bold]Commit history[/bold] (branch: {branch}, grep: task({task_id}):)")
+    console.print(f"\n[bold]Commit history[/bold] (grep: task({task_id}):)")
     try:
         log_output = git_log(
-            branch,
+            rev,
             "%h %s%n%(trailers:key=Arborist-Step,key=Arborist-Result,key=Arborist-Test,key=Arborist-Review,key=Arborist-Retry,key=Arborist-Test-Type,key=Arborist-Test-Passed,key=Arborist-Test-Failed,key=Arborist-Test-Runtime)",
             target,
             n=50,
@@ -456,100 +447,6 @@ def inspect(tree_path, task_id, target_repo):
     console.print()
 
 
-def _tree_branch_prefix(tree) -> str:
-    """Return the branch prefix for a tree, e.g. 'arborist/myspec/'."""
-    parts = [p for p in (tree.namespace, tree.spec_id) if p]
-    return "/".join(parts) + "/"
-
-
-@main.command()
-@click.option("--tree", "tree_path", type=click.Path(exists=True, path_type=Path), default=None,
-              help="Path to task-tree.json (default: specs/{branch}/task-tree.json)")
-@click.option("--target-repo", type=click.Path(path_type=Path), default=None)
-def pull(tree_path, target_repo):
-    """Pull arborist branches from remote for the current task tree."""
-    target = target_repo.resolve() if target_repo else Path(_default_repo()).resolve()
-    if tree_path is None:
-        tree_path = Path("specs") / git_current_branch(target) / "task-tree.json"
-    tree = _load_tree(tree_path)
-
-    prefix = _tree_branch_prefix(tree)
-    refspec = f"refs/heads/{prefix}*:refs/remotes/origin/{prefix}*"
-    console.print(f"Fetching [bold]{prefix}*[/bold] from origin...")
-    try:
-        git_fetch(target, refspec)
-    except GitError as e:
-        console.print(f"[dim]Fetch: {e}[/dim]")
-
-    # Restore local branches from remote tracking, update existing ones
-    original_branch = git_current_branch(target)
-    remote_branches = git_remote_branch_list(target, f"origin/{prefix}*")
-    restored, updated = 0, 0
-    for rb in remote_branches:
-        branch = rb.removeprefix("origin/")
-        if not git_branch_exists(branch, target):
-            git_checkout(branch, target, create=True, start_point=rb)
-            console.print(f"  Restored: {branch}")
-            restored += 1
-        else:
-            # Fast-forward existing branch to match remote
-            git_checkout(branch, target)
-            try:
-                git_merge_ff_only(rb, target)
-                console.print(f"  Updated: {branch}")
-                updated += 1
-            except GitError:
-                console.print(f"  [dim]Already current: {branch}[/dim]")
-
-    # Return to original branch if we moved
-    if git_current_branch(target) != original_branch:
-        git_checkout(original_branch, target)
-
-    if restored or updated:
-        parts = []
-        if restored:
-            parts.append(f"restored {restored}")
-        if updated:
-            parts.append(f"updated {updated}")
-        console.print(f"[green]{', '.join(parts).capitalize()} branch(es).[/green]")
-    else:
-        console.print("[dim]All branches already up to date.[/dim]")
-
-
-@main.command()
-@click.option("--tree", "tree_path", type=click.Path(exists=True, path_type=Path), default=None,
-              help="Path to task-tree.json (default: specs/{branch}/task-tree.json)")
-@click.option("--target-repo", type=click.Path(path_type=Path), default=None)
-def push(tree_path, target_repo):
-    """Push arborist branches to remote for the current task tree."""
-    target = target_repo.resolve() if target_repo else Path(_default_repo()).resolve()
-    if tree_path is None:
-        tree_path = Path("specs") / git_current_branch(target) / "task-tree.json"
-    tree = _load_tree(tree_path)
-
-    prefix = _tree_branch_prefix(tree)
-    local_branches = git_branch_list(target, f"{prefix}*")
-
-    if not local_branches:
-        console.print(f"[dim]No local branches matching {prefix}*[/dim]")
-        return
-
-    console.print(f"Pushing [bold]{len(local_branches)}[/bold] branch(es) to origin...")
-    pushed, skipped = 0, 0
-    for branch in local_branches:
-        try:
-            git_push_fn(target, branch, force_with_lease=True)
-            console.print(f"  Pushed: {branch}")
-            pushed += 1
-        except GitError as e:
-            console.print(f"  [dim]Skip: {branch} ({e})[/dim]")
-            skipped += 1
-
-    console.print(f"[green]Pushed {pushed} branch(es).[/green]")
-    if skipped:
-        console.print(f"[yellow]Skipped {skipped}.[/yellow]")
-
-
 def _load_tree(tree_path: Path):
     from agent_arborist.tree.model import TaskTree
     if not tree_path.exists():
@@ -559,7 +456,7 @@ def _load_tree(tree_path: Path):
 
 
 def _print_tree(tree):
-    rich_tree = RichTree(f"[bold]{tree.namespace}/{tree.spec_id}[/bold]")
+    rich_tree = RichTree(f"[bold]{tree.spec_id}[/bold]")
 
     def _add_subtree(rich_node, node_id):
         node = tree.nodes[node_id]

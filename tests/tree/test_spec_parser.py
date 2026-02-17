@@ -45,14 +45,6 @@ def test_parse_all_fixtures_no_crash():
         assert len(tree.nodes) > 0
 
 
-def test_parse_produces_branch_names():
-    tree = parse_spec(FIXTURES / "tasks-hello-world.md", spec_id="hello-world")
-    # Leaf tasks inherit parent's branch
-    bn = tree.branch_name("T001")
-    assert bn.startswith("arborist/hello-world/")
-    assert "phase" in bn
-
-
 def test_parse_deep_tree_nested_headers():
     """### subgroups become intermediate nodes in the tree."""
     tree = parse_spec(FIXTURES / "tasks-deep-tree.md", spec_id="deep")

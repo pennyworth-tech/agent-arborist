@@ -26,7 +26,7 @@
 
 **Fix:**
 - Check `.arborist/logs/` for runner output
-- Look at git log on the phase branch: `git log arborist/<spec>/<phase> --oneline`
+- Look at git log: `git log --grep="task(T001):" --oneline`
 - The commit bodies contain test output and review feedback
 - Consider: is the task too vague? Too large? Is the test command correct?
 
@@ -45,37 +45,30 @@
 - Use more explicit formatting in your spec (headers, task IDs, dependency section)
 - Try a different model: `arborist build --model opus`
 
-### Branch conflicts
-
-**Cause:** Manual changes on the base branch while Arborist is running.
-
-**Fix:**
-- Don't make manual changes during a gardener run
-- If needed, stop the gardener, resolve conflicts, then restart
-
 ## FAQ
 
 ### Can I run tasks in parallel?
 
-Not currently. Arborist executes tasks sequentially within each phase. Tasks across phases could theoretically run in parallel, but the current implementation is sequential.
+Not currently. Arborist executes tasks sequentially. All commits land on the current branch in order.
 
 ### Can I skip a task?
 
-Edit `task-tree.json` — remove the task from `execution_order` or mark it with a manual "complete" commit on the phase branch.
+Edit `task-tree.json` — remove the task from `execution_order` or manually commit a complete marker:
+
+```bash
+git commit --allow-empty -m "task(T003): complete
+
+Arborist-Step: complete
+Arborist-Result: pass"
+```
 
 ### Can I re-run a failed task?
 
-Yes. The gardener picks up from where it left off. If a task is marked failed, you may need to reset the branch:
-
-```bash
-git checkout <base-branch>
-git branch -D arborist/<spec>/<phase>
-arborist gardener --tree task-tree.json
-```
+Yes. The gardener picks up from where it left off. If a task is marked failed and you want to retry, you can either increase `--max-retries` or reset by reverting the failure commit.
 
 ### What if I want to review changes manually before merging?
 
-Use `garden` (single task) instead of `gardener` (loop). After each task completes, inspect the branch before proceeding.
+Use `garden` (single task) instead of `gardener` (loop). After each task completes, inspect the changes before proceeding.
 
 ### Where are the reports?
 

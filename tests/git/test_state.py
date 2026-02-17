@@ -1,6 +1,6 @@
 """Tests for git/state.py."""
 
-from agent_arborist.git.repo import git_add_all, git_commit, git_checkout
+from agent_arborist.git.repo import git_add_all, git_commit
 from agent_arborist.git.state import (
     TaskState,
     get_task_trailers,
@@ -45,37 +45,62 @@ def test_task_state_from_trailers_reviewing():
     assert task_state_from_trailers({TRAILER_STEP: "review"}) == TaskState.REVIEWING
 
 
-def test_get_task_trailers_from_branch(git_repo):
-    git_checkout("feature/test/phase1", git_repo, create=True)
+def test_get_task_trailers_from_head(git_repo):
     _commit_task(git_repo, "T001", **{TRAILER_STEP: "complete", TRAILER_RESULT: "pass"})
 
-    trailers = get_task_trailers("feature/test/phase1", "T001", git_repo)
+    trailers = get_task_trailers("HEAD", "T001", git_repo)
     assert trailers[TRAILER_STEP] == "complete"
     assert trailers[TRAILER_RESULT] == "pass"
 
 
 def test_is_task_complete(git_repo):
-    git_checkout("feature/test/phase1", git_repo, create=True)
     _commit_task(git_repo, "T001", **{TRAILER_STEP: "complete", TRAILER_RESULT: "pass"})
 
-    assert is_task_complete("feature/test/phase1", "T001", git_repo)
+    assert is_task_complete("HEAD", "T001", git_repo)
 
 
 def test_is_task_not_complete_when_pending(git_repo):
-    assert not is_task_complete("feature/test/phase1", "T001", git_repo)
+    assert not is_task_complete("HEAD", "T001", git_repo)
 
 
 def test_scan_completed_tasks(git_repo):
-    tree = TaskTree(spec_id="test", namespace="feature")
+    tree = TaskTree(spec_id="test")
     tree.nodes["phase1"] = TaskNode(id="phase1", name="Phase 1", children=["T001", "T002"])
     tree.nodes["T001"] = TaskNode(id="T001", name="Task 1", parent="phase1")
     tree.nodes["T002"] = TaskNode(id="T002", name="Task 2", parent="phase1")
 
-    # Complete T001 on phase branch
-    git_checkout("feature/test/phase1", git_repo, create=True)
+    # Complete T001 on current branch
     _commit_task(git_repo, "T001", **{TRAILER_STEP: "complete", TRAILER_RESULT: "pass"})
-    git_checkout("main", git_repo)
 
     completed = scan_completed_tasks(tree, git_repo)
     assert "T001" in completed
     assert "T002" not in completed
+
+
+def test_scan_ignores_commits_before_anchor(git_repo):
+    """Commits before the anchor SHA should be invisible to scan_completed_tasks."""
+    tree = TaskTree(spec_id="test")
+    tree.nodes["phase1"] = TaskNode(id="phase1", name="Phase 1", children=["T001", "T002"])
+    tree.nodes["T001"] = TaskNode(id="T001", name="Task 1", parent="phase1")
+    tree.nodes["T002"] = TaskNode(id="T002", name="Task 2", parent="phase1")
+
+    # Old run: complete T001 *before* the anchor
+    _commit_task(git_repo, "T001", **{TRAILER_STEP: "complete", TRAILER_RESULT: "pass"})
+
+    # Write the tree file (this commit becomes the anchor)
+    (git_repo / "task-tree.json").write_text("{}")
+    git_add_all(git_repo)
+    anchor_sha = git_commit("add task tree", git_repo)
+
+    # New run: complete T002 *after* the anchor
+    _commit_task(git_repo, "T002", **{TRAILER_STEP: "complete", TRAILER_RESULT: "pass"})
+
+    # With anchor, only T002 should be seen as complete
+    completed = scan_completed_tasks(tree, git_repo, since=anchor_sha)
+    assert "T001" not in completed
+    assert "T002" in completed
+
+    # Without anchor (backward compat), both are seen
+    completed_all = scan_completed_tasks(tree, git_repo)
+    assert "T001" in completed_all
+    assert "T002" in completed_all

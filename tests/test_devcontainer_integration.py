@@ -156,7 +156,7 @@ def _setup_repo_with_tree(repo: Path, tree) -> None:
 def _hello_world_tree():
     """Single phase, single task: create hello.txt."""
     from agent_arborist.tree.model import TaskNode, TaskTree
-    tree = TaskTree(spec_id="hello", namespace="feature")
+    tree = TaskTree(spec_id="hello")
     tree.nodes["phase1"] = TaskNode(id="phase1", name="Setup", children=["T001"])
     tree.nodes["T001"] = TaskNode(
         id="T001", name="Create hello world file", parent="phase1",
@@ -203,8 +203,7 @@ class TestDevcontainerE2E:
         runner = get_runner(runner_type, model)
         result = garden(
             tree, project, runner,
-            base_branch="main",
-            container_workspace=project,
+                        container_workspace=project,
         )
 
         assert result.success, f"garden() failed: {result.error}"
@@ -239,7 +238,7 @@ class TestDevcontainerE2E:
         from agent_arborist.worker.garden import garden
 
         # Tree with a test command that will execute inside the container
-        tree = TaskTree(spec_id="hello", namespace="feature")
+        tree = TaskTree(spec_id="hello")
         tree.nodes["phase1"] = TaskNode(id="phase1", name="Setup", children=["T001"])
         tree.nodes["T001"] = TaskNode(
             id="T001", name="Create hello world file", parent="phase1",
@@ -260,8 +259,7 @@ class TestDevcontainerE2E:
         runner = get_runner(runner_type, model)
         result = garden(
             tree, project, runner,
-            base_branch="main",
-            container_workspace=project,
+                        container_workspace=project,
         )
 
         assert result.success, f"garden() failed: {result.error}"

@@ -46,26 +46,24 @@ When optional inputs are omitted, the CLI uses defaults from `.arborist/config.j
 
 ## How Resume Works
 
-Arborist uses git-native state — task completion is tracked via git trailers on commits in `arborist/*` branches. The workflow exploits this for automatic resume:
+Arborist uses git-native state — task completion is tracked via git trailers on commits. The workflow exploits this for automatic resume:
 
 ```
 Run 1 (fails on task 8/10):
-  startup:  checkout spec_branch, fetch arborist/* branches (none yet)
+  startup:  checkout spec_branch
   execute:  tasks 1-7 complete, task 8 fails
-  teardown: push arborist/* branches + spec_branch
-            → 7 tasks' state preserved in remote branches
+  teardown: push spec_branch (with all task commits)
 
 Run 2 (retry):
-  startup:  checkout spec_branch, fetch arborist/* branches
-            → local branches restored from remote
+  startup:  checkout spec_branch (includes previous commits)
   execute:  gardener finds tasks 1-7 done via trailers, picks up at task 8
-  teardown: push everything again
+  teardown: push again
 ```
 
 Key points:
-- **Branches are never deleted** after merge — they persist with trailer state.
+- All commits land on the spec branch — no separate branches to manage.
 - The teardown step runs on **every exit** (success or failure), so partial progress is always saved.
-- One branch per root phase (not per task): `arborist/{spec_id}/{phase}`.
+- Resume is automatic: gardener scans commit trailers to find completed tasks.
 
 ## Troubleshooting
 
@@ -77,11 +75,11 @@ Key points:
 
 **Resume doesn't pick up completed tasks**
 - Ensure the teardown push step succeeded in the previous run (check logs).
-- Verify arborist branches exist on the remote: `git ls-remote origin 'refs/heads/arborist/*'`.
+- Verify commits with arborist trailers exist: `git log --grep="Arborist-Step:" --oneline`.
 
 **Timeout after 720 minutes**
 - Large trees may need the timeout increased, or split into smaller specs.
-- Check if a task is stuck in a retry loop — use `arborist inspect` on the relevant branch.
+- Check if a task is stuck in a retry loop — use `arborist inspect` locally.
 
 **Devcontainer build fails**
 - Set `container_mode` to `disabled` to bypass, or ensure `.devcontainer/devcontainer.json` is valid.

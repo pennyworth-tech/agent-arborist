@@ -132,8 +132,22 @@ def git_fetch(cwd: Path, refspec: str | None = None) -> None:
     _run(args, cwd)
 
 
+def git_rev_parse(rev: str, cwd: Path) -> str:
+    """Resolve a revision to its full SHA."""
+    return _run(["rev-parse", rev], cwd)
+
+
 def git_push(cwd: Path, branch: str, *, force_with_lease: bool = False) -> None:
     args = ["push", "origin", branch]
     if force_with_lease:
         args.append("--force-with-lease")
     _run(args, cwd)
+
+
+def git_last_commit_for_file(path: str, cwd: Path) -> str | None:
+    """Return SHA of the most recent commit that touched *path*, or None."""
+    try:
+        sha = _run(["log", "-1", "--format=%H", "--", path], cwd)
+        return sha if sha else None
+    except GitError:
+        return None
