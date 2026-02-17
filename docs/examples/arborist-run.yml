@@ -6,30 +6,21 @@ on:
         description: 'Branch with task-tree.json'
         required: true
         type: string
-      tree_path:
-        description: 'Path to task tree JSON'
-        required: false
-        default: 'task-tree.json'
-        type: string
       runner_type:
-        description: 'AI runner (claude, gemini, opencode)'
+        description: 'AI runner override (claude, gemini, opencode)'
         required: false
-        default: 'claude'
         type: string
       model:
-        description: 'Model name'
+        description: 'Model name override'
         required: false
-        default: 'sonnet'
         type: string
       max_retries:
-        description: 'Max retries per task'
+        description: 'Max retries per task override'
         required: false
-        default: '5'
         type: string
       container_mode:
-        description: 'Container mode (auto, enabled, disabled)'
+        description: 'Container mode override (auto, enabled, disabled)'
         required: false
-        default: 'auto'
         type: string
 
 permissions:
@@ -79,7 +70,7 @@ jobs:
         run: pip install git+https://${{ secrets.GH_PAT_ARBORIST_RO }}@github.com/pennyworth-tech/agent-arborist.git
 
       - name: Install Claude Code
-        if: inputs.runner_type == 'claude'
+        if: inputs.runner_type == 'claude' || inputs.runner_type == ''
         run: npm install -g @anthropic-ai/claude-code
 
       - name: Install devcontainer CLI
@@ -95,15 +86,12 @@ jobs:
       # ── Execute ────────────────────────────────────
       - name: Run gardener
         run: |
-          arborist gardener \
-            --tree "${{ inputs.tree_path }}" \
-            --runner-type "${{ inputs.runner_type }}" \
-            --model "${{ inputs.model }}" \
-            --max-retries ${{ inputs.max_retries }} \
-            --container-mode "${{ inputs.container_mode }}" \
-            --base-branch "${{ inputs.spec_branch }}" \
-            --log-dir .arborist/logs \
-            --report-dir .arborist/reports
+          cmd="arborist gardener --base-branch '${{ inputs.spec_branch }}'"
+          [ -n "${{ inputs.runner_type }}" ]    && cmd="$cmd --runner-type '${{ inputs.runner_type }}'"
+          [ -n "${{ inputs.model }}" ]           && cmd="$cmd --model '${{ inputs.model }}'"
+          [ -n "${{ inputs.max_retries }}" ]     && cmd="$cmd --max-retries ${{ inputs.max_retries }}"
+          [ -n "${{ inputs.container_mode }}" ]  && cmd="$cmd --container-mode '${{ inputs.container_mode }}'"
+          eval $cmd
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
@@ -118,32 +106,3 @@ jobs:
             git push origin "$branch" --force-with-lease 2>/dev/null || echo "  skip: $branch"
           done
           git push origin "${{ inputs.spec_branch }}" --force-with-lease 2>/dev/null || echo "  skip: base branch"
-
-      - name: Generate status artifacts
-        if: always()
-        run: |
-          mkdir -p .arborist/artifacts
-          arborist status --tree "${{ inputs.tree_path }}" > .arborist/artifacts/status.txt 2>&1 || true
-          cp "${{ inputs.tree_path }}" .arborist/artifacts/ 2>/dev/null || true
-
-          # Per-task inspect reports
-          python3 -c "
-          import json
-          tree = json.load(open('${{ inputs.tree_path }}'))
-          for nid, node in tree.get('nodes', {}).items():
-            if node.get('is_leaf', False): print(nid)
-          " 2>/dev/null | while read tid; do
-            arborist inspect --tree "${{ inputs.tree_path }}" --task-id "$tid" \
-              > ".arborist/artifacts/inspect-${tid}.txt" 2>&1 || true
-          done
-
-      - name: Upload artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: arborist-run-${{ github.run_id }}
-          path: |
-            .arborist/artifacts/
-            .arborist/logs/
-            .arborist/reports/
-          retention-days: 30

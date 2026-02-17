@@ -25,8 +25,8 @@ Run agent-arborist in CI using a GitHub Actions workflow in your target repo.
 3. Prepare a spec branch with your `task-tree.json`:
    ```bash
    git checkout -b spec/my-feature
-   arborist build --spec spec.md -o task-tree.json
-   git add task-tree.json && git commit -m "Add task tree"
+   arborist build
+   git add specs/ && git commit -m "Add task tree"
    git push origin spec/my-feature
    ```
 
@@ -34,14 +34,15 @@ Run agent-arborist in CI using a GitHub Actions workflow in your target repo.
 
 ## Workflow Inputs
 
-| Input | Default | Description |
+| Input | Required | Description |
 |---|---|---|
-| `spec_branch` | *(required)* | Branch containing task-tree.json |
-| `tree_path` | `task-tree.json` | Path to the task tree JSON file |
-| `runner_type` | `claude` | AI runner: `claude`, `gemini`, or `opencode` |
-| `model` | `sonnet` | Model name passed to the runner |
-| `max_retries` | `5` | Maximum retries per task |
-| `container_mode` | `auto` | Devcontainer mode: `auto`, `enabled`, or `disabled` |
+| `spec_branch` | Yes | Branch containing task-tree.json |
+| `runner_type` | No | Override AI runner (`claude`, `gemini`, `opencode`) |
+| `model` | No | Override model name |
+| `max_retries` | No | Override max retries per task |
+| `container_mode` | No | Override devcontainer mode (`auto`, `enabled`, `disabled`) |
+
+When optional inputs are omitted, the CLI uses defaults from `.arborist/config.json`.
 
 ## How Resume Works
 
@@ -66,14 +67,6 @@ Key points:
 - The teardown step runs on **every exit** (success or failure), so partial progress is always saved.
 - One branch per root phase (not per task): `arborist/{spec_id}/{phase}`.
 
-## Artifacts
-
-Every run uploads artifacts (retained 30 days) containing:
-- `status.txt` — Overall tree status
-- `inspect-{task_id}.txt` — Per-task inspection reports
-- `task-tree.json` — Copy of the tree used
-- Logs and reports from the gardener run
-
 ## Troubleshooting
 
 **Workflow fails immediately with pip install error**
@@ -88,7 +81,7 @@ Every run uploads artifacts (retained 30 days) containing:
 
 **Timeout after 720 minutes**
 - Large trees may need the timeout increased, or split into smaller specs.
-- Check if a task is stuck in a retry loop — inspect artifacts from the failed run.
+- Check if a task is stuck in a retry loop — use `arborist inspect` on the relevant branch.
 
 **Devcontainer build fails**
 - Set `container_mode` to `disabled` to bypass, or ensure `.devcontainer/devcontainer.json` is valid.

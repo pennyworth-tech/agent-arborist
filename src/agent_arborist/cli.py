@@ -137,8 +137,8 @@ def init():
 
 @main.command()
 @click.option("--spec-dir", type=click.Path(exists=True, path_type=Path), default="spec")
-@click.option("--output", "-o", type=click.Path(path_type=Path), default="task-tree.json",
-              help="Output path for the task tree JSON file")
+@click.option("--output", "-o", type=click.Path(path_type=Path), default=None,
+              help="Output path (default: specs/{branch}/task-tree.json)")
 @click.option("--namespace", default=DEFAULT_NAMESPACE)
 @click.option("--spec-id", default=None)
 @click.option("--no-ai", is_flag=True, help="Disable AI planning; use markdown parser instead")
@@ -149,6 +149,9 @@ def init():
               help="Container mode for AI planning (default: from config or 'auto')")
 def build(spec_dir, output, namespace, spec_id, no_ai, runner, model, container_mode):
     """Build a task tree from a spec directory and write it to a JSON file."""
+    if output is None:
+        branch = git_current_branch(Path.cwd())
+        output = Path("specs") / branch / "task-tree.json"
     if spec_id is None:
         spec_id = spec_dir.name if spec_dir.name != "spec" else Path.cwd().resolve().name
 
@@ -200,8 +203,8 @@ def build(spec_dir, output, namespace, spec_id, no_ai, runner, model, container_
 
 
 @main.command()
-@click.option("--tree", "tree_path", type=click.Path(exists=True, path_type=Path), required=True,
-              help="Path to task-tree.json")
+@click.option("--tree", "tree_path", type=click.Path(exists=True, path_type=Path), default=None,
+              help="Path to task-tree.json (default: specs/{branch}/task-tree.json)")
 @click.option("--runner-type", "runner", default=None, help="Runner type (default: from config or 'claude')")
 @click.option("--model", default=None, help="Model name (default: from config or 'sonnet')")
 @click.option("--max-retries", default=None, type=int, help="Max retries per task (default: from config or 5)")
@@ -210,7 +213,7 @@ def build(spec_dir, output, namespace, spec_id, no_ai, runner, model, container_
 @click.option("--report-dir", type=click.Path(path_type=Path), default=None,
               help="Directory for report JSON files (default: next to task tree)")
 @click.option("--log-dir", type=click.Path(path_type=Path), default=None,
-              help="Directory for runner log files (default: .arborist/logs)")
+              help="Directory for runner log files (default: next to task tree)")
 @click.option("--container-mode", "-c", "container_mode", default=None,
               type=click.Choice(["auto", "enabled", "disabled"]),
               help="Container mode (default: from config or 'auto')")
@@ -227,6 +230,8 @@ def garden(tree_path, runner, model, max_retries, target_repo, base_branch, repo
     target = target_repo.resolve() if target_repo else Path(_default_repo()).resolve()
     if base_branch is None:
         base_branch = git_current_branch(target)
+    if tree_path is None:
+        tree_path = Path("specs") / base_branch / "task-tree.json"
     tree = _load_tree(tree_path)
 
     if report_dir is None:
@@ -260,8 +265,8 @@ def garden(tree_path, runner, model, max_retries, target_repo, base_branch, repo
 
 
 @main.command()
-@click.option("--tree", "tree_path", type=click.Path(exists=True, path_type=Path), required=True,
-              help="Path to task-tree.json")
+@click.option("--tree", "tree_path", type=click.Path(exists=True, path_type=Path), default=None,
+              help="Path to task-tree.json (default: specs/{branch}/task-tree.json)")
 @click.option("--runner-type", "runner", default=None, help="Runner type (default: from config or 'claude')")
 @click.option("--model", default=None, help="Model name (default: from config or 'sonnet')")
 @click.option("--max-retries", default=None, type=int, help="Max retries per task (default: from config or 5)")
@@ -270,7 +275,7 @@ def garden(tree_path, runner, model, max_retries, target_repo, base_branch, repo
 @click.option("--report-dir", type=click.Path(path_type=Path), default=None,
               help="Directory for report JSON files (default: next to task tree)")
 @click.option("--log-dir", type=click.Path(path_type=Path), default=None,
-              help="Directory for runner log files (default: .arborist/logs)")
+              help="Directory for runner log files (default: next to task tree)")
 @click.option("--container-mode", "-c", "container_mode", default=None,
               type=click.Choice(["auto", "enabled", "disabled"]),
               help="Container mode (default: from config or 'auto')")
@@ -287,6 +292,8 @@ def gardener(tree_path, runner, model, max_retries, target_repo, base_branch, re
     target = target_repo.resolve() if target_repo else Path(_default_repo()).resolve()
     if base_branch is None:
         base_branch = git_current_branch(target)
+    if tree_path is None:
+        tree_path = Path("specs") / base_branch / "task-tree.json"
     tree = _load_tree(tree_path)
 
     if report_dir is None:
@@ -322,14 +329,16 @@ def gardener(tree_path, runner, model, max_retries, target_repo, base_branch, re
 
 
 @main.command()
-@click.option("--tree", "tree_path", type=click.Path(exists=True, path_type=Path), required=True,
-              help="Path to task-tree.json")
+@click.option("--tree", "tree_path", type=click.Path(exists=True, path_type=Path), default=None,
+              help="Path to task-tree.json (default: specs/{branch}/task-tree.json)")
 @click.option("--target-repo", type=click.Path(path_type=Path), default=None)
 def status(tree_path, target_repo):
     """Show current status of all tasks."""
     from agent_arborist.git.state import scan_completed_tasks, TaskState, get_task_trailers, task_state_from_trailers
 
     target = target_repo.resolve() if target_repo else Path(_default_repo()).resolve()
+    if tree_path is None:
+        tree_path = Path("specs") / git_current_branch(target) / "task-tree.json"
     tree = _load_tree(tree_path)
 
     rich_tree = RichTree(f"[bold]{tree.namespace}/{tree.spec_id}[/bold]")
@@ -354,8 +363,8 @@ def status(tree_path, target_repo):
 
 
 @main.command()
-@click.option("--tree", "tree_path", type=click.Path(exists=True, path_type=Path), required=True,
-              help="Path to task-tree.json")
+@click.option("--tree", "tree_path", type=click.Path(exists=True, path_type=Path), default=None,
+              help="Path to task-tree.json (default: specs/{branch}/task-tree.json)")
 @click.option("--task-id", required=True, help="Task ID to inspect (e.g. T003)")
 @click.option("--target-repo", type=click.Path(path_type=Path), default=None)
 def inspect(tree_path, task_id, target_repo):
@@ -364,6 +373,8 @@ def inspect(tree_path, task_id, target_repo):
     from agent_arborist.git.state import get_task_trailers, task_state_from_trailers
 
     target = target_repo.resolve() if target_repo else Path(_default_repo()).resolve()
+    if tree_path is None:
+        tree_path = Path("specs") / git_current_branch(target) / "task-tree.json"
     tree = _load_tree(tree_path)
 
     if task_id not in tree.nodes:
