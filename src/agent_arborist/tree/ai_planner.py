@@ -106,7 +106,7 @@ For each task, optionally generate a "test_commands" array. Each entry:
 Rules:
 - Leaf tasks typically get "type": "unit" tests
 - Parent/group tasks may get "type": "integration" or "type": "e2e" tests
-- Integration/e2e tests on parent nodes run before the phase branch merges
+- Integration/e2e tests on parent nodes run after all child tasks complete
 - Infer the framework from project context (package.json → jest/vitest, pyproject.toml → pytest, go.mod → go)
 - If you cannot determine a test command, omit test_commands (it defaults to empty)
 

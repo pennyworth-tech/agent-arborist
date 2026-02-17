@@ -282,8 +282,7 @@ class TestingConfig:
         """Create from dictionary."""
         if strict:
             known_fields = {f.name for f in fields(cls)}
-            # Accept but ignore legacy "command" field
-            unknown = set(data.keys()) - known_fields - {"command"}
+            unknown = set(data.keys()) - known_fields
             if unknown:
                 raise ConfigValidationError(
                     f"Unknown fields in test config: {', '.join(unknown)}"
@@ -293,9 +292,6 @@ class TestingConfig:
             timeout=data.get("timeout"),
         )
 
-
-# Alias for backward compatibility
-TestConfig = TestingConfig
 
 
 @dataclass

@@ -476,13 +476,6 @@ class TestTestingConfigNoCommand:
         assert "command" not in d
         assert d["timeout"] == 30
 
-    def test_testing_config_from_dict_ignores_legacy_command(self):
-        """Legacy config with 'command' field should not raise in strict mode."""
-        from agent_arborist.config import TestingConfig
-        tc = TestingConfig.from_dict({"command": "pytest", "timeout": 60}, strict=True)
-        assert tc.timeout == 60
-        assert not hasattr(tc, "command")
-
     def test_testing_config_strict_rejects_unknown_fields(self):
         from agent_arborist.config import TestingConfig, ConfigValidationError
         with pytest.raises(ConfigValidationError, match="Unknown fields"):
