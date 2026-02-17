@@ -120,6 +120,11 @@ def git_remote_branch_list(cwd: Path, pattern: str | None = None) -> list[str]:
     return [b for b in out.split("\n") if b]
 
 
+def git_merge_ff_only(branch: str, cwd: Path) -> None:
+    """Fast-forward merge the given branch into the current branch."""
+    _run(["merge", "--ff-only", branch], cwd)
+
+
 def git_fetch(cwd: Path, refspec: str | None = None) -> None:
     args = ["fetch", "origin"]
     if refspec:

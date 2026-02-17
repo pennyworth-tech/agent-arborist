@@ -19,7 +19,7 @@ from agent_arborist.constants import DEFAULT_NAMESPACE
 from agent_arborist.git.repo import (
     git_current_branch, git_toplevel, git_branch_list, git_branch_exists,
     git_fetch, git_push as git_push_fn, git_remote_branch_list,
-    git_checkout, GitError,
+    git_checkout, git_merge_ff_only, GitError,
 )
 
 
@@ -481,23 +481,37 @@ def pull(tree_path, target_repo):
     except GitError as e:
         console.print(f"[dim]Fetch: {e}[/dim]")
 
-    # Restore local branches from remote tracking
+    # Restore local branches from remote tracking, update existing ones
     original_branch = git_current_branch(target)
     remote_branches = git_remote_branch_list(target, f"origin/{prefix}*")
-    restored = 0
+    restored, updated = 0, 0
     for rb in remote_branches:
         branch = rb.removeprefix("origin/")
         if not git_branch_exists(branch, target):
             git_checkout(branch, target, create=True, start_point=rb)
             console.print(f"  Restored: {branch}")
             restored += 1
+        else:
+            # Fast-forward existing branch to match remote
+            git_checkout(branch, target)
+            try:
+                git_merge_ff_only(rb, target)
+                console.print(f"  Updated: {branch}")
+                updated += 1
+            except GitError:
+                console.print(f"  [dim]Already current: {branch}[/dim]")
 
     # Return to original branch if we moved
-    if restored and git_current_branch(target) != original_branch:
+    if git_current_branch(target) != original_branch:
         git_checkout(original_branch, target)
 
-    if restored:
-        console.print(f"[green]Restored {restored} branch(es).[/green]")
+    if restored or updated:
+        parts = []
+        if restored:
+            parts.append(f"restored {restored}")
+        if updated:
+            parts.append(f"updated {updated}")
+        console.print(f"[green]{', '.join(parts).capitalize()} branch(es).[/green]")
     else:
         console.print("[dim]All branches already up to date.[/dim]")
 

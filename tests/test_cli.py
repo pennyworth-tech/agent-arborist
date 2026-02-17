@@ -531,16 +531,36 @@ class TestPullPush:
         mock_fetch.assert_called_once()
         assert "Restored" in result.output
 
-    def test_pull_skips_existing_local_branches(self, tmp_path):
+    def test_pull_updates_existing_local_branches(self, tmp_path):
         tree_path = _make_tree_at(tmp_path, "my-branch")
         runner = CliRunner()
         with patch("agent_arborist.cli.git_current_branch", return_value="my-branch"), \
              patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)), \
              patch("agent_arborist.cli.git_fetch"), \
              patch("agent_arborist.cli.git_remote_branch_list", return_value=["origin/feature/test/phase1"]), \
-             patch("agent_arborist.cli.git_branch_exists", return_value=True):
+             patch("agent_arborist.cli.git_branch_exists", return_value=True), \
+             patch("agent_arborist.cli.git_checkout") as mock_checkout, \
+             patch("agent_arborist.cli.git_merge_ff_only") as mock_merge:
             result = runner.invoke(main, ["pull", "--tree", str(tree_path)], catch_exceptions=False)
         assert result.exit_code == 0, result.output
+        mock_checkout.assert_any_call("feature/test/phase1", tmp_path)
+        mock_merge.assert_called_once_with("origin/feature/test/phase1", tmp_path)
+        assert "Updated" in result.output
+
+    def test_pull_already_current_branches(self, tmp_path):
+        from agent_arborist.git.repo import GitError
+        tree_path = _make_tree_at(tmp_path, "my-branch")
+        runner = CliRunner()
+        with patch("agent_arborist.cli.git_current_branch", return_value="my-branch"), \
+             patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)), \
+             patch("agent_arborist.cli.git_fetch"), \
+             patch("agent_arborist.cli.git_remote_branch_list", return_value=["origin/feature/test/phase1"]), \
+             patch("agent_arborist.cli.git_branch_exists", return_value=True), \
+             patch("agent_arborist.cli.git_checkout"), \
+             patch("agent_arborist.cli.git_merge_ff_only", side_effect=GitError("already up to date")):
+            result = runner.invoke(main, ["pull", "--tree", str(tree_path)], catch_exceptions=False)
+        assert result.exit_code == 0, result.output
+        assert "Already current" in result.output
         assert "up to date" in result.output
 
     def test_pull_default_tree_path(self, tmp_path):
