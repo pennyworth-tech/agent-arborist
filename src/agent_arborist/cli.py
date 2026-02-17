@@ -16,7 +16,11 @@ from agent_arborist.config import (
     VALID_RUNNERS, generate_config_template,
 )
 from agent_arborist.constants import DEFAULT_NAMESPACE
-from agent_arborist.git.repo import git_current_branch, git_toplevel
+from agent_arborist.git.repo import (
+    git_current_branch, git_toplevel, git_branch_list, git_branch_exists,
+    git_fetch, git_push as git_push_fn, git_remote_branch_list,
+    git_checkout, GitError,
+)
 
 
 console = Console()
@@ -450,6 +454,86 @@ def inspect(tree_path, task_id, target_repo):
         console.print("  [dim]No commits found for this task.[/dim]")
 
     console.print()
+
+
+def _tree_branch_prefix(tree) -> str:
+    """Return the branch prefix for a tree, e.g. 'arborist/myspec/'."""
+    parts = [p for p in (tree.namespace, tree.spec_id) if p]
+    return "/".join(parts) + "/"
+
+
+@main.command()
+@click.option("--tree", "tree_path", type=click.Path(exists=True, path_type=Path), default=None,
+              help="Path to task-tree.json (default: specs/{branch}/task-tree.json)")
+@click.option("--target-repo", type=click.Path(path_type=Path), default=None)
+def pull(tree_path, target_repo):
+    """Pull arborist branches from remote for the current task tree."""
+    target = target_repo.resolve() if target_repo else Path(_default_repo()).resolve()
+    if tree_path is None:
+        tree_path = Path("specs") / git_current_branch(target) / "task-tree.json"
+    tree = _load_tree(tree_path)
+
+    prefix = _tree_branch_prefix(tree)
+    refspec = f"refs/heads/{prefix}*:refs/remotes/origin/{prefix}*"
+    console.print(f"Fetching [bold]{prefix}*[/bold] from origin...")
+    try:
+        git_fetch(target, refspec)
+    except GitError as e:
+        console.print(f"[dim]Fetch: {e}[/dim]")
+
+    # Restore local branches from remote tracking
+    original_branch = git_current_branch(target)
+    remote_branches = git_remote_branch_list(target, f"origin/{prefix}*")
+    restored = 0
+    for rb in remote_branches:
+        branch = rb.removeprefix("origin/")
+        if not git_branch_exists(branch, target):
+            git_checkout(branch, target, create=True, start_point=rb)
+            console.print(f"  Restored: {branch}")
+            restored += 1
+
+    # Return to original branch if we moved
+    if restored and git_current_branch(target) != original_branch:
+        git_checkout(original_branch, target)
+
+    if restored:
+        console.print(f"[green]Restored {restored} branch(es).[/green]")
+    else:
+        console.print("[dim]All branches already up to date.[/dim]")
+
+
+@main.command()
+@click.option("--tree", "tree_path", type=click.Path(exists=True, path_type=Path), default=None,
+              help="Path to task-tree.json (default: specs/{branch}/task-tree.json)")
+@click.option("--target-repo", type=click.Path(path_type=Path), default=None)
+def push(tree_path, target_repo):
+    """Push arborist branches to remote for the current task tree."""
+    target = target_repo.resolve() if target_repo else Path(_default_repo()).resolve()
+    if tree_path is None:
+        tree_path = Path("specs") / git_current_branch(target) / "task-tree.json"
+    tree = _load_tree(tree_path)
+
+    prefix = _tree_branch_prefix(tree)
+    local_branches = git_branch_list(target, f"{prefix}*")
+
+    if not local_branches:
+        console.print(f"[dim]No local branches matching {prefix}*[/dim]")
+        return
+
+    console.print(f"Pushing [bold]{len(local_branches)}[/bold] branch(es) to origin...")
+    pushed, skipped = 0, 0
+    for branch in local_branches:
+        try:
+            git_push_fn(target, branch, force_with_lease=True)
+            console.print(f"  Pushed: {branch}")
+            pushed += 1
+        except GitError as e:
+            console.print(f"  [dim]Skip: {branch} ({e})[/dim]")
+            skipped += 1
+
+    console.print(f"[green]Pushed {pushed} branch(es).[/green]")
+    if skipped:
+        console.print(f"[yellow]Skipped {skipped}.[/yellow]")
 
 
 def _load_tree(tree_path: Path):

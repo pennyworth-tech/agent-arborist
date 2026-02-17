@@ -508,3 +508,108 @@ class TestTestingConfigNoCommand:
         with patch.dict(os.environ, {"ARBORIST_TEST_COMMAND": "pytest -v"}):
             result = apply_env_overrides(cfg)
         assert not hasattr(result.test, "command")
+
+
+# ---------------------------------------------------------------------------
+# Pull / Push remotes
+# ---------------------------------------------------------------------------
+
+class TestPullPush:
+    """Tests for arborist pull and arborist push commands."""
+
+    def test_pull_fetches_and_restores_branches(self, tmp_path):
+        tree_path = _make_tree_at(tmp_path, "my-branch")
+        runner = CliRunner()
+        with patch("agent_arborist.cli.git_current_branch", return_value="my-branch"), \
+             patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)), \
+             patch("agent_arborist.cli.git_fetch") as mock_fetch, \
+             patch("agent_arborist.cli.git_remote_branch_list", return_value=["origin/feature/test/phase1"]), \
+             patch("agent_arborist.cli.git_branch_exists", return_value=False), \
+             patch("agent_arborist.cli.git_checkout") as mock_checkout:
+            result = runner.invoke(main, ["pull", "--tree", str(tree_path)], catch_exceptions=False)
+        assert result.exit_code == 0, result.output
+        mock_fetch.assert_called_once()
+        assert "Restored" in result.output
+
+    def test_pull_skips_existing_local_branches(self, tmp_path):
+        tree_path = _make_tree_at(tmp_path, "my-branch")
+        runner = CliRunner()
+        with patch("agent_arborist.cli.git_current_branch", return_value="my-branch"), \
+             patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)), \
+             patch("agent_arborist.cli.git_fetch"), \
+             patch("agent_arborist.cli.git_remote_branch_list", return_value=["origin/feature/test/phase1"]), \
+             patch("agent_arborist.cli.git_branch_exists", return_value=True):
+            result = runner.invoke(main, ["pull", "--tree", str(tree_path)], catch_exceptions=False)
+        assert result.exit_code == 0, result.output
+        assert "up to date" in result.output
+
+    def test_pull_default_tree_path(self, tmp_path):
+        _make_tree_at(tmp_path, "my-branch")
+        runner = CliRunner()
+        with patch("agent_arborist.cli.git_current_branch", return_value="my-branch"), \
+             patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)), \
+             patch("agent_arborist.cli.git_fetch"), \
+             patch("agent_arborist.cli.git_remote_branch_list", return_value=[]), \
+             patch("agent_arborist.cli.git_branch_exists", return_value=True):
+            result = runner.invoke(main, ["pull"], catch_exceptions=False)
+        assert result.exit_code == 0, result.output
+
+    def test_push_pushes_matching_branches(self, tmp_path):
+        tree_path = _make_tree_at(tmp_path, "my-branch")
+        runner = CliRunner()
+        with patch("agent_arborist.cli.git_current_branch", return_value="my-branch"), \
+             patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)), \
+             patch("agent_arborist.cli.git_branch_list", return_value=["feature/test/phase1", "feature/test/phase2"]), \
+             patch("agent_arborist.cli.git_push_fn") as mock_push:
+            result = runner.invoke(main, ["push", "--tree", str(tree_path)], catch_exceptions=False)
+        assert result.exit_code == 0, result.output
+        assert mock_push.call_count == 2
+        assert "Pushed 2" in result.output
+
+    def test_push_no_branches(self, tmp_path):
+        tree_path = _make_tree_at(tmp_path, "my-branch")
+        runner = CliRunner()
+        with patch("agent_arborist.cli.git_current_branch", return_value="my-branch"), \
+             patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)), \
+             patch("agent_arborist.cli.git_branch_list", return_value=[]):
+            result = runner.invoke(main, ["push", "--tree", str(tree_path)], catch_exceptions=False)
+        assert result.exit_code == 0, result.output
+        assert "No local branches" in result.output
+
+    def test_push_handles_failures(self, tmp_path):
+        from agent_arborist.git.repo import GitError
+        tree_path = _make_tree_at(tmp_path, "my-branch")
+        runner = CliRunner()
+        with patch("agent_arborist.cli.git_current_branch", return_value="my-branch"), \
+             patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)), \
+             patch("agent_arborist.cli.git_branch_list", return_value=["feature/test/phase1"]), \
+             patch("agent_arborist.cli.git_push_fn", side_effect=GitError("rejected")):
+            result = runner.invoke(main, ["push", "--tree", str(tree_path)], catch_exceptions=False)
+        assert result.exit_code == 0, result.output
+        assert "Skip" in result.output
+
+    def test_push_default_tree_path(self, tmp_path):
+        _make_tree_at(tmp_path, "my-branch")
+        runner = CliRunner()
+        with patch("agent_arborist.cli.git_current_branch", return_value="my-branch"), \
+             patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)), \
+             patch("agent_arborist.cli.git_branch_list", return_value=[]):
+            result = runner.invoke(main, ["push"], catch_exceptions=False)
+        assert result.exit_code == 0, result.output
+
+    def test_pull_uses_tree_prefix(self, tmp_path):
+        """pull fetches only branches matching {namespace}/{spec_id}/*."""
+        tree_path = _make_tree_at(tmp_path, "my-branch")
+        runner = CliRunner()
+        with patch("agent_arborist.cli.git_current_branch", return_value="my-branch"), \
+             patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)), \
+             patch("agent_arborist.cli.git_fetch") as mock_fetch, \
+             patch("agent_arborist.cli.git_remote_branch_list", return_value=[]) as mock_remote, \
+             patch("agent_arborist.cli.git_branch_exists", return_value=True):
+            result = runner.invoke(main, ["pull", "--tree", str(tree_path)], catch_exceptions=False)
+        # Verify fetch uses the tree's namespace/spec_id prefix
+        fetch_call = mock_fetch.call_args
+        assert "arborist/test/" in str(fetch_call)
+        # Verify remote branch list uses the same prefix
+        remote_call = mock_remote.call_args
+        assert "arborist/test/" in str(remote_call)

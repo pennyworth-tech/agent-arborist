@@ -98,9 +98,37 @@ def git_diff(ref1: str, ref2: str, cwd: Path) -> str:
     return _run(["diff", f"{ref1}..{ref2}"], cwd)
 
 
-def git_branch_list(cwd: Path) -> list[str]:
+def git_branch_list(cwd: Path, pattern: str | None = None) -> list[str]:
+    args = ["branch", "--list", "--format=%(refname:short)"]
+    if pattern:
+        args.append(pattern)
     try:
-        out = _run(["branch", "--list", "--format=%(refname:short)"], cwd)
+        out = _run(args, cwd)
     except GitError:
         return []
     return [b for b in out.split("\n") if b]
+
+
+def git_remote_branch_list(cwd: Path, pattern: str | None = None) -> list[str]:
+    args = ["branch", "-r", "--list", "--format=%(refname:short)"]
+    if pattern:
+        args.append(pattern)
+    try:
+        out = _run(args, cwd)
+    except GitError:
+        return []
+    return [b for b in out.split("\n") if b]
+
+
+def git_fetch(cwd: Path, refspec: str | None = None) -> None:
+    args = ["fetch", "origin"]
+    if refspec:
+        args.append(refspec)
+    _run(args, cwd)
+
+
+def git_push(cwd: Path, branch: str, *, force_with_lease: bool = False) -> None:
+    args = ["push", "origin", branch]
+    if force_with_lease:
+        args.append("--force-with-lease")
+    _run(args, cwd)

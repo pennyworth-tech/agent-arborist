@@ -22,6 +22,10 @@ on:
         description: 'Container mode override (auto, enabled, disabled)'
         required: false
         type: string
+      tree_path:
+        description: 'Path to task-tree.json (default: specs/{branch}/task-tree.json)'
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -38,18 +42,6 @@ jobs:
         with:
           ref: ${{ inputs.spec_branch }}
           fetch-depth: 0
-
-      - name: Pull existing arborist branches (resume support)
-        run: |
-          echo "Fetching arborist/* branches for resume support..."
-          git fetch origin 'refs/heads/arborist/*:refs/remotes/origin/arborist/*' 2>/dev/null || true
-          for rb in $(git branch -r --list 'origin/arborist/*' 2>/dev/null); do
-            branch="${rb#origin/}"
-            if ! git rev-parse --verify "$branch" >/dev/null 2>&1; then
-              git branch "$branch" "$rb"
-              echo "  Restored: $branch"
-            fi
-          done
 
       - name: Setup Python 3.11
         uses: actions/setup-python@v5
@@ -69,6 +61,9 @@ jobs:
       - name: Install agent-arborist
         run: pip install git+https://${{ secrets.GH_PAT_ARBORIST_RO }}@github.com/pennyworth-tech/agent-arborist.git
 
+      - name: Pull existing arborist branches (resume support)
+        run: arborist pull ${{ inputs.tree_path && format('--tree {0}', inputs.tree_path) || '' }}
+
       - name: Install Claude Code
         if: inputs.runner_type == 'claude' || inputs.runner_type == ''
         run: npm install -g @anthropic-ai/claude-code
@@ -87,6 +82,7 @@ jobs:
       - name: Run gardener
         run: |
           cmd="arborist gardener --base-branch '${{ inputs.spec_branch }}'"
+          [ -n "${{ inputs.tree_path }}" ]       && cmd="$cmd --tree '${{ inputs.tree_path }}'"
           [ -n "${{ inputs.runner_type }}" ]    && cmd="$cmd --runner-type '${{ inputs.runner_type }}'"
           [ -n "${{ inputs.model }}" ]           && cmd="$cmd --model '${{ inputs.model }}'"
           [ -n "${{ inputs.max_retries }}" ]     && cmd="$cmd --max-retries ${{ inputs.max_retries }}"
@@ -100,9 +96,5 @@ jobs:
       - name: Push arborist branches + base
         if: always()
         run: |
-          echo "Pushing arborist branches to preserve progress..."
-          for branch in $(git branch --list 'arborist/*' 2>/dev/null); do
-            branch=$(echo "$branch" | xargs)
-            git push origin "$branch" --force-with-lease 2>/dev/null || echo "  skip: $branch"
-          done
+          arborist push ${{ inputs.tree_path && format('--tree {0}', inputs.tree_path) || '' }}
           git push origin "${{ inputs.spec_branch }}" --force-with-lease 2>/dev/null || echo "  skip: base branch"
