@@ -77,9 +77,6 @@ def init():
 
     arborist_dir = root / ".arborist"
     config_path = arborist_dir / "config.json"
-    logs_dir = arborist_dir / "logs"
-    gitignore_path = root / ".gitignore"
-
     # --- .arborist/ directory ---
     if arborist_dir.exists():
         console.print(f"[dim].arborist/ already exists at {arborist_dir}[/dim]")
@@ -90,29 +87,6 @@ def init():
         else:
             console.print("[yellow]Aborted.[/yellow]")
             return
-
-    # --- logs/ directory ---
-    if logs_dir.exists():
-        console.print("[dim].arborist/logs/ already exists[/dim]")
-    else:
-        logs_dir.mkdir(parents=True, exist_ok=True)
-        console.print("[green]Created[/green] .arborist/logs/")
-
-    # --- .gitignore entry ---
-    ignore_entry = ".arborist/logs/"
-    already_ignored = False
-    if gitignore_path.exists():
-        content = gitignore_path.read_text()
-        already_ignored = ignore_entry in content
-    if already_ignored:
-        console.print("[dim].arborist/logs/ already in .gitignore[/dim]")
-    else:
-        if click.confirm("Add .arborist/logs/ to .gitignore?", default=True):
-            with open(gitignore_path, "a") as f:
-                if gitignore_path.exists() and not gitignore_path.read_text().endswith("\n"):
-                    f.write("\n")
-                f.write(f"\n# Arborist runner logs\n{ignore_entry}\n")
-            console.print("[green]Added[/green] .arborist/logs/ to .gitignore")
 
     # --- config.json ---
     if config_path.exists():
@@ -258,7 +232,7 @@ def garden(tree_path, runner, model, max_retries, target_repo, base_branch, repo
     if report_dir is None:
         report_dir = tree_path.resolve().parent / "reports"
     if log_dir is None:
-        log_dir = target / ".arborist" / "logs"
+        log_dir = tree_path.resolve().parent / "logs"
 
     impl_runner_instance = get_runner(impl_runner_name, impl_model)
     rev_runner_instance = get_runner(rev_runner_name, rev_model)
@@ -318,7 +292,7 @@ def gardener(tree_path, runner, model, max_retries, target_repo, base_branch, re
     if report_dir is None:
         report_dir = tree_path.resolve().parent / "reports"
     if log_dir is None:
-        log_dir = target / ".arborist" / "logs"
+        log_dir = tree_path.resolve().parent / "logs"
 
     resolved_test_timeout = cfg.test.timeout or cfg.timeouts.test_command
     impl_runner_instance = get_runner(impl_runner_name, impl_model)
