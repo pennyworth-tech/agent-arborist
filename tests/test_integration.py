@@ -537,29 +537,24 @@ class TestTestCommandsE2E:
         assert "Arborist-Test-Failed: 1" in log_output
         assert "Arborist-Test-Runtime:" in log_output
 
-    def test_global_fallback_when_no_test_commands(self, git_repo):
-        """Node without test_commands falls back to global test_command."""
+    def test_no_test_commands_uses_true_fallback(self, git_repo):
+        """Node without test_commands uses 'true' (no-op) fallback."""
         tree = TaskTree(spec_id="test", namespace="feature")
         tree.nodes["phase1"] = TaskNode(id="phase1", name="Phase 1", children=["T001"])
         tree.nodes["T001"] = TaskNode(
             id="T001", name="Create files", parent="phase1",
             description="Create initial files",
-            # No test_commands — should use global
+            # No test_commands — fallback is "true"
         )
         tree.compute_execution_order()
 
         runner = _MockRunner(implement_ok=True, review_ok=True)
         result = garden_fn(
             tree, git_repo, runner,
-            test_command="echo 'all good'; exit 0",
+            test_command="true",
             base_branch="main",
         )
         assert result.success
-
-        branch = tree.branch_name("T001")
-        log_output = git_log(branch, "%B", git_repo, n=20, grep="tests pass")
-        # Fallback should still emit test type trailer as "unit"
-        assert "Arborist-Test-Type: unit" in log_output
 
     def test_test_command_failure_triggers_retry(self, git_repo):
         """Per-node test command that fails first → retry → then passes."""

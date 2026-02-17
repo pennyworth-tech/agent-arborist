@@ -231,7 +231,6 @@ def build(spec_dir, output, namespace, spec_id, no_ai, runner, model, container_
 @click.option("--runner-type", "runner", default=None, help="Runner type (default: from config or 'claude')")
 @click.option("--model", default=None, help="Model name (default: from config or 'sonnet')")
 @click.option("--max-retries", default=None, type=int, help="Max retries per task (default: from config or 5)")
-@click.option("--test-command", default=None, help="Test command (default: from config or 'true')")
 @click.option("--target-repo", type=click.Path(path_type=Path), default=None)
 @click.option("--base-branch", default=None, help="Base branch (default: current branch)")
 @click.option("--report-dir", type=click.Path(path_type=Path), default=None,
@@ -241,7 +240,7 @@ def build(spec_dir, output, namespace, spec_id, no_ai, runner, model, container_
 @click.option("--container-mode", "-c", "container_mode", default=None,
               type=click.Choice(["auto", "enabled", "disabled"]),
               help="Container mode (default: from config or 'auto')")
-def garden(tree_path, runner, model, max_retries, test_command, target_repo, base_branch, report_dir, log_dir, container_mode):
+def garden(tree_path, runner, model, max_retries, target_repo, base_branch, report_dir, log_dir, container_mode):
     """Execute a single task."""
     from agent_arborist.runner import get_runner
     from agent_arborist.worker.garden import garden as garden_fn
@@ -249,7 +248,6 @@ def garden(tree_path, runner, model, max_retries, test_command, target_repo, bas
     cfg = _load_config()
     impl_runner_name, impl_model = get_step_runner_model(cfg, "implement", runner, model, fallback_step="run")
     rev_runner_name, rev_model = get_step_runner_model(cfg, "review", runner, model, fallback_step="run")
-    resolved_test_command = test_command or cfg.test.command or "true"
     resolved_max_retries = max_retries if max_retries is not None else cfg.defaults.max_retries
 
     target = target_repo.resolve() if target_repo else Path(_default_repo()).resolve()
@@ -270,7 +268,7 @@ def garden(tree_path, runner, model, max_retries, test_command, target_repo, bas
         tree, target,
         implement_runner=impl_runner_instance,
         review_runner=rev_runner_instance,
-        test_command=resolved_test_command,
+        test_command="true",
         max_retries=resolved_max_retries,
         base_branch=base_branch,
         report_dir=Path(report_dir).resolve(),
@@ -293,7 +291,6 @@ def garden(tree_path, runner, model, max_retries, test_command, target_repo, bas
 @click.option("--runner-type", "runner", default=None, help="Runner type (default: from config or 'claude')")
 @click.option("--model", default=None, help="Model name (default: from config or 'sonnet')")
 @click.option("--max-retries", default=None, type=int, help="Max retries per task (default: from config or 5)")
-@click.option("--test-command", default=None, help="Test command (default: from config or 'true')")
 @click.option("--target-repo", type=click.Path(path_type=Path), default=None)
 @click.option("--base-branch", default=None, help="Base branch (default: current branch)")
 @click.option("--report-dir", type=click.Path(path_type=Path), default=None,
@@ -303,7 +300,7 @@ def garden(tree_path, runner, model, max_retries, test_command, target_repo, bas
 @click.option("--container-mode", "-c", "container_mode", default=None,
               type=click.Choice(["auto", "enabled", "disabled"]),
               help="Container mode (default: from config or 'auto')")
-def gardener(tree_path, runner, model, max_retries, test_command, target_repo, base_branch, report_dir, log_dir, container_mode):
+def gardener(tree_path, runner, model, max_retries, target_repo, base_branch, report_dir, log_dir, container_mode):
     """Run the gardener loop to execute all tasks."""
     from agent_arborist.runner import get_runner
     from agent_arborist.worker.gardener import gardener as gardener_fn
@@ -311,7 +308,6 @@ def gardener(tree_path, runner, model, max_retries, test_command, target_repo, b
     cfg = _load_config()
     impl_runner_name, impl_model = get_step_runner_model(cfg, "implement", runner, model, fallback_step="run")
     rev_runner_name, rev_model = get_step_runner_model(cfg, "review", runner, model, fallback_step="run")
-    resolved_test_command = test_command or cfg.test.command or "true"
     resolved_max_retries = max_retries if max_retries is not None else cfg.defaults.max_retries
 
     target = target_repo.resolve() if target_repo else Path(_default_repo()).resolve()
@@ -332,7 +328,7 @@ def gardener(tree_path, runner, model, max_retries, test_command, target_repo, b
         tree, target,
         implement_runner=impl_runner_instance,
         review_runner=rev_runner_instance,
-        test_command=resolved_test_command,
+        test_command="true",
         max_retries=resolved_max_retries,
         base_branch=base_branch,
         report_dir=Path(report_dir).resolve(),

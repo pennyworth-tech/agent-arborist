@@ -39,7 +39,6 @@ ENV_CONTAINER_MODE = "ARBORIST_CONTAINER_MODE"
 ENV_QUIET = "ARBORIST_QUIET"
 ENV_TIMEOUT_TASK_RUN = "ARBORIST_TIMEOUT_TASK_RUN"
 ENV_TIMEOUT_POST_MERGE = "ARBORIST_TIMEOUT_POST_MERGE"
-ENV_TEST_COMMAND = "ARBORIST_TEST_COMMAND"
 ENV_TEST_TIMEOUT = "ARBORIST_TEST_TIMEOUT"
 ENV_RUNNER_TIMEOUT = "ARBORIST_RUNNER_TIMEOUT"
 ENV_MAX_RETRIES = "ARBORIST_MAX_RETRIES"
@@ -269,12 +268,11 @@ class RunnerConfig:
 class TestingConfig:
     """Testing/test command configuration."""
 
-    command: str | None = None
     timeout: int | None = None
 
     def to_dict(self, exclude_none: bool = False) -> dict[str, Any]:
         """Convert to dictionary."""
-        result = {"command": self.command, "timeout": self.timeout}
+        result = {"timeout": self.timeout}
         if exclude_none:
             return {k: v for k, v in result.items() if v is not None}
         return result
@@ -284,14 +282,14 @@ class TestingConfig:
         """Create from dictionary."""
         if strict:
             known_fields = {f.name for f in fields(cls)}
-            unknown = set(data.keys()) - known_fields
+            # Accept but ignore legacy "command" field
+            unknown = set(data.keys()) - known_fields - {"command"}
             if unknown:
                 raise ConfigValidationError(
                     f"Unknown fields in test config: {', '.join(unknown)}"
                 )
 
         return cls(
-            command=data.get("command"),
             timeout=data.get("timeout"),
         )
 
@@ -870,8 +868,6 @@ def merge_configs(*configs: ArboristConfig) -> ArboristConfig:
                 result.steps[step_name].model = step_config.model
 
         # Merge test config
-        if config.test.command is not None:
-            result.test.command = config.test.command
         if config.test.timeout is not None:
             result.test.timeout = config.test.timeout
 
@@ -973,9 +969,6 @@ def apply_env_overrides(config: ArboristConfig) -> ArboristConfig:
             )
 
     # Test config overrides
-    if test_command := os.environ.get(ENV_TEST_COMMAND):
-        result.test.command = test_command
-
     if test_timeout_str := os.environ.get(ENV_TEST_TIMEOUT):
         try:
             result.test.timeout = int(test_timeout_str)
@@ -1175,8 +1168,6 @@ def generate_config_template() -> dict[str, Any]:
             },
         },
         "test": {
-            "command": None,
-            "_comment_command": "Custom test command (e.g., 'pytest -v')",
             "timeout": None,
             "_comment_timeout": "Test timeout in seconds",
         },

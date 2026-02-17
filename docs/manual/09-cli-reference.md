@@ -77,7 +77,6 @@ arborist garden [OPTIONS]
 | `--runner-type` | from config | Runner type for implementation |
 | `--model` | from config | Model name |
 | `--max-retries` | from config (5) | Max retries per task |
-| `--test-command` | from config (`"true"`) | Shell command to run as test |
 | `--target-repo` | git root of cwd | Repository to work in |
 | `--base-branch` | current branch | Base branch for branching/merging |
 | `--report-dir` | next to task tree | Directory for JSON report files |
@@ -88,9 +87,6 @@ arborist garden [OPTIONS]
 ```bash
 # Execute the next ready task
 arborist garden --tree task-tree.json
-
-# With a real test command
-arborist garden --tree task-tree.json --test-command "pytest -x"
 
 # Use a specific runner/model
 arborist garden --tree task-tree.json --runner-type gemini --model gemini-2.5-pro
@@ -112,7 +108,7 @@ Takes the same options as `garden`.
 
 ```bash
 # Run everything
-arborist gardener --tree task-tree.json --test-command "make test"
+arborist gardener --tree task-tree.json
 
 # With custom retries and log directory
 arborist gardener --tree task-tree.json --max-retries 10 --log-dir ./logs
