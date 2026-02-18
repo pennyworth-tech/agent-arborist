@@ -16,7 +16,8 @@ from agent_arborist.tree.model import TaskNode, TaskTree, TestCommand, TestType
 
 TASK_ANALYSIS_PROMPT = '''Extract the COMPLETE task tree from the task specification files.
 
-Your current working directory contains the spec files. Read all files in this directory to understand the task specification.
+The task specification files are in the directory: {spec_dir}
+Read all files in that directory to understand the task specification.
 
 Extract the FULL TREE of tasks WITH their natural groupings from the spec files.
 
@@ -138,8 +139,8 @@ def plan_tree(
     runner_instance = runner or get_runner(runner_type, model)
 
     logger.info("Planning tree from spec files in %s", spec_dir)
-    prompt = TASK_ANALYSIS_PROMPT
-    result = runner_instance.run(prompt, timeout=timeout, cwd=spec_dir,
+    prompt = TASK_ANALYSIS_PROMPT.format(spec_dir=spec_dir)
+    result = runner_instance.run(prompt, timeout=timeout,
                                  container_workspace=container_workspace)
 
     if not result.success:
