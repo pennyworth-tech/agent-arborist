@@ -16,12 +16,9 @@ from agent_arborist.tree.model import TaskNode, TaskTree, TestCommand, TestType
 
 TASK_ANALYSIS_PROMPT = '''Extract the COMPLETE task tree from the task specification files.
 
-TASK SPECIFICATION DIRECTORY: {spec_dir}
+Your current working directory contains the spec files. Read all files in this directory to understand the task specification.
 
-SPEC FILE CONTENTS (with line numbers):
-{spec_contents}
-
-Extract the FULL TREE of tasks WITH their natural groupings from the spec files above.
+Extract the FULL TREE of tasks WITH their natural groupings from the spec files.
 
 DETECTING HIERARCHY:
 Look for natural groupings in the spec such as:
@@ -131,23 +128,17 @@ class PlanResult:
 
 def plan_tree(
     spec_dir: Path,
+    timeout: int,
     runner: Runner | None = None,
     runner_type: RunnerType = DAG_DEFAULT_RUNNER,
     model: str = DAG_DEFAULT_MODEL,
-    timeout: int = 120,
     container_workspace: Path | None = None,
 ) -> PlanResult:
     """Use AI to generate a TaskTree from a spec directory."""
     runner_instance = runner or get_runner(runner_type, model)
 
-    spec_files = list(spec_dir.glob("*.md"))
-    logger.info("Planning tree from %d spec files in %s", len(spec_files), spec_dir)
-    spec_contents = _read_spec_contents(spec_dir)
-    prompt = TASK_ANALYSIS_PROMPT.format(
-        spec_dir=spec_dir.resolve(),
-        spec_contents=spec_contents,
-    )
-    logger.debug("Prompt length: %d chars", len(prompt))
+    logger.info("Planning tree from spec files in %s", spec_dir)
+    prompt = TASK_ANALYSIS_PROMPT
     result = runner_instance.run(prompt, timeout=timeout, cwd=spec_dir,
                                  container_workspace=container_workspace)
 
@@ -194,15 +185,6 @@ def plan_tree(
     logger.info("Planning complete: %d nodes", len(tree.nodes))
     return PlanResult(success=True, tree=tree, raw_output=result.output)
 
-
-def _read_spec_contents(spec_dir: Path) -> str:
-    """Read all markdown files in spec_dir with line numbers."""
-    parts: list[str] = []
-    for md in sorted(spec_dir.glob("*.md")):
-        lines = md.read_text().splitlines()
-        numbered = "\n".join(f"{i + 1}: {line}" for i, line in enumerate(lines))
-        parts.append(f"--- {md.name} ---\n{numbered}")
-    return "\n\n".join(parts) if parts else "(no spec files found)"
 
 
 def _build_tree_from_json(

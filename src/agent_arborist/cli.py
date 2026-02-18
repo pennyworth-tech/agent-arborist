@@ -172,6 +172,7 @@ def build(spec_dir, output, no_ai, runner, model, container_mode):
             spec_dir=spec_dir,
             runner_type=runner,
             model=model,
+            timeout=cfg.timeouts.runner_timeout,
             container_workspace=container_ws,
         )
         if not result.success:
