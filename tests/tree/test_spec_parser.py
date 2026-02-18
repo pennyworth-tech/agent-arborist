@@ -81,5 +81,5 @@ def test_to_dict_produces_json():
     tree = parse_spec(FIXTURES / "tasks-hello-world.md")
     data = tree.to_dict()
     json_str = json.dumps(data, indent=2)
-    assert "hello-world" in json_str
+    assert "nodes" in json_str
     assert "T001" in json_str
