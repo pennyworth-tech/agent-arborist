@@ -529,13 +529,13 @@ def _setup_repo_with_tree(repo: Path, tree) -> None:
     tree_path = repo / "task-tree.json"
     tree_path.write_text(json.dumps(tree.to_dict(), indent=2) + "\n")
     git_add_all(repo)
-    git_commit(f"arborist: build task tree for {tree.spec_id}", repo)
+    git_commit("arborist: build task tree", repo)
 
 
 def _hello_world_tree():
     """Single phase, single task: create hello.txt."""
     from agent_arborist.tree.model import TaskNode, TaskTree
-    tree = TaskTree(spec_id="hello")
+    tree = TaskTree()
     tree.nodes["phase1"] = TaskNode(id="phase1", name="Setup", children=["T001"])
     tree.nodes["T001"] = TaskNode(
         id="T001", name="Create hello world file", parent="phase1",
@@ -613,7 +613,7 @@ class TestDevcontainerE2E:
         from agent_arborist.worker.garden import garden
 
         # Tree with a test command that will execute inside the container
-        tree = TaskTree(spec_id="hello")
+        tree = TaskTree()
         tree.nodes["phase1"] = TaskNode(id="phase1", name="Setup", children=["T001"])
         tree.nodes["T001"] = TaskNode(
             id="T001", name="Create hello world file", parent="phase1",

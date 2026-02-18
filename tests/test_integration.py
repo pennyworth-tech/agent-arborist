@@ -44,7 +44,7 @@ class TestBuildFromSpec:
     """Parse a real spec, compute execution order, verify structure."""
 
     def test_calculator_build_produces_valid_tree(self):
-        tree = parse_spec(FIXTURES / "tasks-calculator.md", spec_id="calc")
+        tree = parse_spec(FIXTURES / "tasks-calculator.md")
         tree.compute_execution_order()
 
         # 4 phases, 12 leaf tasks
@@ -61,7 +61,7 @@ class TestBuildFromSpec:
         assert order.index("T011") < order.index("T012")
 
     def test_task_tree_json_roundtrip(self):
-        tree = parse_spec(FIXTURES / "tasks-calculator.md", spec_id="calc")
+        tree = parse_spec(FIXTURES / "tasks-calculator.md")
         tree.compute_execution_order()
         data = json.dumps(tree.to_dict(), indent=2)
 
@@ -154,7 +154,7 @@ class TestGardenerFullLoop:
 
     def test_multi_phase_commits_on_same_branch(self, git_repo):
         """Two phases, each with one task → all commits on main, no phase markers."""
-        tree = TaskTree(spec_id="test")
+        tree = TaskTree()
 
         from agent_arborist.tree.model import TaskNode
         tree.nodes["phase1"] = TaskNode(id="phase1", name="Phase 1", children=["T001"])
@@ -294,7 +294,7 @@ class TestGardenRepeatedEquivalence:
     def test_repeated_garden_multi_phase(self, git_repo):
         """Two phases, each with one task — garden() called twice, no phase markers."""
         from agent_arborist.tree.model import TaskNode
-        tree = TaskTree(spec_id="test")
+        tree = TaskTree()
         tree.nodes["phase1"] = TaskNode(id="phase1", name="P1", children=["T001"])
         tree.nodes["T001"] = TaskNode(id="T001", name="Task 1", parent="phase1", description="Do 1")
         tree.nodes["phase2"] = TaskNode(id="phase2", name="P2", children=["T002"])
@@ -320,7 +320,7 @@ class TestDeepTreeIntegration:
     def test_deep_tree_gardener_completes_all(self, git_repo):
         """Gardener completes all tasks in a 3-level ragged tree."""
         from agent_arborist.tree.model import TaskNode
-        tree = TaskTree(spec_id="test")
+        tree = TaskTree()
         tree.nodes["phase1"] = TaskNode(id="phase1", name="Phase 1", children=["group1", "T003"])
         tree.nodes["group1"] = TaskNode(id="group1", name="Group 1", parent="phase1", children=["T001", "T002"])
         tree.nodes["T001"] = TaskNode(id="T001", name="Schema", parent="group1", description="Create schema")
@@ -342,7 +342,7 @@ class TestDeepTreeIntegration:
 
     def test_deep_tree_from_spec_fixture(self):
         """Parse the 3-level fixture and verify structure."""
-        tree = parse_spec(FIXTURES / "tasks-deep-tree.md", spec_id="deep")
+        tree = parse_spec(FIXTURES / "tasks-deep-tree.md")
         tree.compute_execution_order()
 
         assert len(tree.leaves()) == 4
@@ -444,7 +444,7 @@ class TestSeparateRunnerDispatch:
 def _small_tree() -> TaskTree:
     """Single phase, single task."""
     from agent_arborist.tree.model import TaskNode
-    tree = TaskTree(spec_id="test")
+    tree = TaskTree()
     tree.nodes["phase1"] = TaskNode(id="phase1", name="Phase 1", children=["T001"])
     tree.nodes["T001"] = TaskNode(id="T001", name="Create files", parent="phase1", description="Create initial files")
     tree.compute_execution_order()
@@ -453,7 +453,7 @@ def _small_tree() -> TaskTree:
 
 def _two_task_tree() -> TaskTree:
     """Single phase, two tasks with dependency T001 → T002."""
-    tree = TaskTree(spec_id="test")
+    tree = TaskTree()
     tree.nodes["phase1"] = TaskNode(id="phase1", name="Phase 1", children=["T001", "T002"])
     tree.nodes["T001"] = TaskNode(id="T001", name="Create files", parent="phase1", description="Create initial files")
     tree.nodes["T002"] = TaskNode(id="T002", name="Add tests", parent="phase1", depends_on=["T001"], description="Add test files")
@@ -470,7 +470,7 @@ class TestTestCommandsE2E:
 
     def test_per_node_test_command_runs_and_trailers_recorded(self, git_repo):
         """Leaf with test_commands=[unit pytest] → trailers include type/counts/runtime."""
-        tree = TaskTree(spec_id="test")
+        tree = TaskTree()
         tree.nodes["phase1"] = TaskNode(id="phase1", name="Phase 1", children=["T001"])
         tree.nodes["T001"] = TaskNode(
             id="T001", name="Create files", parent="phase1",
@@ -496,7 +496,7 @@ class TestTestCommandsE2E:
 
     def test_no_test_commands_uses_true_fallback(self, git_repo):
         """Node without test_commands uses 'true' (no-op) fallback."""
-        tree = TaskTree(spec_id="test")
+        tree = TaskTree()
         tree.nodes["phase1"] = TaskNode(id="phase1", name="Phase 1", children=["T001"])
         tree.nodes["T001"] = TaskNode(
             id="T001", name="Create files", parent="phase1",
@@ -517,7 +517,7 @@ class TestTestCommandsE2E:
         counter_file = git_repo / ".test-counter"
         counter_file.write_text("0")
 
-        tree = TaskTree(spec_id="test")
+        tree = TaskTree()
         tree.nodes["phase1"] = TaskNode(id="phase1", name="Phase 1", children=["T001"])
         tree.nodes["T001"] = TaskNode(
             id="T001", name="Flaky task", parent="phase1",
@@ -541,7 +541,7 @@ class TestTestCommandsE2E:
 
     def test_multiple_test_commands_on_one_node(self, git_repo):
         """Node with two test commands — both must pass."""
-        tree = TaskTree(spec_id="test")
+        tree = TaskTree()
         tree.nodes["phase1"] = TaskNode(id="phase1", name="Phase 1", children=["T001"])
         tree.nodes["T001"] = TaskNode(
             id="T001", name="Multi-test task", parent="phase1",
@@ -559,7 +559,7 @@ class TestTestCommandsE2E:
 
     def test_multiple_test_commands_one_fails(self, git_repo):
         """If any test command in the list fails, the whole test step fails."""
-        tree = TaskTree(spec_id="test")
+        tree = TaskTree()
         tree.nodes["phase1"] = TaskNode(id="phase1", name="Phase 1", children=["T001"])
         tree.nodes["T001"] = TaskNode(
             id="T001", name="Partial fail", parent="phase1",
@@ -578,7 +578,7 @@ class TestTestCommandsE2E:
 
     def test_task_tree_json_roundtrip_with_test_commands(self):
         """task-tree.json with test_commands survives serialization."""
-        tree = TaskTree(spec_id="test")
+        tree = TaskTree()
         tree.nodes["phase1"] = TaskNode(
             id="phase1", name="Phase 1", children=["T001"],
             test_commands=[TestCommand(type=TestType.INTEGRATION, command="pytest tests/integration/")],
@@ -608,7 +608,7 @@ class TestTestCommandsE2E:
 
     def test_test_timeout_from_config_used(self, git_repo):
         """test_timeout parameter is used when per-command timeout is not set."""
-        tree = TaskTree(spec_id="test")
+        tree = TaskTree()
         tree.nodes["phase1"] = TaskNode(id="phase1", name="Phase 1", children=["T001"])
         tree.nodes["T001"] = TaskNode(
             id="T001", name="Slow test", parent="phase1",
@@ -632,7 +632,7 @@ class TestTestCommandsE2E:
 
     def test_gardener_full_loop_with_test_commands(self, git_repo):
         """Full gardener loop: two tasks with per-node tests."""
-        tree = TaskTree(spec_id="test")
+        tree = TaskTree()
         tree.nodes["phase1"] = TaskNode(
             id="phase1", name="Phase 1", children=["T001", "T002"],
         )

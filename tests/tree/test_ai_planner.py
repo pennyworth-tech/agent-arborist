@@ -12,7 +12,7 @@ def test_build_tree_populates_source_fields():
              "source_file": "tasks.md", "source_line": 7},
         ]
     }
-    tree = _build_tree_from_json(data, "test")
+    tree = _build_tree_from_json(data)
     assert tree.nodes["T001"].source_file == "tasks.md"
     assert tree.nodes["T001"].source_line == 7
     assert tree.nodes["Phase1"].source_file == "tasks.md"
@@ -26,7 +26,7 @@ def test_build_tree_populates_spec_files():
             {"id": "T002", "description": "B", "source_file": "b.md", "source_line": 2},
         ]
     }
-    tree = _build_tree_from_json(data, "test")
+    tree = _build_tree_from_json(data)
     assert tree.spec_files == ["a.md", "b.md"]
 
 
@@ -36,7 +36,7 @@ def test_build_tree_missing_source_fields():
             {"id": "T001", "description": "No source"},
         ]
     }
-    tree = _build_tree_from_json(data, "test")
+    tree = _build_tree_from_json(data)
     assert tree.nodes["T001"].source_file is None
     assert tree.nodes["T001"].source_line is None
     assert tree.spec_files == []
@@ -63,7 +63,7 @@ def test_build_tree_from_json_with_test_commands():
             },
         ]
     }
-    tree = _build_tree_from_json(data, "test")
+    tree = _build_tree_from_json(data)
     assert len(tree.nodes["T001"].test_commands) == 2
     assert tree.nodes["T001"].test_commands[0].type.value == "unit"
     assert tree.nodes["T001"].test_commands[0].framework == "pytest"
@@ -76,7 +76,7 @@ def test_build_tree_from_json_without_test_commands():
             {"id": "T001", "description": "Old format task"},
         ]
     }
-    tree = _build_tree_from_json(data, "test")
+    tree = _build_tree_from_json(data)
     assert tree.nodes["T001"].test_commands == []
 
 
@@ -92,6 +92,6 @@ def test_build_tree_from_json_invalid_test_command_skipped():
             },
         ]
     }
-    tree = _build_tree_from_json(data, "test")
+    tree = _build_tree_from_json(data)
     assert len(tree.nodes["T001"].test_commands) == 1
     assert tree.nodes["T001"].test_commands[0].command == "pytest"

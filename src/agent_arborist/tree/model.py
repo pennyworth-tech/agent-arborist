@@ -57,7 +57,6 @@ class TaskNode:
 
 @dataclass
 class TaskTree:
-    spec_id: str
     nodes: dict[str, TaskNode] = field(default_factory=dict)
     execution_order: list[str] = field(default_factory=list)
     spec_files: list[str] = field(default_factory=list)
@@ -133,7 +132,6 @@ class TaskTree:
 
     def to_dict(self) -> dict:
         return {
-            "spec_id": self.spec_id,
             "nodes": {
                 nid: {
                     "id": n.id,
@@ -157,7 +155,6 @@ class TaskTree:
     @classmethod
     def from_dict(cls, data: dict) -> TaskTree:
         tree = cls(
-            spec_id=data["spec_id"],
             execution_order=data.get("execution_order", []),
             spec_files=data.get("spec_files", []),
         )

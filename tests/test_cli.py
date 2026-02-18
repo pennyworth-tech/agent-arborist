@@ -21,7 +21,7 @@ def _make_tree_at(base_dir, branch="my-branch"):
     tree_path = base_dir / "specs" / branch / "task-tree.json"
     tree_path.parent.mkdir(parents=True, exist_ok=True)
     tree_path.write_text(json.dumps({
-        "spec_id": "test",        "nodes": {
+        "nodes": {
             "phase1": {"id": "phase1", "name": "P1", "children": ["T001"]},
             "T001": {"id": "T001", "name": "Task", "parent": "phase1", "description": "Do it"},
         },
@@ -38,13 +38,10 @@ def test_build_no_ai_produces_valid_json(tmp_path):
         "--no-ai",
         "--spec-dir", str(FIXTURES),
         "--output", str(output),
-        "--spec-id", "test",
     ])
     assert result.exit_code == 0, result.output
     data = json.loads(output.read_text())
     assert "nodes" in data
-    assert "spec_id" in data
-    assert data["spec_id"] == "test"
     assert len(data["nodes"]) > 0
 
 
@@ -58,7 +55,6 @@ def test_build_no_ai_uses_markdown_parser(tmp_path):
             "--no-ai",
             "--spec-dir", str(FIXTURES),
             "--output", str(output),
-            "--spec-id", "test",
         ])
         assert result.exit_code == 0
         mock_plan.assert_not_called()
@@ -70,13 +66,11 @@ def test_build_default_uses_ai_planner(tmp_path):
     runner = CliRunner()
 
     mock_tree = MagicMock()
-    mock_tree.to_dict.return_value = {"spec_id": "test", "nodes": {}, "root_ids": [], "execution_order": [], "spec_files": []}
+    mock_tree.to_dict.return_value = {"nodes": {}, "root_ids": [], "execution_order": [], "spec_files": []}
     mock_tree.compute_execution_order.return_value = []
     mock_tree.nodes = {}
     mock_tree.leaves.return_value = []
     mock_tree.execution_order = []
-
-    mock_tree.spec_id = "test"
 
     mock_result = MagicMock()
     mock_result.success = True
@@ -89,7 +83,6 @@ def test_build_default_uses_ai_planner(tmp_path):
                 "build",
                 "--spec-dir", str(FIXTURES),
                 "--output", str(output),
-                "--spec-id", "test",
             ])
             assert result.exit_code == 0, result.output
             mock_plan.assert_called_once()
@@ -122,7 +115,7 @@ class TestBaseBranchDefault:
         runner = CliRunner()
         tree_path = tmp_path / "tree.json"
         tree_path.write_text(json.dumps({
-            "spec_id": "test",            "nodes": {"phase1": {"id": "phase1", "name": "P1", "children": ["T001"]},
+            "nodes": {"phase1": {"id": "phase1", "name": "P1", "children": ["T001"]},
                       "T001": {"id": "T001", "name": "Task", "parent": "phase1", "description": "Do it"}},
             "execution_order": ["T001"], "spec_files": [],
         }))
@@ -145,7 +138,7 @@ class TestBaseBranchDefault:
         runner = CliRunner()
         tree_path = tmp_path / "tree.json"
         tree_path.write_text(json.dumps({
-            "spec_id": "test",            "nodes": {"phase1": {"id": "phase1", "name": "P1", "children": ["T001"]},
+            "nodes": {"phase1": {"id": "phase1", "name": "P1", "children": ["T001"]},
                       "T001": {"id": "T001", "name": "Task", "parent": "phase1", "description": "Do it"}},
             "execution_order": ["T001"], "spec_files": [],
         }))
@@ -217,7 +210,7 @@ def _make_tree_json(tmp_path):
     """Helper: write a minimal task tree JSON and return the path."""
     tree_path = tmp_path / "tree.json"
     tree_path.write_text(json.dumps({
-        "spec_id": "test",        "nodes": {
+        "nodes": {
             "phase1": {"id": "phase1", "name": "Phase 1", "children": ["T001", "T002"]},
             "T001": {"id": "T001", "name": "First task", "parent": "phase1",
                      "description": "Do the first thing", "depends_on": []},
@@ -308,7 +301,6 @@ class TestDefaultTreePath:
             result = runner.invoke(main, [
                 "build", "--no-ai",
                 "--spec-dir", str(FIXTURES),
-                "--spec-id", "test",
             ])
         assert result.exit_code == 0, result.output
         expected = Path("specs/spec/my-feature/task-tree.json")
@@ -322,7 +314,6 @@ class TestDefaultTreePath:
             "build", "--no-ai",
             "--spec-dir", str(FIXTURES),
             "--output", str(output),
-            "--spec-id", "test",
         ])
         assert result.exit_code == 0, result.output
         assert output.exists()
@@ -385,7 +376,7 @@ class TestDefaultTreePath:
             mock_state.return_value = TaskState.PENDING
             result = runner.invoke(main, ["status"], catch_exceptions=False)
         assert result.exit_code == 0, result.output
-        assert "test" in result.output  # spec_id
+        assert "Task Tree" in result.output
 
     def test_inspect_default_tree_from_branch(self, tmp_path):
         """inspect without --tree uses specs/{branch}/task-tree.json."""
@@ -414,7 +405,6 @@ class TestDefaultTreePath:
             result = runner.invoke(main, [
                 "build", "--no-ai",
                 "--spec-dir", str(FIXTURES),
-                "--spec-id", "test",
             ])
         assert result.exit_code == 0, result.output
         assert Path("specs/spec/feat/sub/task-tree.json").exists()

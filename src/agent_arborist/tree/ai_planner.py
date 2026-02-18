@@ -131,7 +131,6 @@ class PlanResult:
 
 def plan_tree(
     spec_dir: Path,
-    spec_id: str,
     runner: Runner | None = None,
     runner_type: RunnerType = DAG_DEFAULT_RUNNER,
     model: str = DAG_DEFAULT_MODEL,
@@ -184,7 +183,7 @@ def plan_tree(
             raw_output=result.output,
         )
 
-    tree = _build_tree_from_json(data, spec_id)
+    tree = _build_tree_from_json(data)
     if tree is None:
         return PlanResult(
             success=False,
@@ -207,10 +206,10 @@ def _read_spec_contents(spec_dir: Path) -> str:
 
 
 def _build_tree_from_json(
-    data: dict, spec_id: str,
+    data: dict,
 ) -> TaskTree | None:
     """Build a TaskTree from the AI-generated JSON structure."""
-    tree = TaskTree(spec_id=spec_id)
+    tree = TaskTree()
 
     for t in data["tasks"]:
         if "id" not in t:

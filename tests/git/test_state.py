@@ -66,7 +66,7 @@ def test_is_task_not_complete_when_pending(git_repo):
 
 
 def test_scan_completed_tasks(git_repo):
-    tree = TaskTree(spec_id="test")
+    tree = TaskTree()
     tree.nodes["phase1"] = TaskNode(id="phase1", name="Phase 1", children=["T001", "T002"])
     tree.nodes["T001"] = TaskNode(id="T001", name="Task 1", parent="phase1")
     tree.nodes["T002"] = TaskNode(id="T002", name="Task 2", parent="phase1")
@@ -82,7 +82,7 @@ def test_scan_completed_tasks(git_repo):
 
 def test_scan_scoped_by_branch_name(git_repo):
     """Commits with task(other-branch@T001) are invisible when scanning for main."""
-    tree = TaskTree(spec_id="test")
+    tree = TaskTree()
     tree.nodes["phase1"] = TaskNode(id="phase1", name="Phase 1", children=["T001", "T002"])
     tree.nodes["T001"] = TaskNode(id="T001", name="Task 1", parent="phase1")
     tree.nodes["T002"] = TaskNode(id="T002", name="Task 2", parent="phase1")

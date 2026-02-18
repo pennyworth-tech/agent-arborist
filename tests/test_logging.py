@@ -26,7 +26,6 @@ def test_cli_log_level_option_configures_logging(tmp_path):
         "--no-ai",
         "--spec-dir", str(FIXTURES),
         "--output", str(output),
-        "--spec-id", "test",
     ])
     assert result.exit_code == 0, result.output
 
@@ -40,7 +39,6 @@ def test_cli_log_level_default_is_warning(tmp_path):
         "--no-ai",
         "--spec-dir", str(FIXTURES),
         "--output", str(output),
-        "--spec-id", "test",
     ])
     assert result.exit_code == 0
     # INFO-level messages should not appear with default WARNING level
@@ -57,7 +55,6 @@ def test_cli_log_level_case_insensitive(tmp_path):
         "--no-ai",
         "--spec-dir", str(FIXTURES),
         "--output", str(output),
-        "--spec-id", "test",
     ])
     assert result.exit_code == 0
 
@@ -65,14 +62,14 @@ def test_cli_log_level_case_insensitive(tmp_path):
 def test_spec_parser_logs_info(caplog):
     """parse_spec should emit INFO with node count."""
     with caplog.at_level(logging.INFO, logger="agent_arborist.tree.spec_parser"):
-        parse_spec(FIXTURES / "tasks-hello-world.md", spec_id="test")
+        parse_spec(FIXTURES / "tasks-hello-world.md")
     assert any("Parsed spec:" in r.message for r in caplog.records)
 
 
 def test_spec_parser_logs_debug_phases(caplog):
     """parse_spec should emit DEBUG for each phase."""
     with caplog.at_level(logging.DEBUG, logger="agent_arborist.tree.spec_parser"):
-        parse_spec(FIXTURES / "tasks-hello-world.md", spec_id="test")
+        parse_spec(FIXTURES / "tasks-hello-world.md")
     assert any("Phase" in r.message for r in caplog.records)
 
 
@@ -87,7 +84,7 @@ def test_git_repo_logs_debug(caplog, git_repo):
 def test_git_state_scan_logs_debug(caplog, git_repo):
     """scan_completed_tasks should emit DEBUG."""
     from agent_arborist.git.state import scan_completed_tasks
-    tree = TaskTree(spec_id="test")
+    tree = TaskTree()
     tree.nodes["T001"] = TaskNode(id="T001", name="Task 1")
     tree.compute_execution_order()
     with caplog.at_level(logging.DEBUG, logger="agent_arborist.git.state"):
@@ -112,7 +109,7 @@ def test_runner_logs_warning_on_timeout(caplog):
 
 
 def _make_tree():
-    tree = TaskTree(spec_id="test")
+    tree = TaskTree()
     tree.nodes["phase1"] = TaskNode(id="phase1", name="Phase 1", children=["T001"])
     tree.nodes["T001"] = TaskNode(id="T001", name="Task", parent="phase1", description="Do stuff")
     tree.compute_execution_order()
