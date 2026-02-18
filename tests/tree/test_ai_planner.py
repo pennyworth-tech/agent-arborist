@@ -42,7 +42,6 @@ def test_build_tree_missing_source_fields():
     assert tree.spec_files == []
 
 
-
 def test_build_tree_from_json_with_test_commands():
     data = {
         "tasks": [

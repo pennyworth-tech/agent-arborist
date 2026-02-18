@@ -187,7 +187,6 @@ def plan_tree(
     return PlanResult(success=True, tree=tree, raw_output=result.output)
 
 
-
 def _build_tree_from_json(
     data: dict,
 ) -> TaskTree | None:
