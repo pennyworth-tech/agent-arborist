@@ -1,6 +1,6 @@
 """Tests for tree/ai_planner.py - _build_tree_from_json and prompt generation."""
 
-from agent_arborist.tree.ai_planner import _build_tree_from_json, _read_spec_contents
+from agent_arborist.tree.ai_planner import _build_tree_from_json
 
 
 def test_build_tree_populates_source_fields():
@@ -40,15 +40,6 @@ def test_build_tree_missing_source_fields():
     assert tree.nodes["T001"].source_file is None
     assert tree.nodes["T001"].source_line is None
     assert tree.spec_files == []
-
-
-def test_read_spec_contents_includes_line_numbers(tmp_path):
-    md = tmp_path / "tasks.md"
-    md.write_text("# Title\n- [ ] T001 Do thing\n")
-    result = _read_spec_contents(tmp_path)
-    assert "1: # Title" in result
-    assert "2: - [ ] T001 Do thing" in result
-    assert "--- tasks.md ---" in result
 
 
 def test_build_tree_from_json_with_test_commands():
