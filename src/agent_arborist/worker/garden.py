@@ -29,13 +29,10 @@ from agent_arborist.constants import (
 )
 from agent_arborist.git.repo import (
     git_add_all,
-    git_branch_exists,
-    git_checkout,
     git_commit,
-    git_current_branch,
     git_diff,
     git_log,
-    git_merge,
+    git_rev_parse,
 )
 from agent_arborist.git.state import scan_completed_tasks, TaskState
 from agent_arborist.tree.model import TaskNode, TaskTree, TestCommand, TestType
@@ -48,9 +45,9 @@ class GardenResult:
     error: str | None = None
 
 
-def find_next_task(tree: TaskTree, cwd: Path) -> TaskNode | None:
+def find_next_task(tree: TaskTree, cwd: Path, *, branch: str) -> TaskNode | None:
     """Find the next task to execute based on execution order and completed state."""
-    completed = scan_completed_tasks(tree, cwd)
+    completed = scan_completed_tasks(tree, cwd, branch=branch)
     for task_id in tree.execution_order:
         if task_id in completed:
             continue
@@ -135,6 +132,8 @@ def _parse_test_counts(output: str, framework: str | None) -> dict | None:
 def _run_tests(
     node: TaskNode, cwd: Path, global_test_command: str, config_timeout: int | None,
     container_workspace: Path | None = None,
+    container_up_timeout: int | None = None,
+    container_check_timeout: int | None = None,
 ) -> list[TestResult]:
     """Run test commands for a node. Falls back to global_test_command if no per-node tests."""
     commands: list[tuple[str, str, str | None, int | None]] = []  # (command, type, framework, timeout)
@@ -152,7 +151,12 @@ def _run_tests(
         try:
             if container_workspace:
                 from agent_arborist.devcontainer import ensure_container_running, devcontainer_exec
-                ensure_container_running(container_workspace)
+                kwargs = {}
+                if container_up_timeout is not None:
+                    kwargs["timeout_up"] = container_up_timeout
+                if container_check_timeout is not None:
+                    kwargs["timeout_check"] = container_check_timeout
+                ensure_container_running(container_workspace, **kwargs)
                 proc = devcontainer_exec(cmd, container_workspace, timeout=timeout)
             else:
                 proc = subprocess.run(
@@ -181,68 +185,21 @@ def _run_tests(
 
 def _commit_with_trailers(
     task_id: str, subject: str, cwd: Path,
+    *, branch: str, status: str,
     body: str | None = None, **trailers: str,
 ) -> str:
-    """Stage all and commit with trailers."""
+    """Stage all and commit with trailers.
+
+    Commit prefix: ``task({branch}@{task_id}@{status}): {subject}``
+    """
     git_add_all(cwd)
     trailer_block = _build_trailers(**trailers)
-    parts = [f"task({task_id}): {subject}"]
+    parts = [f"task({branch}@{task_id}@{status}): {subject}"]
     if body:
         parts.append(body)
     parts.append(trailer_block)
     message = "\n\n".join(parts)
     return git_commit(message, cwd, allow_empty=True)
-
-
-def _merge_phase_if_complete(
-    tree: TaskTree, task_id: str, cwd: Path, base_branch: str,
-    global_test_command: str = "true", config_timeout: int | None = None,
-    container_workspace: Path | None = None,
-) -> bool | str:
-    """If all leaves under the root phase are complete, merge phase branch to base.
-
-    Returns True on successful merge, False if not ready, or an error string
-    if phase tests failed.
-    """
-    rp = tree.root_phase(task_id)
-    if rp == task_id and tree.nodes[task_id].is_leaf:
-        return False
-    phase_leaves = tree.leaves_under(rp)
-    completed = scan_completed_tasks(tree, cwd)
-    if not all(leaf.id in completed for leaf in phase_leaves):
-        return False
-
-    # Run phase-level tests (integration/e2e) from the parent node
-    parent_node = tree.nodes[rp]
-    phase_tests = [tc for tc in parent_node.test_commands
-                   if tc.type in (TestType.INTEGRATION, TestType.E2E)]
-    if phase_tests:
-        phase_branch = tree.branch_name(rp)
-        git_checkout(phase_branch, cwd)
-        for tc in phase_tests:
-            timeout = tc.timeout or config_timeout or 300
-            start = time.monotonic()
-            try:
-                if container_workspace:
-                    from agent_arborist.devcontainer import ensure_container_running, devcontainer_exec
-                    ensure_container_running(container_workspace)
-                    proc = devcontainer_exec(tc.command, container_workspace, timeout=timeout)
-                else:
-                    proc = subprocess.run(
-                        tc.command, shell=True, cwd=cwd,
-                        capture_output=True, text=True, timeout=timeout,
-                    )
-                passed = proc.returncode == 0
-            except subprocess.TimeoutExpired:
-                passed = False
-            if not passed:
-                git_checkout(base_branch, cwd)
-                return f"Phase test failed: {tc.command} ({tc.type.value})"
-        git_checkout(base_branch, cwd)
-
-    phase_branch = tree.branch_name(rp)
-    git_merge(phase_branch, cwd, message=f"merge: {phase_branch} complete")
-    return True
 
 
 def _write_log(log_dir: Path | None, task_id: str, step: str, result) -> Path | None:
@@ -264,7 +221,7 @@ def _write_log(log_dir: Path | None, task_id: str, step: str, result) -> Path | 
     return None
 
 
-def _collect_feedback_from_git(task_id: str, cwd: Path) -> str:
+def _collect_feedback_from_git(task_id: str, cwd: Path, *, branch: str) -> str:
     """Collect previous review/test feedback from git commit history.
 
     Reads commit bodies for this task's review-rejected and test-fail commits,
@@ -273,10 +230,11 @@ def _collect_feedback_from_git(task_id: str, cwd: Path) -> str:
     sections: list[str] = []
 
     # Get all commits for this task on the current branch
+    grep_pattern = f"task({branch}@{task_id}"
     try:
         raw = git_log(
             "HEAD", "%B---COMMIT_SEP---", cwd,
-            n=50, grep=f"task({task_id}):", fixed_strings=True,
+            n=50, grep=grep_pattern, fixed_strings=True,
         )
     except Exception:
         return ""
@@ -324,12 +282,14 @@ def garden(
     review_runner=None,
     test_command: str = "true",
     max_retries: int = 3,
-    base_branch: str = "main",
     report_dir: Path | None = None,
     log_dir: Path | None = None,
     runner_timeout: int | None = None,
     test_timeout: int | None = None,
     container_workspace: Path | None = None,
+    container_up_timeout: int | None = None,
+    container_check_timeout: int | None = None,
+    branch: str,
 ) -> GardenResult:
     """Execute one task through the implement → test → review pipeline."""
     # Resolve runners: explicit implement/review runners take precedence,
@@ -339,22 +299,16 @@ def garden(
     if review_runner is None:
         review_runner = runner
 
-    task = find_next_task(tree, cwd)
+    task = find_next_task(tree, cwd, branch=branch)
     if task is None:
         return GardenResult(task_id="", success=False, error="no ready task")
 
     _impl_id = f"{getattr(implement_runner, 'name', '?')}/{getattr(implement_runner, 'model', '?')}"
     _rev_id = f"{getattr(review_runner, 'name', '?')}/{getattr(review_runner, 'model', '?')}"
     logger.info("Starting task %s: %s (implement=%s, review=%s)", task.id, task.name, _impl_id, _rev_id)
-    phase_branch = tree.branch_name(task.id)
 
-    # Lazy branch creation
-    if not git_branch_exists(phase_branch, cwd):
-        logger.debug("Creating branch %s from %s", phase_branch, base_branch)
-        git_checkout(phase_branch, cwd, create=True, start_point=base_branch)
-    else:
-        logger.debug("Checking out existing branch %s", phase_branch)
-        git_checkout(phase_branch, cwd)
+    # Save start SHA for scoping review diffs to this task only
+    start_sha = git_rev_parse("HEAD", cwd)
 
     try:
         for attempt in range(max_retries):
@@ -368,11 +322,16 @@ def garden(
                 f"Work in the current directory. Make all necessary file changes."
             )
             if attempt > 0:
-                feedback = _collect_feedback_from_git(task.id, cwd)
+                feedback = _collect_feedback_from_git(task.id, cwd, branch=branch)
                 if feedback:
                     prompt += feedback
             logger.debug("Implement prompt: %.200s", prompt)
-            run_kwargs = {"cwd": cwd, "container_workspace": container_workspace}
+            run_kwargs = {
+                "cwd": cwd,
+                "container_workspace": container_workspace,
+                "container_up_timeout": container_up_timeout,
+                "container_check_timeout": container_check_timeout,
+            }
             if runner_timeout is not None:
                 run_kwargs["timeout"] = runner_timeout
             result = implement_runner.run(prompt, **run_kwargs)
@@ -384,7 +343,7 @@ def garden(
                 _commit_with_trailers(
                     task.id,
                     f'implement "{tname}" (failed, attempt {attempt + 1}/{max_retries})',
-                    cwd, body=body,
+                    cwd, branch=branch, status="implement-fail", body=body,
                     **{TRAILER_STEP: "implement", TRAILER_RESULT: "fail", TRAILER_RETRY: retry_trailer},
                 )
                 continue
@@ -392,12 +351,15 @@ def garden(
             logger.info("Task %s implement passed (%s)", task.id, _impl_id)
             body = f"Runner output (truncated to 2000 chars):\n{_truncate_output(result.output)}"
             _commit_with_trailers(
-                task.id, f'implement "{tname}"', cwd, body=body,
+                task.id, f'implement "{tname}"', cwd, branch=branch, status="implement-pass", body=body,
                 **{TRAILER_STEP: "implement", TRAILER_RESULT: "pass", TRAILER_RETRY: retry_trailer},
             )
 
             # --- test ---
-            test_results = _run_tests(task, cwd, test_command, test_timeout, container_workspace)
+            test_results = _run_tests(
+                task, cwd, test_command, test_timeout, container_workspace,
+                container_up_timeout, container_check_timeout,
+            )
             all_tests_passed = all(tr.passed for tr in test_results)
             test_val = "pass" if all_tests_passed else "fail"
             logger.info("Task %s test %s", task.id, test_val)
@@ -431,6 +393,7 @@ def garden(
                 except ValueError:
                     test_log_path = str(test_log_file)
 
+            test_status = "test-pass" if all_tests_passed else "test-fail"
             test_trailers = {TRAILER_STEP: "test", TRAILER_TEST: test_val, TRAILER_RETRY: retry_trailer}
             if test_log_path:
                 test_trailers[TRAILER_TEST_LOG] = test_log_path
@@ -444,7 +407,8 @@ def garden(
                     test_trailers[TRAILER_TEST_FAILED] = str(tr0.counts["failed"])
                     test_trailers[TRAILER_TEST_SKIPPED] = str(tr0.counts["skipped"])
             _commit_with_trailers(
-                task.id, test_subject, cwd, body=test_body,
+                task.id, test_subject, cwd, branch=branch, status=test_status,
+                body=test_body,
                 **test_trailers,
             )
 
@@ -453,7 +417,7 @@ def garden(
 
             # --- review ---
             try:
-                diff = git_diff(base_branch, "HEAD", cwd)
+                diff = git_diff(start_sha, "HEAD", cwd)
             except Exception:
                 diff = "(no diff available)"
 
@@ -473,6 +437,7 @@ def garden(
             if not approved:
                 review_subject += f" (attempt {attempt + 1}/{max_retries})"
 
+            review_status = "review-approved" if approved else "review-rejected"
             review_trailers = {TRAILER_STEP: "review", TRAILER_REVIEW: review_val, TRAILER_RETRY: retry_trailer}
             if review_log_file is not None:
                 try:
@@ -480,7 +445,8 @@ def garden(
                 except ValueError:
                     review_trailers[TRAILER_REVIEW_LOG] = str(review_log_file)
             _commit_with_trailers(
-                task.id, review_subject, cwd, body=review_body,
+                task.id, review_subject, cwd, branch=branch, status=review_status,
+                body=review_body,
                 **review_trailers,
             )
 
@@ -504,38 +470,23 @@ def garden(
 
             complete_body = f"Completed after {attempt + 1} attempt(s). Report: {report_path}"
             _commit_with_trailers(
-                task.id, f'complete "{tname}"', cwd, body=complete_body,
+                task.id, f'complete "{tname}"', cwd, branch=branch, status="complete",
+                body=complete_body,
                 **{TRAILER_STEP: "complete", TRAILER_RESULT: "pass", TRAILER_REPORT: report_path},
             )
 
             logger.info("Task %s complete", task.id)
-            git_checkout(base_branch, cwd)
-            merge_result = _merge_phase_if_complete(
-                tree, task.id, cwd, base_branch,
-                global_test_command=test_command, config_timeout=test_timeout,
-                container_workspace=container_workspace,
-            )
-            if merge_result is True:
-                logger.info("Phase merge completed for %s", task.id)
-            elif isinstance(merge_result, str):
-                logger.error("Phase merge blocked for %s: %s", task.id, merge_result)
-                return GardenResult(task_id=task.id, success=False, error=merge_result)
             return GardenResult(task_id=task.id, success=True)
 
         logger.info("Task %s failed after %d retries", task.id, max_retries)
         # --- exhausted retries ---
         _commit_with_trailers(
             task.id, f'failed "{_truncate_name(task.name)}" after {max_retries} retries', cwd,
+            branch=branch, status="failed",
             **{TRAILER_STEP: "complete", TRAILER_RESULT: "fail"},
         )
 
-        git_checkout(base_branch, cwd)
         return GardenResult(task_id=task.id, success=False, error=f"failed after {max_retries} retries")
 
     except Exception:
-        # Ensure we return to base branch on unexpected errors
-        try:
-            git_checkout(base_branch, cwd)
-        except Exception:
-            pass
         raise

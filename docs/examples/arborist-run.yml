@@ -61,9 +61,6 @@ jobs:
       - name: Install agent-arborist
         run: pip install git+https://${{ secrets.GH_PAT_ARBORIST_RO }}@github.com/pennyworth-tech/agent-arborist.git
 
-      - name: Pull existing arborist branches (resume support)
-        run: arborist pull ${{ inputs.tree_path && format('--tree {0}', inputs.tree_path) || '' }}
-
       - name: Install Claude Code
         if: inputs.runner_type == 'claude' || inputs.runner_type == ''
         run: npm install -g @anthropic-ai/claude-code
@@ -71,12 +68,6 @@ jobs:
       - name: Install devcontainer CLI
         if: inputs.container_mode != 'disabled'
         run: npm install -g @devcontainers/cli
-
-      # - name: Configure environment
-      #   run: |
-      #     echo "CLAUDE_CODE_OAUTH_TOKEN=${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}" > .env
-      #     mkdir -p .devcontainer
-      #     cp .env .devcontainer/.env
 
       # ── Execute ────────────────────────────────────
       - name: Run gardener
@@ -93,8 +84,6 @@ jobs:
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
 
       # ── Teardown (always, even on failure) ─────────
-      - name: Push arborist branches + base
+      - name: Push commits
         if: always()
-        run: |
-          arborist push ${{ inputs.tree_path && format('--tree {0}', inputs.tree_path) || '' }}
-          git push origin "${{ inputs.spec_branch }}" --force-with-lease 2>/dev/null || echo "  skip: base branch"
+        run: git push origin "${{ inputs.spec_branch }}" --force-with-lease

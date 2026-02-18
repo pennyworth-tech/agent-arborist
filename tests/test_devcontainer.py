@@ -126,3 +126,29 @@ def test_is_container_running_returns_true(mock_subprocess):
 def test_is_container_running_returns_false(mock_subprocess):
     mock_subprocess.return_value = subprocess.CompletedProcess(args=[], returncode=1)
     assert is_container_running(Path("/repo")) is False
+
+
+# --- Timeout handling ---
+
+
+def test_devcontainer_up_timeout_raises(mock_subprocess):
+    mock_subprocess.side_effect = subprocess.TimeoutExpired(cmd="devcontainer up", timeout=300)
+    with pytest.raises(DevcontainerError, match="timed out after 300s"):
+        from agent_arborist.devcontainer import devcontainer_up
+        devcontainer_up(Path("/repo"), timeout=300)
+
+
+def test_is_container_running_timeout_returns_false(mock_subprocess):
+    mock_subprocess.side_effect = subprocess.TimeoutExpired(cmd="devcontainer up", timeout=30)
+    assert is_container_running(Path("/repo"), timeout=30) is False
+
+
+def test_devcontainer_up_passes_timeout(mock_subprocess):
+    from agent_arborist.devcontainer import devcontainer_up
+    devcontainer_up(Path("/repo"), timeout=120)
+    assert mock_subprocess.call_args.kwargs["timeout"] == 120
+
+
+def test_is_container_running_passes_timeout(mock_subprocess):
+    is_container_running(Path("/repo"), timeout=60)
+    assert mock_subprocess.call_args.kwargs["timeout"] == 60

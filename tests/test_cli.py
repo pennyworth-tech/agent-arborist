@@ -21,8 +21,7 @@ def _make_tree_at(base_dir, branch="my-branch"):
     tree_path = base_dir / "specs" / branch / "task-tree.json"
     tree_path.parent.mkdir(parents=True, exist_ok=True)
     tree_path.write_text(json.dumps({
-        "spec_id": "test", "namespace": "feature",
-        "nodes": {
+        "spec_id": "test",        "nodes": {
             "phase1": {"id": "phase1", "name": "P1", "children": ["T001"]},
             "T001": {"id": "T001", "name": "Task", "parent": "phase1", "description": "Do it"},
         },
@@ -76,7 +75,7 @@ def test_build_default_uses_ai_planner(tmp_path):
     mock_tree.nodes = {}
     mock_tree.leaves.return_value = []
     mock_tree.execution_order = []
-    mock_tree.namespace = "feature"
+
     mock_tree.spec_id = "test"
 
     mock_result = MagicMock()
@@ -119,12 +118,11 @@ class TestBaseBranchDefault:
         assert "default: main" not in result.output.lower()
 
     def test_garden_auto_detects_current_branch(self, tmp_path):
-        """When --base-branch is omitted, garden() should call git_current_branch."""
+        """When --base-branch is omitted, garden uses git_current_branch for spec path."""
         runner = CliRunner()
         tree_path = tmp_path / "tree.json"
         tree_path.write_text(json.dumps({
-            "spec_id": "test", "namespace": "feature",
-            "nodes": {"phase1": {"id": "phase1", "name": "P1", "children": ["T001"]},
+            "spec_id": "test",            "nodes": {"phase1": {"id": "phase1", "name": "P1", "children": ["T001"]},
                       "T001": {"id": "T001", "name": "Task", "parent": "phase1", "description": "Do it"}},
             "execution_order": ["T001"], "spec_files": [],
         }))
@@ -138,17 +136,16 @@ class TestBaseBranchDefault:
             ])
             assert result.exit_code == 0, result.output
             mock_gcb.assert_called_once()
-            # garden_fn should have been called with base_branch="my-feature"
+            # branch should be passed to garden_fn
             _, kwargs = mock_garden.call_args
-            assert kwargs["base_branch"] == "my-feature"
+            assert kwargs["branch"] == "my-feature"
 
     def test_garden_explicit_base_branch_skips_detection(self, tmp_path):
         """When --base-branch is given explicitly, git_current_branch is NOT called."""
         runner = CliRunner()
         tree_path = tmp_path / "tree.json"
         tree_path.write_text(json.dumps({
-            "spec_id": "test", "namespace": "feature",
-            "nodes": {"phase1": {"id": "phase1", "name": "P1", "children": ["T001"]},
+            "spec_id": "test",            "nodes": {"phase1": {"id": "phase1", "name": "P1", "children": ["T001"]},
                       "T001": {"id": "T001", "name": "Task", "parent": "phase1", "description": "Do it"}},
             "execution_order": ["T001"], "spec_files": [],
         }))
@@ -162,8 +159,6 @@ class TestBaseBranchDefault:
             ])
             assert result.exit_code == 0, result.output
             mock_gcb.assert_not_called()
-            _, kwargs = mock_garden.call_args
-            assert kwargs["base_branch"] == "develop"
 
 
 # ---------------------------------------------------------------------------
@@ -222,8 +217,7 @@ def _make_tree_json(tmp_path):
     """Helper: write a minimal task tree JSON and return the path."""
     tree_path = tmp_path / "tree.json"
     tree_path.write_text(json.dumps({
-        "spec_id": "test", "namespace": "feature",
-        "nodes": {
+        "spec_id": "test",        "nodes": {
             "phase1": {"id": "phase1", "name": "Phase 1", "children": ["T001", "T002"]},
             "T001": {"id": "T001", "name": "First task", "parent": "phase1",
                      "description": "Do the first thing", "depends_on": []},
@@ -241,7 +235,8 @@ class TestInspectCommand:
         """inspect with a bad task ID exits with error."""
         tree_path = _make_tree_json(tmp_path)
         runner = CliRunner()
-        with patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)):
+        with patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)), \
+             patch("agent_arborist.cli.git_current_branch", return_value="main"):
             result = runner.invoke(main, [
                 "inspect", "--tree", str(tree_path), "--task-id", "TXXX",
             ])
@@ -253,6 +248,7 @@ class TestInspectCommand:
         tree_path = _make_tree_json(tmp_path)
         runner = CliRunner()
         with patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)), \
+             patch("agent_arborist.cli.git_current_branch", return_value="main"), \
              patch("agent_arborist.git.repo.git_branch_exists", return_value=False):
             result = runner.invoke(main, [
                 "inspect", "--tree", str(tree_path), "--task-id", "T002",
@@ -261,22 +257,23 @@ class TestInspectCommand:
         assert "T002" in result.output
         assert "Second task" in result.output
         assert "T001" in result.output  # depends_on
-        assert "arborist/test/phase1" in result.output  # branch name
+        assert "not started" in result.output.lower()  # no commits yet
 
-    def test_inspect_no_branch_yet(self, tmp_path):
-        """inspect shows 'not started' when branch doesn't exist."""
+    def test_inspect_no_commits_yet(self, tmp_path):
+        """inspect shows 'not started' when no commits found for the task."""
         tree_path = _make_tree_json(tmp_path)
         runner = CliRunner()
         with patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)), \
-             patch("agent_arborist.git.repo.git_branch_exists", return_value=False):
+             patch("agent_arborist.cli.git_current_branch", return_value="main"), \
+             patch("agent_arborist.git.state.get_task_trailers", return_value={}):
             result = runner.invoke(main, [
                 "inspect", "--tree", str(tree_path), "--task-id", "T001",
             ])
         assert result.exit_code == 0, result.output
-        assert "does not exist" in result.output
+        assert "not started" in result.output.lower()
 
     def test_inspect_shows_state_and_trailers(self, tmp_path):
-        """inspect shows state and trailers when branch exists."""
+        """inspect shows state and trailers when commits exist."""
         tree_path = _make_tree_json(tmp_path)
         runner = CliRunner()
         mock_trailers = {
@@ -284,9 +281,9 @@ class TestInspectCommand:
             "Arborist-Review": "approve",
         }
         with patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)), \
-             patch("agent_arborist.git.repo.git_branch_exists", return_value=True), \
+             patch("agent_arborist.cli.git_current_branch", return_value="main"), \
              patch("agent_arborist.git.state.get_task_trailers", return_value=mock_trailers), \
-             patch("agent_arborist.git.repo.git_log", return_value="abc1234 task(T001): implement\n  Arborist-Step: implement"):
+             patch("agent_arborist.git.repo.git_log", return_value="abc1234 task(main@T001@implement-pass): implement\n  Arborist-Step: implement"):
             result = runner.invoke(main, [
                 "inspect", "--tree", str(tree_path), "--task-id", "T001",
             ])
@@ -483,13 +480,6 @@ class TestTestingConfigNoCommand:
         assert "command" not in d
         assert d["timeout"] == 30
 
-    def test_testing_config_from_dict_ignores_legacy_command(self):
-        """Legacy config with 'command' field should not raise in strict mode."""
-        from agent_arborist.config import TestingConfig
-        tc = TestingConfig.from_dict({"command": "pytest", "timeout": 60}, strict=True)
-        assert tc.timeout == 60
-        assert not hasattr(tc, "command")
-
     def test_testing_config_strict_rejects_unknown_fields(self):
         from agent_arborist.config import TestingConfig, ConfigValidationError
         with pytest.raises(ConfigValidationError, match="Unknown fields"):
@@ -508,108 +498,3 @@ class TestTestingConfigNoCommand:
         with patch.dict(os.environ, {"ARBORIST_TEST_COMMAND": "pytest -v"}):
             result = apply_env_overrides(cfg)
         assert not hasattr(result.test, "command")
-
-
-# ---------------------------------------------------------------------------
-# Pull / Push remotes
-# ---------------------------------------------------------------------------
-
-class TestPullPush:
-    """Tests for arborist pull and arborist push commands."""
-
-    def test_pull_fetches_and_restores_branches(self, tmp_path):
-        tree_path = _make_tree_at(tmp_path, "my-branch")
-        runner = CliRunner()
-        with patch("agent_arborist.cli.git_current_branch", return_value="my-branch"), \
-             patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)), \
-             patch("agent_arborist.cli.git_fetch") as mock_fetch, \
-             patch("agent_arborist.cli.git_remote_branch_list", return_value=["origin/feature/test/phase1"]), \
-             patch("agent_arborist.cli.git_branch_exists", return_value=False), \
-             patch("agent_arborist.cli.git_checkout") as mock_checkout:
-            result = runner.invoke(main, ["pull", "--tree", str(tree_path)], catch_exceptions=False)
-        assert result.exit_code == 0, result.output
-        mock_fetch.assert_called_once()
-        assert "Restored" in result.output
-
-    def test_pull_skips_existing_local_branches(self, tmp_path):
-        tree_path = _make_tree_at(tmp_path, "my-branch")
-        runner = CliRunner()
-        with patch("agent_arborist.cli.git_current_branch", return_value="my-branch"), \
-             patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)), \
-             patch("agent_arborist.cli.git_fetch"), \
-             patch("agent_arborist.cli.git_remote_branch_list", return_value=["origin/feature/test/phase1"]), \
-             patch("agent_arborist.cli.git_branch_exists", return_value=True):
-            result = runner.invoke(main, ["pull", "--tree", str(tree_path)], catch_exceptions=False)
-        assert result.exit_code == 0, result.output
-        assert "up to date" in result.output
-
-    def test_pull_default_tree_path(self, tmp_path):
-        _make_tree_at(tmp_path, "my-branch")
-        runner = CliRunner()
-        with patch("agent_arborist.cli.git_current_branch", return_value="my-branch"), \
-             patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)), \
-             patch("agent_arborist.cli.git_fetch"), \
-             patch("agent_arborist.cli.git_remote_branch_list", return_value=[]), \
-             patch("agent_arborist.cli.git_branch_exists", return_value=True):
-            result = runner.invoke(main, ["pull"], catch_exceptions=False)
-        assert result.exit_code == 0, result.output
-
-    def test_push_pushes_matching_branches(self, tmp_path):
-        tree_path = _make_tree_at(tmp_path, "my-branch")
-        runner = CliRunner()
-        with patch("agent_arborist.cli.git_current_branch", return_value="my-branch"), \
-             patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)), \
-             patch("agent_arborist.cli.git_branch_list", return_value=["feature/test/phase1", "feature/test/phase2"]), \
-             patch("agent_arborist.cli.git_push_fn") as mock_push:
-            result = runner.invoke(main, ["push", "--tree", str(tree_path)], catch_exceptions=False)
-        assert result.exit_code == 0, result.output
-        assert mock_push.call_count == 2
-        assert "Pushed 2" in result.output
-
-    def test_push_no_branches(self, tmp_path):
-        tree_path = _make_tree_at(tmp_path, "my-branch")
-        runner = CliRunner()
-        with patch("agent_arborist.cli.git_current_branch", return_value="my-branch"), \
-             patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)), \
-             patch("agent_arborist.cli.git_branch_list", return_value=[]):
-            result = runner.invoke(main, ["push", "--tree", str(tree_path)], catch_exceptions=False)
-        assert result.exit_code == 0, result.output
-        assert "No local branches" in result.output
-
-    def test_push_handles_failures(self, tmp_path):
-        from agent_arborist.git.repo import GitError
-        tree_path = _make_tree_at(tmp_path, "my-branch")
-        runner = CliRunner()
-        with patch("agent_arborist.cli.git_current_branch", return_value="my-branch"), \
-             patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)), \
-             patch("agent_arborist.cli.git_branch_list", return_value=["feature/test/phase1"]), \
-             patch("agent_arborist.cli.git_push_fn", side_effect=GitError("rejected")):
-            result = runner.invoke(main, ["push", "--tree", str(tree_path)], catch_exceptions=False)
-        assert result.exit_code == 0, result.output
-        assert "Skip" in result.output
-
-    def test_push_default_tree_path(self, tmp_path):
-        _make_tree_at(tmp_path, "my-branch")
-        runner = CliRunner()
-        with patch("agent_arborist.cli.git_current_branch", return_value="my-branch"), \
-             patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)), \
-             patch("agent_arborist.cli.git_branch_list", return_value=[]):
-            result = runner.invoke(main, ["push"], catch_exceptions=False)
-        assert result.exit_code == 0, result.output
-
-    def test_pull_uses_tree_prefix(self, tmp_path):
-        """pull fetches only branches matching {namespace}/{spec_id}/*."""
-        tree_path = _make_tree_at(tmp_path, "my-branch")
-        runner = CliRunner()
-        with patch("agent_arborist.cli.git_current_branch", return_value="my-branch"), \
-             patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)), \
-             patch("agent_arborist.cli.git_fetch") as mock_fetch, \
-             patch("agent_arborist.cli.git_remote_branch_list", return_value=[]) as mock_remote, \
-             patch("agent_arborist.cli.git_branch_exists", return_value=True):
-            result = runner.invoke(main, ["pull", "--tree", str(tree_path)], catch_exceptions=False)
-        # Verify fetch uses the tree's namespace/spec_id prefix
-        fetch_call = mock_fetch.call_args
-        assert "arborist/test/" in str(fetch_call)
-        # Verify remote branch list uses the same prefix
-        remote_call = mock_remote.call_args
-        assert "arborist/test/" in str(remote_call)

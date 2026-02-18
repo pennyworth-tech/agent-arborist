@@ -12,10 +12,10 @@ from agent_arborist.constants import TRAILER_STEP, TRAILER_RESULT
 from agent_arborist.tree.model import TaskNode, TaskTree
 
 
-def _commit_task(repo, task_id, **trailers):
-    """Helper: commit with trailers on current branch."""
+def _commit_task(repo, task_id, *, branch="main", status="complete", **trailers):
+    """Helper: commit with trailers using new branch-scoped format."""
     trailer_lines = "\n".join(f"{k}: {v}" for k, v in trailers.items())
-    msg = f"task({task_id}): step\n\n{trailer_lines}"
+    msg = f"task({branch}@{task_id}@{status}): step\n\n{trailer_lines}"
     git_add_all(repo)
     git_commit(msg, repo, allow_empty=True)
 
@@ -45,37 +45,62 @@ def test_task_state_from_trailers_reviewing():
     assert task_state_from_trailers({TRAILER_STEP: "review"}) == TaskState.REVIEWING
 
 
-def test_get_task_trailers_from_branch(git_repo):
-    git_checkout("feature/test/phase1", git_repo, create=True)
-    _commit_task(git_repo, "T001", **{TRAILER_STEP: "complete", TRAILER_RESULT: "pass"})
+def test_get_task_trailers_from_head(git_repo):
+    _commit_task(git_repo, "T001", branch="main", status="complete",
+                 **{TRAILER_STEP: "complete", TRAILER_RESULT: "pass"})
 
-    trailers = get_task_trailers("feature/test/phase1", "T001", git_repo)
+    trailers = get_task_trailers("HEAD", "T001", git_repo, current_branch="main")
     assert trailers[TRAILER_STEP] == "complete"
     assert trailers[TRAILER_RESULT] == "pass"
 
 
 def test_is_task_complete(git_repo):
-    git_checkout("feature/test/phase1", git_repo, create=True)
-    _commit_task(git_repo, "T001", **{TRAILER_STEP: "complete", TRAILER_RESULT: "pass"})
+    _commit_task(git_repo, "T001", branch="main", status="complete",
+                 **{TRAILER_STEP: "complete", TRAILER_RESULT: "pass"})
 
-    assert is_task_complete("feature/test/phase1", "T001", git_repo)
+    assert is_task_complete("T001", git_repo, current_branch="main")
 
 
 def test_is_task_not_complete_when_pending(git_repo):
-    assert not is_task_complete("feature/test/phase1", "T001", git_repo)
+    assert not is_task_complete("T001", git_repo, current_branch="main")
 
 
 def test_scan_completed_tasks(git_repo):
-    tree = TaskTree(spec_id="test", namespace="feature")
+    tree = TaskTree(spec_id="test")
     tree.nodes["phase1"] = TaskNode(id="phase1", name="Phase 1", children=["T001", "T002"])
     tree.nodes["T001"] = TaskNode(id="T001", name="Task 1", parent="phase1")
     tree.nodes["T002"] = TaskNode(id="T002", name="Task 2", parent="phase1")
 
-    # Complete T001 on phase branch
-    git_checkout("feature/test/phase1", git_repo, create=True)
-    _commit_task(git_repo, "T001", **{TRAILER_STEP: "complete", TRAILER_RESULT: "pass"})
-    git_checkout("main", git_repo)
+    # Complete T001 on current branch
+    _commit_task(git_repo, "T001", branch="main", status="complete",
+                 **{TRAILER_STEP: "complete", TRAILER_RESULT: "pass"})
 
-    completed = scan_completed_tasks(tree, git_repo)
+    completed = scan_completed_tasks(tree, git_repo, branch="main")
     assert "T001" in completed
     assert "T002" not in completed
+
+
+def test_scan_scoped_by_branch_name(git_repo):
+    """Commits with task(other-branch@T001) are invisible when scanning for main."""
+    tree = TaskTree(spec_id="test")
+    tree.nodes["phase1"] = TaskNode(id="phase1", name="Phase 1", children=["T001", "T002"])
+    tree.nodes["T001"] = TaskNode(id="T001", name="Task 1", parent="phase1")
+    tree.nodes["T002"] = TaskNode(id="T002", name="Task 2", parent="phase1")
+
+    # Complete T001 on "other-branch" (different branch name in commit prefix)
+    _commit_task(git_repo, "T001", branch="other-branch", status="complete",
+                 **{TRAILER_STEP: "complete", TRAILER_RESULT: "pass"})
+
+    # Complete T002 on "main"
+    _commit_task(git_repo, "T002", branch="main", status="complete",
+                 **{TRAILER_STEP: "complete", TRAILER_RESULT: "pass"})
+
+    # Scanning for "main" should only see T002
+    completed = scan_completed_tasks(tree, git_repo, branch="main")
+    assert "T001" not in completed
+    assert "T002" in completed
+
+    # Scanning for "other-branch" should only see T001
+    completed_other = scan_completed_tasks(tree, git_repo, branch="other-branch")
+    assert "T001" in completed_other
+    assert "T002" not in completed_other

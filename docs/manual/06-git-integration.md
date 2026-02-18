@@ -2,38 +2,47 @@
 
 Arborist is **git-native** — all task state lives in the repository itself. No database, no state files, no daemon. Everything is recoverable from git history.
 
-## Branching Strategy
+## Linear Commit History
 
-Each root phase gets one branch:
+All task commits land directly on the current (initiating) branch. There are no per-phase branches — execution is sequential and the commit history is linear.
 
-```
-<namespace>/<spec-id>/<root-phase-id>
-```
+## Branch-Scoped Commits
 
-Examples:
-```
-arborist/my-project/phase1
-arborist/my-project/phase2
-arborist/my-project/setup
-```
-
-All leaf tasks under a phase are implemented sequentially on that branch. When the last leaf completes, the branch is merged back to the base branch.
-
-## Commit Convention
-
-Every commit Arborist creates follows this format:
+Every commit Arborist creates embeds the **current branch name** in the commit prefix:
 
 ```
-task(<task-id>): <subject>
-
-<optional body with runner output or test results>
-
-Arborist-Step: implement
-Arborist-Result: pass
-Arborist-Retry: 0
+task(feature/my-branch@T001@implement-pass): implement "Create file"
+task(feature/my-branch@T001@test-pass): tests pass for "Create file"
+task(feature/my-branch@T001@review-approved): review approved for "Create file"
+task(feature/my-branch@T001@complete): complete "Create file"
 ```
 
-The `task(<id>):` prefix allows Arborist to find commits for a specific task using `git log --grep`.
+Format: `task({branch}@{task_id}@{status}): {subject}`
+
+The branch name in the prefix means `git log --grep` is naturally scoped to the current branch's run — commits from other branches or previous runs on different branches are invisible.
+
+### Grep examples
+
+```bash
+# All commits for task T001 on this branch
+git log --grep='task(feature/my-branch@T001' --fixed-strings --oneline
+
+# All arborist commits on this branch
+git log --grep='task(feature/my-branch@' --fixed-strings --oneline
+```
+
+### Status values
+
+| Status | Meaning |
+|--------|---------|
+| `implement-pass` | Implementation succeeded |
+| `implement-fail` | Implementation failed |
+| `test-pass` | Tests passed |
+| `test-fail` | Tests failed |
+| `review-approved` | Code review approved |
+| `review-rejected` | Code review rejected |
+| `complete` | Task fully complete |
+| `failed` | Task exhausted all retries |
 
 ## Git Trailers
 
@@ -55,16 +64,16 @@ Trailers are structured key-value metadata appended to commit messages. Arborist
 Unlike tools that use `git commit --amend` or force-pushes to "clean up" work, Arborist is strictly append-only.
 
 - **No Rewrites:** Failed implementation attempts and rejected reviews stay in the Git history.
-- **Latest Wins:** The current status of a task is always derived from the *most recent* commit matching the `task(ID):` pattern.
+- **Latest Wins:** The current status of a task is always derived from the *most recent* commit matching the `task({branch}@{task_id}` pattern.
 - **Failures as Context:** When a task retries, Arborist reads the immutable body of previous failure commits to provide "lessons learned" to the next AI implementation pass.
 
 ## State Recovery
 
-Arborist determines task state by reading trailers from git history:
+Arborist determines task state by reading trailers from git history on the current branch:
 
 ```mermaid
 flowchart TD
-    A["Read commits on phase branch<br/>matching task(ID):"] --> B{Found<br/>Arborist-Step: complete?}
+    A["Read commits on HEAD<br/>matching task(branch@ID)"] --> B{Found<br/>Arborist-Step: complete?}
     B -- Yes --> C{Arborist-Result?}
     C -- pass --> D["COMPLETE"]
     C -- fail --> E["FAILED"]
@@ -87,19 +96,19 @@ Task states:
 
 Because state is in git, recovery is automatic:
 
-1. Process crashes mid-task → branch has partial commits
+1. Process crashes mid-task — branch has partial commits
 2. Run `arborist gardener` again
-3. Arborist scans git for completed tasks
+3. Arborist scans git for completed tasks on the current branch (scoped by branch name in commit prefix)
 4. Skips completed tasks, finds the next ready one
-5. Creates or checks out the phase branch
-6. Continues from the next task (the partial task's branch may have incomplete work, but a fresh implement pass will overwrite it)
+5. Continues from the next task (partial work from the crashed task stays in history, but a fresh implement pass will overwrite the files)
 
-## Merging
-
-When all leaf tasks under a root phase complete:
-
-1. Arborist checks out the base branch
-2. Merges the phase branch with `--no-ff` (preserves branch history)
-3. Merge commit message: `merge: <phase-branch> complete`
-
-This keeps the git history clean — each phase is a discrete merge commit on the base branch.
+```mermaid
+gitGraph
+    commit id: "base"
+    commit id: "task(main@T001@implement-pass)"
+    commit id: "task(main@T001@complete)"
+    commit id: "task(main@T002@implement-pass)"
+    commit id: "task(main@T002@complete)"
+    commit id: "task(main@T003@implement-pass)"
+    commit id: "task(main@T003@complete)"
+```

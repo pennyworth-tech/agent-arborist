@@ -106,7 +106,7 @@ For each task, optionally generate a "test_commands" array. Each entry:
 Rules:
 - Leaf tasks typically get "type": "unit" tests
 - Parent/group tasks may get "type": "integration" or "type": "e2e" tests
-- Integration/e2e tests on parent nodes run before the phase branch merges
+- Integration/e2e tests on parent nodes run after all child tasks complete
 - Infer the framework from project context (package.json → jest/vitest, pyproject.toml → pytest, go.mod → go)
 - If you cannot determine a test command, omit test_commands (it defaults to empty)
 
@@ -132,7 +132,6 @@ class PlanResult:
 def plan_tree(
     spec_dir: Path,
     spec_id: str,
-    namespace: str = "arborist",
     runner: Runner | None = None,
     runner_type: RunnerType = DAG_DEFAULT_RUNNER,
     model: str = DAG_DEFAULT_MODEL,
@@ -185,7 +184,7 @@ def plan_tree(
             raw_output=result.output,
         )
 
-    tree = _build_tree_from_json(data, spec_id, namespace)
+    tree = _build_tree_from_json(data, spec_id)
     if tree is None:
         return PlanResult(
             success=False,
@@ -208,10 +207,10 @@ def _read_spec_contents(spec_dir: Path) -> str:
 
 
 def _build_tree_from_json(
-    data: dict, spec_id: str, namespace: str
+    data: dict, spec_id: str,
 ) -> TaskTree | None:
     """Build a TaskTree from the AI-generated JSON structure."""
-    tree = TaskTree(spec_id=spec_id, namespace=namespace)
+    tree = TaskTree(spec_id=spec_id)
 
     for t in data["tasks"]:
         if "id" not in t:

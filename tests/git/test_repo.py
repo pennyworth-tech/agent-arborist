@@ -93,7 +93,7 @@ def test_git_error_on_bad_command(git_repo):
 def test_git_log_with_grep(git_repo):
     (git_repo / "a.txt").write_text("a")
     git_add_all(git_repo)
-    git_commit("task(T001): implement", git_repo)
+    git_commit("task(main@T001@implement-pass): implement", git_repo)
 
-    log = git_log("main", "%s", git_repo, n=10, grep="task(T001)")
+    log = git_log("main", "%s", git_repo, n=10, grep="task(main@T001")
     assert "T001" in log

@@ -16,7 +16,6 @@ import pytest
 
 from agent_arborist.git.repo import (
     git_add_all,
-    git_branch_exists,
     git_commit,
     git_current_branch,
     git_log,
@@ -56,7 +55,7 @@ def _skip_if_missing(cli_binary: str):
 
 
 def _simple_tree() -> TaskTree:
-    tree = TaskTree(spec_id="steps", namespace="feature")
+    tree = TaskTree(spec_id="steps")
     tree.nodes["phase1"] = TaskNode(id="phase1", name="Setup", children=["T001"])
     tree.nodes["T001"] = TaskNode(
         id="T001", name="Create a greeting file", parent="phase1",
@@ -66,7 +65,7 @@ def _simple_tree() -> TaskTree:
 
 
 def _two_task_tree() -> TaskTree:
-    tree = TaskTree(spec_id="steps", namespace="feature")
+    tree = TaskTree(spec_id="steps")
     tree.nodes["phase1"] = TaskNode(id="phase1", name="Setup", children=["T001", "T002"])
     tree.nodes["T001"] = TaskNode(
         id="T001", name="Create a file", parent="phase1",
@@ -113,15 +112,14 @@ def test_ai_garden_mixed_runners(
         tree, git_repo,
         implement_runner=impl_runner,
         review_runner=rev_runner,
-        base_branch="main",
+        branch="main",
     )
 
     assert result.success, f"garden() failed: {result.error}"
     assert result.task_id == "T001"
     assert git_current_branch(git_repo) == "main"
-    assert git_branch_exists("feature/steps/phase1", git_repo)
 
-    trailers = get_task_trailers("feature/steps/phase1", "T001", git_repo)
+    trailers = get_task_trailers("HEAD", "T001", git_repo, current_branch="main")
     assert trailers["Arborist-Step"] == "complete"
     assert trailers["Arborist-Result"] == "pass"
 
@@ -151,18 +149,15 @@ def test_ai_gardener_mixed_runners(
         tree, git_repo,
         implement_runner=impl_runner,
         review_runner=rev_runner,
-        base_branch="main",
+        branch="main",
     )
 
     assert result.success, f"gardener() failed: {result.error}"
     assert result.tasks_completed == 2
     assert result.order == ["T001", "T002"]
 
-    completed = scan_completed_tasks(tree, git_repo)
+    completed = scan_completed_tasks(tree, git_repo, branch="main")
     assert completed == {"T001", "T002"}
-
-    main_log = git_log("main", "%s", git_repo, n=5)
-    assert "merge" in main_log.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -189,12 +184,12 @@ def test_ai_garden_same_runner_both_steps(
         tree, git_repo,
         implement_runner=impl_runner,
         review_runner=rev_runner,
-        base_branch="main",
+        branch="main",
     )
 
     assert result.success, f"garden() failed: {result.error}"
     assert result.task_id == "T001"
 
-    trailers = get_task_trailers("feature/steps/phase1", "T001", git_repo)
+    trailers = get_task_trailers("HEAD", "T001", git_repo, current_branch="main")
     assert trailers["Arborist-Step"] == "complete"
     assert trailers["Arborist-Result"] == "pass"

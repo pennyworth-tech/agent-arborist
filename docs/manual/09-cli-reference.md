@@ -39,8 +39,7 @@ arborist build [OPTIONS]
 |--------|---------|-------------|
 | `--spec-dir` | `spec` | Directory containing task spec markdown files |
 | `--output`, `-o` | `task-tree.json` | Output path for the task tree JSON file |
-| `--namespace` | `arborist` | Namespace prefix for branch names |
-| `--spec-id` | directory name | Spec identifier (used in branch names) |
+| `--spec-id` | directory name | Spec identifier |
 | `--no-ai` | off | Use deterministic markdown parser instead of AI planning |
 | `--runner` | from config | Runner for AI planning |
 | `--model` | from config | Model for AI planning |
@@ -78,7 +77,7 @@ arborist garden [OPTIONS]
 | `--model` | from config | Model name |
 | `--max-retries` | from config (5) | Max retries per task |
 | `--target-repo` | git root of cwd | Repository to work in |
-| `--base-branch` | current branch | Base branch for branching/merging |
+| `--base-branch` | current branch | Branch name for spec path resolution |
 | `--report-dir` | next to task tree | Directory for JSON report files |
 | `--log-dir` | `.arborist/logs` | Directory for runner log files |
 
@@ -132,7 +131,7 @@ arborist status [OPTIONS]
 **Output:**
 
 ```
-arborist/my-project
+my-project
 ├── phase1 Database Layer
 │   ├── OK T001 Create schema (complete)
 │   └── OK T002 Add migrations (complete)
@@ -165,7 +164,7 @@ arborist inspect [OPTIONS]
 
 **Output:**
 
-Shows task metadata (name, description, dependencies, branch), current state from git trailers, and full commit history for the task.
+Shows task metadata (name, description, dependencies), current state from git trailers, and full commit history for the task.
 
 **Examples:**
 

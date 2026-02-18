@@ -6,8 +6,7 @@ Arborist executes tasks through a three-phase pipeline: **implement → test →
 
 ```mermaid
 flowchart TD
-    Start["Find next ready task"] --> Branch["Create/checkout branch"]
-    Branch --> Implement["AI implements the task"]
+    Start["Find next ready task"] --> Implement["AI implements the task"]
     Implement --> ImplOK{Success?}
     ImplOK -- No --> Retry{Retries left?}
     ImplOK -- Yes --> Test["Run test command"]
@@ -16,7 +15,7 @@ flowchart TD
     TestOK -- Yes --> Review["AI reviews the diff"]
     Review --> ReviewOK{Approved?}
     ReviewOK -- No --> Retry
-    ReviewOK -- Yes --> Complete["Commit complete + merge"]
+    ReviewOK -- Yes --> Complete["Commit complete marker"]
     Retry -- Yes --> Implement
     Retry -- No --> Fail["Task failed"]
 ```
@@ -33,7 +32,7 @@ Description: Design and create the database schema with users, posts, and commen
 Work in the current directory. Make all necessary file changes.
 ```
 
-The runner executes in the task's branch working directory and makes file changes directly.
+The runner executes in the working directory and makes file changes directly.
 
 ### 2. Test
 
@@ -56,7 +55,7 @@ If tests fail, the stdout/stderr are captured and committed as a trailer for the
 
 ### 3. Review
 
-On passing tests, Arborist sends the full diff (base branch → HEAD) to the review runner:
+On passing tests, Arborist sends the diff of only the current task's changes to the review runner:
 
 ```
 Review the changes for task T001: Create database schema
@@ -105,40 +104,15 @@ arborist gardener --tree task-tree.json
 ```
 
 Loops continuously:
-1. Scan git history for completed tasks
+1. Scan git history for completed tasks (scoped by branch name in commit prefix)
 2. If all done → success
 3. Find next ready task
 4. Run `garden` for that task
 5. If it fails → stop with error
 6. If it succeeds → continue to next task
 
-The gardener is idempotent — if interrupted, just run it again. It reads completion state from git trailers and picks up where it left off.
-
-## Phase Merging
-
-Tasks under the same root phase share a git branch. When the **last leaf task** under a phase completes, Arborist checks for phase-level tests before merging:
-
-1. If the parent node has `integration` or `e2e` test commands, run them first
-2. If phase tests fail, the merge is blocked and the garden run fails
-3. If phase tests pass (or there are none), merge the phase branch back to the base branch
+The gardener is idempotent — if interrupted, just run it again. It reads completion state from git trailers and picks up where it left off. Queries are scoped by the branch name embedded in each commit prefix, so commits from other branches or previous runs don't cause false positives (see [Git Integration](06-git-integration.md#branch-scoped-commits)).
 
 > **Future work: pre-merge cleanup (prune)**
 >
-> During execution, Arborist generates intermediate artifacts on the phase branch — report JSON files (`spec/reports/T001_run_*.json`), test log files (`.arborist/logs/T001_test_*.log`), etc. Arborist itself is always append-only and never rewrites history. A future `prune` step would remove these generated files from the working tree and commit the deletion, preparing the branch for the user to open a clean squash-merge PR through their normal workflow.
-
-```mermaid
-gitGraph
-    commit id: "base"
-    branch arborist/proj/phase1
-    commit id: "T001: implement"
-    commit id: "T001: complete"
-    commit id: "T002: implement"
-    commit id: "T002: complete"
-    checkout main
-    merge arborist/proj/phase1 id: "merge: phase1 complete"
-    branch arborist/proj/phase2
-    commit id: "T003: implement"
-    commit id: "T003: complete"
-    checkout main
-    merge arborist/proj/phase2 id: "merge: phase2 complete"
-```
+> During execution, Arborist generates intermediate artifacts — report JSON files (`spec/reports/T001_run_*.json`), test log files (`.arborist/logs/T001_test_*.log`), etc. Arborist itself is always append-only and never rewrites history. A future `prune` step would remove these generated files from the working tree and commit the deletion, preparing the branch for a clean squash-merge PR through your normal workflow.

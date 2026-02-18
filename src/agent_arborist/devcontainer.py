@@ -49,14 +49,31 @@ def should_use_container(mode: str, cwd: Path) -> bool:
 # --- CLI wrapper ---
 
 
-def devcontainer_up(workspace_folder: Path) -> None:
-    """Start container for workspace. Idempotent — safe to call if already running."""
-    logger.info("Starting devcontainer for %s", workspace_folder)
-    result = subprocess.run(
-        ["devcontainer", "up", "--workspace-folder", str(workspace_folder)],
-        capture_output=True, text=True,
-    )
+def devcontainer_up(workspace_folder: Path, timeout: int = 300) -> None:
+    """Start container for workspace. Idempotent — safe to call if already running.
+
+    Args:
+        workspace_folder: Path to the workspace (must contain .devcontainer/).
+        timeout: Timeout in seconds (default 300s / 5 min).
+    """
+    logger.info("Starting devcontainer for %s (timeout=%ds)", workspace_folder, timeout)
+    try:
+        result = subprocess.run(
+            ["devcontainer", "up", "--workspace-folder", str(workspace_folder)],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        logger.error(
+            "devcontainer up timed out after %ds for %s", timeout, workspace_folder
+        )
+        raise DevcontainerError(
+            f"devcontainer up timed out after {timeout}s for {workspace_folder}"
+        )
     if result.returncode != 0:
+        logger.error(
+            "devcontainer up failed (exit %d) for %s: %s",
+            result.returncode, workspace_folder, result.stderr,
+        )
         raise DevcontainerError(
             f"devcontainer up failed (exit {result.returncode}) "
             f"for {workspace_folder}\n"
@@ -88,27 +105,57 @@ def devcontainer_exec(
     return subprocess.run(args, **kwargs)
 
 
-def is_container_running(workspace_folder: Path) -> bool:
-    """Check if a devcontainer is running for this workspace."""
-    result = subprocess.run(
-        ["devcontainer", "up", "--workspace-folder", str(workspace_folder),
-         "--expect-existing-container"],
-        capture_output=True, text=True,
-    )
-    return result.returncode == 0
+def is_container_running(workspace_folder: Path, timeout: int = 30) -> bool:
+    """Check if a devcontainer is running for this workspace.
+
+    Args:
+        workspace_folder: Path to the workspace.
+        timeout: Timeout in seconds (default 30s).
+
+    Returns:
+        True if container is running, False if not running or check timed out.
+    """
+    try:
+        result = subprocess.run(
+            ["devcontainer", "up", "--workspace-folder", str(workspace_folder),
+             "--expect-existing-container"],
+            capture_output=True, text=True, timeout=timeout,
+        )
+        return result.returncode == 0
+    except subprocess.TimeoutExpired:
+        logger.warning(
+            "Container status check timed out after %ds for %s",
+            timeout, workspace_folder,
+        )
+        return False
 
 
-def ensure_container_running(workspace_folder: Path) -> None:
+def ensure_container_running(
+    workspace_folder: Path,
+    timeout_up: int = 300,
+    timeout_check: int = 30,
+) -> None:
     """Lazy up: start container if not already running. Health check on first start.
 
     On first successful start, verifies git is available inside the container.
     Raises DevcontainerError if git is not found.
+
+    Args:
+        workspace_folder: Path to the workspace.
+        timeout_up: Timeout for devcontainer up in seconds.
+        timeout_check: Timeout for container status check in seconds.
     """
-    if not is_container_running(workspace_folder):
-        devcontainer_up(workspace_folder)
+    logger.debug("Checking container status for %s", workspace_folder)
+    if not is_container_running(workspace_folder, timeout=timeout_check):
+        devcontainer_up(workspace_folder, timeout=timeout_up)
         # Health check: git must be available for AI agents to commit
-        result = devcontainer_exec(["git", "--version"], workspace_folder)
+        logger.debug("Running git health check in container for %s", workspace_folder)
+        result = devcontainer_exec(["git", "--version"], workspace_folder, timeout=15)
         if result.returncode != 0:
+            logger.error(
+                "git not available inside devcontainer for %s: %s",
+                workspace_folder, result.stderr,
+            )
             raise DevcontainerError(
                 "git is not available inside the devcontainer. "
                 "AI agents need git to commit. Add git to your Dockerfile."
