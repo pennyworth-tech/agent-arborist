@@ -28,15 +28,21 @@ class TaskState(Enum):
     FAILED = "failed"
 
 
-def get_task_trailers(branch: str, task_id: str, cwd: Path) -> dict[str, str]:
-    """Get the most recent trailers for a task on a branch."""
+def get_task_trailers(rev: str, task_id: str, cwd: Path, *, current_branch: str) -> dict[str, str]:
+    """Get the most recent trailers for a task on a branch.
+
+    Greps for ``task({current_branch}@{task_id}`` so commits on other branches
+    are invisible.
+    """
+    grep_pattern = f"task({current_branch}@{task_id}"
     try:
         out = git_log(
-            branch,
+            rev,
             "%(trailers)",
             cwd,
             n=1,
-            grep=f"task({task_id}):",
+            grep=grep_pattern,
+            fixed_strings=True,
         )
     except GitError:
         return {}
@@ -44,7 +50,7 @@ def get_task_trailers(branch: str, task_id: str, cwd: Path) -> dict[str, str]:
     if not out.strip():
         return {}
 
-    logger.debug("Parsing trailers for %s on %s", task_id, branch)
+    logger.debug("Parsing trailers for %s on %s", task_id, current_branch)
     # Parse trailers from the most recent matching commit
     trailers: dict[str, str] = {}
     for line in out.split("\n"):
@@ -72,22 +78,22 @@ def task_state_from_trailers(trailers: dict[str, str]) -> TaskState:
     return TaskState.PENDING
 
 
-def is_task_complete(branch: str, task_id: str, cwd: Path) -> bool:
-    trailers = get_task_trailers(branch, task_id, cwd)
+def is_task_complete(task_id: str, cwd: Path, *, current_branch: str) -> bool:
+    trailers = get_task_trailers("HEAD", task_id, cwd, current_branch=current_branch)
     state = task_state_from_trailers(trailers)
     return state == TaskState.COMPLETE
 
 
-def scan_completed_tasks(tree, cwd: Path, *, since: str | None = None) -> set[str]:
+def scan_completed_tasks(tree, cwd: Path, *, branch: str) -> set[str]:
     """Scan all leaf tasks on HEAD and return IDs of completed ones.
 
-    If *since* is given, only commits after that SHA are considered.
+    Commits are scoped by *branch* name embedded in the commit prefix,
+    so only commits for the current branch are considered.
     """
-    rev = f"{since}..HEAD" if since else "HEAD"
     completed = set()
     for node in tree.leaves():
         try:
-            if is_task_complete(rev, node.id, cwd):
+            if is_task_complete(node.id, cwd, current_branch=branch):
                 completed.add(node.id)
         except GitError:
             pass

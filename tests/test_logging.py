@@ -91,7 +91,7 @@ def test_git_state_scan_logs_debug(caplog, git_repo):
     tree.nodes["T001"] = TaskNode(id="T001", name="Task 1")
     tree.compute_execution_order()
     with caplog.at_level(logging.DEBUG, logger="agent_arborist.git.state"):
-        scan_completed_tasks(tree, git_repo)
+        scan_completed_tasks(tree, git_repo, branch="main")
     assert any("Scan found" in r.message for r in caplog.records)
 
 
@@ -126,7 +126,7 @@ def test_garden_logs_task_start(caplog, git_repo):
     mock_runner.run.return_value = MagicMock(success=True, output="APPROVED")
 
     with caplog.at_level(logging.INFO, logger="agent_arborist.worker.garden"):
-        garden(tree, git_repo, mock_runner, max_retries=1)
+        garden(tree, git_repo, mock_runner, max_retries=1, branch="main")
     assert any("Starting task T001" in r.message for r in caplog.records)
 
 
@@ -137,5 +137,5 @@ def test_gardener_logs_progress(caplog, git_repo):
     mock_runner.run.return_value = MagicMock(success=True, output="APPROVED")
 
     with caplog.at_level(logging.INFO, logger="agent_arborist.worker.gardener"):
-        gardener(tree, git_repo, mock_runner, max_retries=1)
+        gardener(tree, git_repo, mock_runner, max_retries=1, branch="main")
     assert any("[1/" in r.message for r in caplog.records)

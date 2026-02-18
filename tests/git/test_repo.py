@@ -9,7 +9,6 @@ from agent_arborist.git.repo import (
     git_branch_exists,
     git_add_all,
     git_commit,
-    git_last_commit_for_file,
     git_log,
     git_current_branch,
     git_merge,
@@ -94,22 +93,7 @@ def test_git_error_on_bad_command(git_repo):
 def test_git_log_with_grep(git_repo):
     (git_repo / "a.txt").write_text("a")
     git_add_all(git_repo)
-    git_commit("task(T001): implement", git_repo)
+    git_commit("task(main@T001@implement-pass): implement", git_repo)
 
-    log = git_log("main", "%s", git_repo, n=10, grep="task(T001)")
+    log = git_log("main", "%s", git_repo, n=10, grep="task(main@T001")
     assert "T001" in log
-
-
-def test_git_last_commit_for_file(git_repo):
-    (git_repo / "tree.json").write_text("{}")
-    git_add_all(git_repo)
-    sha = git_commit("add tree", git_repo)
-    assert git_last_commit_for_file("tree.json", git_repo) == sha
-
-    # A later commit that doesn't touch tree.json shouldn't change the result
-    git_commit("unrelated", git_repo, allow_empty=True)
-    assert git_last_commit_for_file("tree.json", git_repo) == sha
-
-
-def test_git_last_commit_for_file_missing(git_repo):
-    assert git_last_commit_for_file("nonexistent.json", git_repo) is None

@@ -17,32 +17,32 @@ def _make_tree():
 
 def test_gardener_completes_all_tasks(git_repo, mock_runner_all_pass):
     tree = _make_tree()
-    result = gardener(tree, git_repo, mock_runner_all_pass)
+    result = gardener(tree, git_repo, mock_runner_all_pass, branch="main")
 
     assert result.success
     assert result.tasks_completed == 2
     assert result.order == ["T001", "T002"]
 
 
-def test_gardener_commits_phase_marker_on_completion(git_repo, mock_runner_all_pass):
+def test_gardener_no_phase_marker(git_repo, mock_runner_all_pass):
+    """Phase markers are no longer committed."""
     tree = _make_tree()
-    gardener(tree, git_repo, mock_runner_all_pass)
+    gardener(tree, git_repo, mock_runner_all_pass, branch="main")
 
-    # Phase-complete marker should be on main
     log = git_log("main", "%s", git_repo, n=15)
-    assert "phase(phase1): complete" in log
+    assert "phase(" not in log
 
 
 def test_gardener_handles_failure(git_repo, mock_runner_always_reject):
     tree = _make_tree()
-    result = gardener(tree, git_repo, mock_runner_always_reject, max_retries=1)
+    result = gardener(tree, git_repo, mock_runner_always_reject, max_retries=1, branch="main")
 
     assert not result.success
 
 
 def test_gardener_respects_dependencies(git_repo, mock_runner_all_pass):
     tree = _make_tree()
-    result = gardener(tree, git_repo, mock_runner_all_pass)
+    result = gardener(tree, git_repo, mock_runner_all_pass, branch="main")
 
     # T001 must come before T002
     assert result.order.index("T001") < result.order.index("T002")
@@ -57,6 +57,6 @@ def test_gardener_multi_phase(git_repo, mock_runner_all_pass):
     tree.nodes["T002"] = TaskNode(id="T002", name="Task 2", parent="phase2", description="Do thing 2")
     tree.compute_execution_order()
 
-    result = gardener(tree, git_repo, mock_runner_all_pass)
+    result = gardener(tree, git_repo, mock_runner_all_pass, branch="main")
     assert result.success
     assert result.tasks_completed == 2

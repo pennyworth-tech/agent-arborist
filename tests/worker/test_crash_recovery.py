@@ -31,7 +31,7 @@ def test_crash_mid_pipeline_recovers(git_repo):
     # CrashingRunner: succeeds on call 1 (implement), crashes on call 2 (review)
     crasher = CrashingRunner(crash_after=1)
     try:
-        garden(tree, git_repo, crasher)
+        garden(tree, git_repo, crasher, branch="main")
     except RuntimeError:
         pass
 
@@ -39,11 +39,11 @@ def test_crash_mid_pipeline_recovers(git_repo):
     assert git_current_branch(git_repo) == "main"
 
     # Task should NOT be complete
-    assert not is_task_complete("HEAD", "T001", git_repo)
+    assert not is_task_complete("T001", git_repo, current_branch="main")
 
     # Restart with a good runner — should pick up T001 again
     runner = MockRunner()
-    result = garden(tree, git_repo, runner)
+    result = garden(tree, git_repo, runner, branch="main")
     assert result.success
     assert result.task_id == "T001"
 
@@ -59,7 +59,7 @@ def test_dirty_working_tree_recovers(git_repo):
 
     # garden() should handle gracefully
     runner = MockRunner()
-    result = garden(tree, git_repo, runner)
+    result = garden(tree, git_repo, runner, branch="main")
     assert result.success
     assert result.task_id == "T001"
     assert git_current_branch(git_repo) == "main"
@@ -74,14 +74,14 @@ def test_crash_after_complete_commit(git_repo):
     # Simulate: complete commit exists on current branch
     git_add_all(git_repo)
     git_commit(
-        "task(T001): complete\n\nArborist-Step: complete\nArborist-Result: pass\nArborist-Report: spec/reports/T001.json",
+        "task(main@T001@complete): complete\n\nArborist-Step: complete\nArborist-Result: pass\nArborist-Report: spec/reports/T001.json",
         git_repo,
         allow_empty=True,
     )
 
     # garden() should see T001 as done and pick up T002
     runner = MockRunner()
-    result = garden(tree, git_repo, runner)
+    result = garden(tree, git_repo, runner, branch="main")
     assert result.success
     assert result.task_id == "T002"
 
@@ -89,29 +89,29 @@ def test_crash_after_complete_commit(git_repo):
 # --- Scenario 4: All tasks complete, no phase marker yet ---
 
 def test_all_tasks_complete_no_phase_marker(git_repo):
-    """All leaves complete but phase marker missing. garden() should return no-ready-task."""
+    """All leaves complete. garden() should return no-ready-task."""
     tree = _make_tree()
 
     # Complete both tasks on current branch
     git_commit(
-        "task(T001): complete\n\nArborist-Step: complete\nArborist-Result: pass",
+        "task(main@T001@complete): complete\n\nArborist-Step: complete\nArborist-Result: pass",
         git_repo,
         allow_empty=True,
     )
     git_commit(
-        "task(T002): complete\n\nArborist-Step: complete\nArborist-Result: pass",
+        "task(main@T002@complete): complete\n\nArborist-Step: complete\nArborist-Result: pass",
         git_repo,
         allow_empty=True,
     )
 
     # Next garden() call should see no tasks left
     runner = MockRunner()
-    result = garden(tree, git_repo, runner)
+    result = garden(tree, git_repo, runner, branch="main")
     assert not result.success
     assert result.error == "no ready task"
 
     # Verify the tasks ARE seen as complete
-    assert find_next_task(tree, git_repo) is None
+    assert find_next_task(tree, git_repo, branch="main") is None
 
 
 # --- Scenario 5: Gardener crash between tasks ---
@@ -124,17 +124,17 @@ def test_gardener_crash_between_tasks(git_repo):
     # then T002 implement(3) crashes.
     crasher = CrashingRunner(crash_after=2)
     try:
-        gardener(tree, git_repo, crasher)
+        gardener(tree, git_repo, crasher, branch="main")
     except RuntimeError:
         pass
 
     # T001 should be complete
-    assert is_task_complete("HEAD", "T001", git_repo)
+    assert is_task_complete("T001", git_repo, current_branch="main")
     assert git_current_branch(git_repo) == "main"
 
     # Restart with a good runner — should pick up T002
     runner = MockRunner()
-    result = gardener(tree, git_repo, runner)
+    result = gardener(tree, git_repo, runner, branch="main")
     assert result.success
     assert result.tasks_completed == 1
     assert result.order == ["T002"]

@@ -112,12 +112,3 @@ def git_branch_list(cwd: Path, pattern: str | None = None) -> list[str]:
 def git_rev_parse(rev: str, cwd: Path) -> str:
     """Resolve a revision to its full SHA."""
     return _run(["rev-parse", rev], cwd)
-
-
-def git_last_commit_for_file(path: str, cwd: Path) -> str | None:
-    """Return SHA of the most recent commit that touched *path*, or None."""
-    try:
-        sha = _run(["log", "-1", "--format=%H", "--", path], cwd)
-        return sha if sha else None
-    except GitError:
-        return None

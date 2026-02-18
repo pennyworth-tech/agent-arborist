@@ -81,26 +81,26 @@ class TestGardenCommitHistory:
         tree = _small_tree()
         runner = _MockRunner(implement_ok=True, review_ok=True)
 
-        garden_fn(tree, git_repo, runner)
+        garden_fn(tree, git_repo, runner, branch="main")
 
         # Check commit history on HEAD (all commits land on current branch)
         log = git_log("HEAD", "%s", git_repo, n=10)
         subjects = [s.strip() for s in log.strip().split("\n") if s.strip()]
 
-        assert any("task(T001): implement" in s for s in subjects)
-        assert any("task(T001): test" in s for s in subjects)
-        assert any("task(T001): review" in s for s in subjects)
-        assert any("task(T001): complete" in s for s in subjects)
+        assert any("task(main@T001@implement-pass)" in s for s in subjects)
+        assert any("task(main@T001@test-pass)" in s for s in subjects)
+        assert any("task(main@T001@review-approved)" in s for s in subjects)
+        assert any("task(main@T001@complete)" in s for s in subjects)
 
     def test_trailers_present_on_commits(self, git_repo, tmp_path):
         tree = _small_tree()
         runner = _MockRunner(implement_ok=True, review_ok=True)
         report_dir = tmp_path / "reports"
 
-        garden_fn(tree, git_repo, runner, report_dir=report_dir)
+        garden_fn(tree, git_repo, runner, report_dir=report_dir, branch="main")
 
-        # The most recent task(T001) commit should be the "complete" one
-        trailers = get_task_trailers("HEAD", "T001", git_repo)
+        # The most recent task(main@T001) commit should be the "complete" one
+        trailers = get_task_trailers("HEAD", "T001", git_repo, current_branch="main")
         assert trailers["Arborist-Step"] == "complete"
         assert trailers["Arborist-Result"] == "pass"
         assert "Arborist-Report" in trailers
@@ -110,7 +110,7 @@ class TestGardenCommitHistory:
         runner = _MockRunner(implement_ok=True, review_ok=True)
         report_dir = tmp_path / "reports"
 
-        garden_fn(tree, git_repo, runner, report_dir=report_dir)
+        garden_fn(tree, git_repo, runner, report_dir=report_dir, branch="main")
 
         reports = list(report_dir.glob("T001_run_*.json"))
         assert len(reports) == 1
@@ -122,7 +122,7 @@ class TestGardenCommitHistory:
         tree = _small_tree()
         runner = _MockRunner(implement_ok=True, review_ok=True)
 
-        garden_fn(tree, git_repo, runner)
+        garden_fn(tree, git_repo, runner, branch="main")
         assert git_current_branch(git_repo) == "main"
 
 
@@ -138,7 +138,7 @@ class TestGardenerFullLoop:
         tree = _two_task_tree()
         runner = _MockRunner(implement_ok=True, review_ok=True)
 
-        result = gardener(tree, git_repo, runner)
+        result = gardener(tree, git_repo, runner, branch="main")
 
         assert result.success
         assert result.tasks_completed == 2
@@ -146,14 +146,14 @@ class TestGardenerFullLoop:
 
         # All commits should be on main (linear history)
         log = git_log("main", "%s", git_repo, n=20)
-        assert "task(T001):" in log
-        assert "task(T002):" in log
+        assert "task(main@T001@" in log
+        assert "task(main@T002@" in log
 
-        # Phase-complete marker should be present
-        assert "phase(phase1): complete" in log
+        # No phase markers
+        assert "phase(" not in log
 
     def test_multi_phase_commits_on_same_branch(self, git_repo):
-        """Two phases, each with one task → all commits on main, phase markers present."""
+        """Two phases, each with one task → all commits on main, no phase markers."""
         tree = TaskTree(spec_id="test")
 
         from agent_arborist.tree.model import TaskNode
@@ -164,22 +164,20 @@ class TestGardenerFullLoop:
         tree.compute_execution_order()
 
         runner = _MockRunner(implement_ok=True, review_ok=True)
-        result = gardener(tree, git_repo, runner)
+        result = gardener(tree, git_repo, runner, branch="main")
 
         assert result.success
         assert result.tasks_completed == 2
 
-        # All commits on main, phase-complete markers present
         main_log = git_log("main", "%s", git_repo, n=15)
-        assert "phase(phase1): complete" in main_log
-        assert "phase(phase2): complete" in main_log
+        assert "phase(" not in main_log
 
     def test_dependency_ordering_verified_in_history(self, git_repo):
         """T002 depends on T001 — verify T001 commits appear before T002."""
         tree = _two_task_tree()
         runner = _MockRunner(implement_ok=True, review_ok=True)
 
-        gardener(tree, git_repo, runner)
+        gardener(tree, git_repo, runner, branch="main")
 
         # Get all commits on main, oldest first
         log = git_log("main", "%s", git_repo, n=20)
@@ -187,8 +185,8 @@ class TestGardenerFullLoop:
         # git log is newest-first, so reverse for chronological
         subjects.reverse()
 
-        t001_idx = next(i for i, s in enumerate(subjects) if "task(T001): implement" in s)
-        t002_idx = next(i for i, s in enumerate(subjects) if "task(T002): implement" in s)
+        t001_idx = next(i for i, s in enumerate(subjects) if "task(main@T001@implement-pass)" in s)
+        t002_idx = next(i for i, s in enumerate(subjects) if "task(main@T002@implement-pass)" in s)
         assert t001_idx < t002_idx, "T001 should be implemented before T002"
 
     def test_scan_completed_after_gardener(self, git_repo):
@@ -196,9 +194,9 @@ class TestGardenerFullLoop:
         tree = _two_task_tree()
         runner = _MockRunner(implement_ok=True, review_ok=True)
 
-        gardener(tree, git_repo, runner)
+        gardener(tree, git_repo, runner, branch="main")
 
-        completed = scan_completed_tasks(tree, git_repo)
+        completed = scan_completed_tasks(tree, git_repo, branch="main")
         assert completed == {"T001", "T002"}
 
     def test_gardener_with_non_main_base_branch(self, git_repo):
@@ -214,7 +212,7 @@ class TestGardenerFullLoop:
         tree = _two_task_tree()
         runner = _MockRunner(implement_ok=True, review_ok=True)
 
-        result = gardener(tree, git_repo, runner)
+        result = gardener(tree, git_repo, runner, branch="develop")
 
         assert result.success
         assert result.tasks_completed == 2
@@ -222,14 +220,14 @@ class TestGardenerFullLoop:
         # Should end on develop, not main
         assert git_current_branch(git_repo) == "develop"
 
-        # All commits on develop
+        # All commits on develop with develop branch prefix
         dev_log = git_log("develop", "%s", git_repo, n=15)
-        assert "task(T001):" in dev_log
-        assert "task(T002):" in dev_log
+        assert "task(develop@T001@" in dev_log
+        assert "task(develop@T002@" in dev_log
 
         # Main should NOT have the task commits
         main_log = git_log("main", "%s", git_repo, n=5)
-        assert "task(T001):" not in main_log
+        assert "task(" not in main_log
 
         # The dev-file.txt should still exist
         assert (git_repo / "dev-file.txt").exists()
@@ -247,39 +245,38 @@ class TestGardenRepeatedEquivalence:
         tree = _two_task_tree()
         runner = _MockRunner(implement_ok=True, review_ok=True)
 
-        r1 = garden_fn(tree, git_repo, runner)
+        r1 = garden_fn(tree, git_repo, runner, branch="main")
         assert r1.success
         assert r1.task_id == "T001"
 
-        r2 = garden_fn(tree, git_repo, runner)
+        r2 = garden_fn(tree, git_repo, runner, branch="main")
         assert r2.success
         assert r2.task_id == "T002"
 
         # Both tasks complete
-        completed = scan_completed_tasks(tree, git_repo)
+        completed = scan_completed_tasks(tree, git_repo, branch="main")
         assert completed == {"T001", "T002"}
 
-    def test_repeated_garden_phase_complete_marker(self, git_repo):
-        """garden() commits phase-complete marker when the last sibling completes."""
+    def test_repeated_garden_no_phase_marker(self, git_repo):
+        """Phase markers are no longer committed."""
         tree = _two_task_tree()
         runner = _MockRunner(implement_ok=True, review_ok=True)
 
-        garden_fn(tree, git_repo, runner)
-        garden_fn(tree, git_repo, runner)
+        garden_fn(tree, git_repo, runner, branch="main")
+        garden_fn(tree, git_repo, runner, branch="main")
 
-        # Phase-complete marker should be on main
         main_log = git_log("main", "%s", git_repo, n=15)
-        assert "phase(phase1): complete" in main_log
+        assert "phase(" not in main_log
 
     def test_repeated_garden_stays_on_base(self, git_repo):
         """Each garden() call stays on the base branch."""
         tree = _two_task_tree()
         runner = _MockRunner(implement_ok=True, review_ok=True)
 
-        garden_fn(tree, git_repo, runner)
+        garden_fn(tree, git_repo, runner, branch="main")
         assert git_current_branch(git_repo) == "main"
 
-        garden_fn(tree, git_repo, runner)
+        garden_fn(tree, git_repo, runner, branch="main")
         assert git_current_branch(git_repo) == "main"
 
     def test_repeated_garden_no_task_returns_gracefully(self, git_repo):
@@ -287,15 +284,15 @@ class TestGardenRepeatedEquivalence:
         tree = _two_task_tree()
         runner = _MockRunner(implement_ok=True, review_ok=True)
 
-        garden_fn(tree, git_repo, runner)
-        garden_fn(tree, git_repo, runner)
+        garden_fn(tree, git_repo, runner, branch="main")
+        garden_fn(tree, git_repo, runner, branch="main")
 
-        r3 = garden_fn(tree, git_repo, runner)
+        r3 = garden_fn(tree, git_repo, runner, branch="main")
         assert not r3.success
         assert "no ready task" in r3.error
 
     def test_repeated_garden_multi_phase(self, git_repo):
-        """Two phases, each with one task — garden() called twice, both phase markers present."""
+        """Two phases, each with one task — garden() called twice, no phase markers."""
         from agent_arborist.tree.model import TaskNode
         tree = TaskTree(spec_id="test")
         tree.nodes["phase1"] = TaskNode(id="phase1", name="P1", children=["T001"])
@@ -305,13 +302,12 @@ class TestGardenRepeatedEquivalence:
         tree.compute_execution_order()
 
         runner = _MockRunner(implement_ok=True, review_ok=True)
-        garden_fn(tree, git_repo, runner)
-        garden_fn(tree, git_repo, runner)
+        garden_fn(tree, git_repo, runner, branch="main")
+        garden_fn(tree, git_repo, runner, branch="main")
 
         assert git_current_branch(git_repo) == "main"
         main_log = git_log("main", "%s", git_repo, n=15)
-        assert "phase(phase1): complete" in main_log
-        assert "phase(phase2): complete" in main_log
+        assert "phase(" not in main_log
 
 
 # ---------------------------------------------------------------------------
@@ -333,16 +329,16 @@ class TestDeepTreeIntegration:
         tree.compute_execution_order()
 
         runner = _MockRunner(implement_ok=True, review_ok=True)
-        result = gardener(tree, git_repo, runner)
+        result = gardener(tree, git_repo, runner, branch="main")
 
         assert result.success
         assert result.tasks_completed == 3
-        completed = scan_completed_tasks(tree, git_repo)
+        completed = scan_completed_tasks(tree, git_repo, branch="main")
         assert completed == {"T001", "T002", "T003"}
 
-        # Phase-complete marker on main
+        # No phase markers
         main_log = git_log("main", "%s", git_repo, n=15)
-        assert "phase(phase1): complete" in main_log
+        assert "phase(" not in main_log
 
     def test_deep_tree_from_spec_fixture(self):
         """Parse the 3-level fixture and verify structure."""
@@ -375,7 +371,7 @@ class TestBaseBranchAutoDetect:
         runner = _MockRunner(implement_ok=True, review_ok=True)
 
         # garden() commits to whatever branch HEAD is on
-        result = garden_fn(tree, git_repo, runner)
+        result = garden_fn(tree, git_repo, runner, branch="my-feature")
 
         assert result.success
         assert result.task_id == "T001"
@@ -383,9 +379,9 @@ class TestBaseBranchAutoDetect:
         # Should stay on my-feature
         assert git_current_branch(git_repo) == "my-feature"
 
-        # Commits should be on my-feature
+        # Commits should be on my-feature with correct branch prefix
         log = git_log("my-feature", "%s", git_repo, n=10)
-        assert "task(T001):" in log
+        assert "task(my-feature@T001@" in log
 
 
 # ---------------------------------------------------------------------------
@@ -407,6 +403,7 @@ class TestSeparateRunnerDispatch:
             tree, git_repo,
             implement_runner=impl_runner,
             review_runner=rev_runner,
+            branch="main",
         )
 
         assert result.success
@@ -427,6 +424,7 @@ class TestSeparateRunnerDispatch:
             tree, git_repo,
             implement_runner=impl_runner,
             review_runner=rev_runner,
+            branch="main",
         )
 
         assert result.success
@@ -464,7 +462,7 @@ def _two_task_tree() -> TaskTree:
 
 
 # ---------------------------------------------------------------------------
-# 8. Test Commands E2E — per-node tests, trailers, parsing, phase gating
+# 8. Test Commands E2E — per-node tests, trailers, parsing
 # ---------------------------------------------------------------------------
 
 class TestTestCommandsE2E:
@@ -486,7 +484,7 @@ class TestTestCommandsE2E:
         tree.compute_execution_order()
 
         runner = _MockRunner(implement_ok=True, review_ok=True)
-        result = garden_fn(tree, git_repo, runner)
+        result = garden_fn(tree, git_repo, runner, branch="main")
         assert result.success
 
         # Check trailers on test commit
@@ -510,6 +508,7 @@ class TestTestCommandsE2E:
         result = garden_fn(
             tree, git_repo, runner,
             test_command="true",
+            branch="main",
         )
         assert result.success
 
@@ -531,7 +530,7 @@ class TestTestCommandsE2E:
         tree.compute_execution_order()
 
         runner = _MockRunner(implement_ok=True, review_ok=True)
-        result = garden_fn(tree, git_repo, runner, max_retries=3)
+        result = garden_fn(tree, git_repo, runner, max_retries=3, branch="main")
         assert result.success
 
         # Should have at least 2 implement commits (initial + retry)
@@ -555,7 +554,7 @@ class TestTestCommandsE2E:
         tree.compute_execution_order()
 
         runner = _MockRunner(implement_ok=True, review_ok=True)
-        result = garden_fn(tree, git_repo, runner)
+        result = garden_fn(tree, git_repo, runner, branch="main")
         assert result.success
 
     def test_multiple_test_commands_one_fails(self, git_repo):
@@ -573,129 +572,9 @@ class TestTestCommandsE2E:
         tree.compute_execution_order()
 
         runner = _MockRunner(implement_ok=True, review_ok=True)
-        result = garden_fn(tree, git_repo, runner, max_retries=1)
+        result = garden_fn(tree, git_repo, runner, max_retries=1, branch="main")
         assert not result.success
         assert "failed after 1 retries" in result.error
-
-    def test_phase_gating_blocks_on_integration_failure(self, git_repo):
-        """Parent node integration test fails → reports error."""
-        tree = TaskTree(spec_id="test")
-        tree.nodes["phase1"] = TaskNode(
-            id="phase1", name="Phase 1", children=["T001"],
-            test_commands=[TestCommand(
-                type=TestType.INTEGRATION,
-                command="echo 'integration FAIL'; exit 1",
-            )],
-        )
-        tree.nodes["T001"] = TaskNode(
-            id="T001", name="Leaf task", parent="phase1",
-            description="Simple leaf",
-        )
-        tree.compute_execution_order()
-
-        runner = _MockRunner(implement_ok=True, review_ok=True)
-        result = garden_fn(tree, git_repo, runner)
-
-        assert not result.success
-        assert "Phase test failed" in result.error
-
-    def test_phase_gating_passes_commits_marker(self, git_repo):
-        """Parent node integration test passes → phase-complete marker committed."""
-        tree = TaskTree(spec_id="test")
-        tree.nodes["phase1"] = TaskNode(
-            id="phase1", name="Phase 1", children=["T001"],
-            test_commands=[TestCommand(
-                type=TestType.INTEGRATION,
-                command="echo 'integration OK'; exit 0",
-            )],
-        )
-        tree.nodes["T001"] = TaskNode(
-            id="T001", name="Leaf task", parent="phase1",
-            description="Simple leaf",
-        )
-        tree.compute_execution_order()
-
-        runner = _MockRunner(implement_ok=True, review_ok=True)
-        result = garden_fn(tree, git_repo, runner)
-        assert result.success
-
-        main_log = git_log("main", "%s", git_repo, n=10)
-        assert "phase(phase1): complete" in main_log
-
-    def test_phase_gating_only_runs_integration_e2e_not_unit(self, git_repo):
-        """Parent with unit test_commands should NOT gate the phase."""
-        tree = TaskTree(spec_id="test")
-        tree.nodes["phase1"] = TaskNode(
-            id="phase1", name="Phase 1", children=["T001"],
-            test_commands=[TestCommand(
-                type=TestType.UNIT,
-                command="exit 1",  # Would fail, but should be skipped for phase gating
-            )],
-        )
-        tree.nodes["T001"] = TaskNode(
-            id="T001", name="Leaf task", parent="phase1",
-            description="Simple leaf",
-        )
-        tree.compute_execution_order()
-
-        runner = _MockRunner(implement_ok=True, review_ok=True)
-        result = garden_fn(tree, git_repo, runner)
-        assert result.success
-
-        # Phase-complete marker should still be committed (unit tests skipped for phase gating)
-        main_log = git_log("main", "%s", git_repo, n=10)
-        assert "phase(phase1): complete" in main_log
-
-    def test_gardener_full_loop_with_test_commands(self, git_repo):
-        """Full gardener loop: two tasks with per-node tests + phase integration test."""
-        tree = TaskTree(spec_id="test")
-        tree.nodes["phase1"] = TaskNode(
-            id="phase1", name="Phase 1", children=["T001", "T002"],
-            test_commands=[TestCommand(
-                type=TestType.INTEGRATION,
-                command="echo 'integration ok'; exit 0",
-            )],
-        )
-        tree.nodes["T001"] = TaskNode(
-            id="T001", name="Create API", parent="phase1",
-            description="Build the API",
-            test_commands=[TestCommand(
-                type=TestType.UNIT,
-                command="echo '3 passed in 0.1s'; exit 0",
-                framework="pytest",
-            )],
-        )
-        tree.nodes["T002"] = TaskNode(
-            id="T002", name="Add auth", parent="phase1",
-            depends_on=["T001"],
-            description="Add authentication",
-            test_commands=[TestCommand(
-                type=TestType.UNIT,
-                command="echo '2 passed in 0.2s'; exit 0",
-                framework="pytest",
-            )],
-        )
-        tree.compute_execution_order()
-
-        runner = _MockRunner(implement_ok=True, review_ok=True)
-        result = gardener(tree, git_repo, runner)
-
-        assert result.success
-        assert result.tasks_completed == 2
-        assert result.order == ["T001", "T002"]
-
-        # Both tasks complete
-        completed = scan_completed_tasks(tree, git_repo)
-        assert completed == {"T001", "T002"}
-
-        # Phase-complete marker on main
-        main_log = git_log("main", "%s", git_repo, n=15)
-        assert "phase(phase1): complete" in main_log
-
-        # Verify test trailers
-        full_log = git_log("HEAD", "%B", git_repo, n=30, grep="tests pass")
-        assert "Arborist-Test-Type: unit" in full_log
-        assert "Arborist-Test-Passed:" in full_log
 
     def test_task_tree_json_roundtrip_with_test_commands(self):
         """task-tree.json with test_commands survives serialization."""
@@ -747,5 +626,49 @@ class TestTestCommandsE2E:
             tree, git_repo, runner,
             max_retries=1,
             test_timeout=1,  # 1 second timeout
+            branch="main",
         )
         assert not result.success  # sleep 10 > 1s timeout
+
+    def test_gardener_full_loop_with_test_commands(self, git_repo):
+        """Full gardener loop: two tasks with per-node tests."""
+        tree = TaskTree(spec_id="test")
+        tree.nodes["phase1"] = TaskNode(
+            id="phase1", name="Phase 1", children=["T001", "T002"],
+        )
+        tree.nodes["T001"] = TaskNode(
+            id="T001", name="Create API", parent="phase1",
+            description="Build the API",
+            test_commands=[TestCommand(
+                type=TestType.UNIT,
+                command="echo '3 passed in 0.1s'; exit 0",
+                framework="pytest",
+            )],
+        )
+        tree.nodes["T002"] = TaskNode(
+            id="T002", name="Add auth", parent="phase1",
+            depends_on=["T001"],
+            description="Add authentication",
+            test_commands=[TestCommand(
+                type=TestType.UNIT,
+                command="echo '2 passed in 0.2s'; exit 0",
+                framework="pytest",
+            )],
+        )
+        tree.compute_execution_order()
+
+        runner = _MockRunner(implement_ok=True, review_ok=True)
+        result = gardener(tree, git_repo, runner, branch="main")
+
+        assert result.success
+        assert result.tasks_completed == 2
+        assert result.order == ["T001", "T002"]
+
+        # Both tasks complete
+        completed = scan_completed_tasks(tree, git_repo, branch="main")
+        assert completed == {"T001", "T002"}
+
+        # Verify test trailers
+        full_log = git_log("HEAD", "%B", git_repo, n=30, grep="tests pass")
+        assert "Arborist-Test-Type: unit" in full_log
+        assert "Arborist-Test-Passed:" in full_log

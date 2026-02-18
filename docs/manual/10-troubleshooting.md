@@ -26,7 +26,7 @@
 
 **Fix:**
 - Check `.arborist/logs/` for runner output
-- Look at git log: `git log --grep="task(T001):" --oneline`
+- Look at git log: `git log --grep="task(my-branch@T001" --fixed-strings --oneline`
 - The commit bodies contain test output and review feedback
 - Consider: is the task too vague? Too large? Is the test command correct?
 
@@ -53,10 +53,10 @@ Not currently. Arborist executes tasks sequentially. All commits land on the cur
 
 ### Can I skip a task?
 
-Edit `task-tree.json` — remove the task from `execution_order` or manually commit a complete marker:
+Edit `task-tree.json` — remove the task from `execution_order` or manually commit a complete marker. Replace `my-branch` with your actual branch name:
 
 ```bash
-git commit --allow-empty -m "task(T003): complete
+git commit --allow-empty -m "task(my-branch@T003@complete): complete
 
 Arborist-Step: complete
 Arborist-Result: pass"
@@ -81,12 +81,6 @@ By default in a `reports/` directory next to your `task-tree.json`. Each complet
   "retries": 0
 }
 ```
-
-### Tasks show as complete from a previous run
-
-**Cause:** The `task-tree.json` file wasn't committed before running, so there's no anchor SHA and Arborist sees the full history.
-
-**Fix:** Commit your `task-tree.json` before running `gardener`. The commit that touches the tree file becomes the anchor — only commits after it are considered. See [Anchor-SHA Scoping](06-git-integration.md#anchor-sha-scoping).
 
 ### Can I use Arborist without AI for planning?
 

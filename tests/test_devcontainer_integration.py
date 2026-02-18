@@ -204,29 +204,25 @@ class TestDevcontainerE2E:
         result = garden(
             tree, project, runner,
                         container_workspace=project,
+            branch="main",
         )
 
         assert result.success, f"garden() failed: {result.error}"
         assert result.task_id == "T001"
 
-        # Host sees the branch and is back on main
+        # Host stays on main
         assert git_current_branch(project) == "main"
-        assert git_branch_exists("feature/hello/phase1", project)
 
-        # Commits follow task(TXXX): convention
-        log = git_log("feature/hello/phase1", "%s", project, n=20)
+        # Commits follow task(main@T001@...) convention
+        log = git_log("main", "%s", project, n=20)
         subjects = [s.strip() for s in log.strip().split("\n") if s.strip()]
-        task_commits = [s for s in subjects if s.startswith("task(T001):")]
+        task_commits = [s for s in subjects if s.startswith("task(main@T001@")]
         assert len(task_commits) >= 3, f"Expected implement/test/review/complete commits, got: {task_commits}"
 
         # Complete trailer present
-        trailers = get_task_trailers("feature/hello/phase1", "T001", project)
+        trailers = get_task_trailers("HEAD", "T001", project, current_branch="main")
         assert trailers["Arborist-Step"] == "complete"
         assert trailers["Arborist-Result"] == "pass"
-
-        # Phase merged to main (single-task phase auto-merges)
-        main_log = git_log("main", "%s", project, n=5)
-        assert "merge" in main_log.lower()
 
     @pytest.mark.parametrize("runner_type,model", CONTAINER_RUNNER_CONFIGS)
     def test_garden_with_test_command_in_container(self, tmp_path, runner_type, model):
@@ -260,6 +256,7 @@ class TestDevcontainerE2E:
         result = garden(
             tree, project, runner,
                         container_workspace=project,
+            branch="main",
         )
 
         assert result.success, f"garden() failed: {result.error}"

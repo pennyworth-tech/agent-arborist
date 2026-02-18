@@ -104,22 +104,14 @@ arborist gardener --tree task-tree.json
 ```
 
 Loops continuously:
-1. Scan git history for completed tasks
+1. Scan git history for completed tasks (scoped by branch name in commit prefix)
 2. If all done → success
 3. Find next ready task
 4. Run `garden` for that task
 5. If it fails → stop with error
 6. If it succeeds → continue to next task
 
-The gardener is idempotent — if interrupted, just run it again. It reads completion state from git trailers and picks up where it left off. Queries are scoped to commits after the task-tree.json was last modified, so old runs with the same task IDs don't cause false positives (see [Git Integration](06-git-integration.md#anchor-sha-scoping)).
-
-## Phase Completion
-
-When the **last leaf task** under a root phase completes, Arborist checks for phase-level tests:
-
-1. If the parent node has `integration` or `e2e` test commands, run them first
-2. If phase tests fail, the gardener run fails
-3. If phase tests pass (or there are none), commit a `phase(<id>): complete` marker
+The gardener is idempotent — if interrupted, just run it again. It reads completion state from git trailers and picks up where it left off. Queries are scoped by the branch name embedded in each commit prefix, so commits from other branches or previous runs don't cause false positives (see [Git Integration](06-git-integration.md#branch-scoped-commits)).
 
 > **Future work: pre-merge cleanup (prune)**
 >

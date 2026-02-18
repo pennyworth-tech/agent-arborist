@@ -136,9 +136,9 @@ class TestBaseBranchDefault:
             ])
             assert result.exit_code == 0, result.output
             mock_gcb.assert_called_once()
-            # base_branch should NOT be passed to garden_fn
+            # branch should be passed to garden_fn
             _, kwargs = mock_garden.call_args
-            assert "base_branch" not in kwargs
+            assert kwargs["branch"] == "my-feature"
 
     def test_garden_explicit_base_branch_skips_detection(self, tmp_path):
         """When --base-branch is given explicitly, git_current_branch is NOT called."""
@@ -235,7 +235,8 @@ class TestInspectCommand:
         """inspect with a bad task ID exits with error."""
         tree_path = _make_tree_json(tmp_path)
         runner = CliRunner()
-        with patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)):
+        with patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)), \
+             patch("agent_arborist.cli.git_current_branch", return_value="main"):
             result = runner.invoke(main, [
                 "inspect", "--tree", str(tree_path), "--task-id", "TXXX",
             ])
@@ -247,6 +248,7 @@ class TestInspectCommand:
         tree_path = _make_tree_json(tmp_path)
         runner = CliRunner()
         with patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)), \
+             patch("agent_arborist.cli.git_current_branch", return_value="main"), \
              patch("agent_arborist.git.repo.git_branch_exists", return_value=False):
             result = runner.invoke(main, [
                 "inspect", "--tree", str(tree_path), "--task-id", "T002",
@@ -262,6 +264,7 @@ class TestInspectCommand:
         tree_path = _make_tree_json(tmp_path)
         runner = CliRunner()
         with patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)), \
+             patch("agent_arborist.cli.git_current_branch", return_value="main"), \
              patch("agent_arborist.git.state.get_task_trailers", return_value={}):
             result = runner.invoke(main, [
                 "inspect", "--tree", str(tree_path), "--task-id", "T001",
@@ -278,8 +281,9 @@ class TestInspectCommand:
             "Arborist-Review": "approve",
         }
         with patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)), \
+             patch("agent_arborist.cli.git_current_branch", return_value="main"), \
              patch("agent_arborist.git.state.get_task_trailers", return_value=mock_trailers), \
-             patch("agent_arborist.git.repo.git_log", return_value="abc1234 task(T001): implement\n  Arborist-Step: implement"):
+             patch("agent_arborist.git.repo.git_log", return_value="abc1234 task(main@T001@implement-pass): implement\n  Arborist-Step: implement"):
             result = runner.invoke(main, [
                 "inspect", "--tree", str(tree_path), "--task-id", "T001",
             ])
@@ -494,4 +498,3 @@ class TestTestingConfigNoCommand:
         with patch.dict(os.environ, {"ARBORIST_TEST_COMMAND": "pytest -v"}):
             result = apply_env_overrides(cfg)
         assert not hasattr(result.test, "command")
-

@@ -16,7 +16,7 @@ from agent_arborist.config import (
     VALID_RUNNERS, generate_config_template,
 )
 from agent_arborist.git.repo import (
-    git_current_branch, git_last_commit_for_file, git_toplevel, GitError,
+    git_current_branch, git_toplevel, GitError,
 )
 
 
@@ -241,7 +241,6 @@ def garden(tree_path, runner, model, max_retries, target_repo, base_branch, repo
     impl_runner_instance = get_runner(impl_runner_name, impl_model)
     rev_runner_instance = get_runner(rev_runner_name, rev_model)
     resolved_test_timeout = cfg.test.timeout or cfg.timeouts.test_command
-    anchor_sha = git_last_commit_for_file(str(tree_path), target)
     container_ws = _resolve_container_workspace(container_mode, cfg, target)
     result = garden_fn(
         tree, target,
@@ -254,7 +253,7 @@ def garden(tree_path, runner, model, max_retries, target_repo, base_branch, repo
         runner_timeout=cfg.timeouts.runner_timeout,
         test_timeout=resolved_test_timeout,
         container_workspace=container_ws,
-        since=anchor_sha,
+        branch=base_branch,
     )
 
     if result.success:
@@ -304,7 +303,6 @@ def gardener(tree_path, runner, model, max_retries, target_repo, base_branch, re
     resolved_test_timeout = cfg.test.timeout or cfg.timeouts.test_command
     impl_runner_instance = get_runner(impl_runner_name, impl_model)
     rev_runner_instance = get_runner(rev_runner_name, rev_model)
-    anchor_sha = git_last_commit_for_file(str(tree_path), target)
     container_ws = _resolve_container_workspace(container_mode, cfg, target)
     result = gardener_fn(
         tree, target,
@@ -317,7 +315,7 @@ def gardener(tree_path, runner, model, max_retries, target_repo, base_branch, re
         runner_timeout=cfg.timeouts.runner_timeout,
         test_timeout=resolved_test_timeout,
         container_workspace=container_ws,
-        since=anchor_sha,
+        branch=base_branch,
     )
 
     if result.success:
@@ -338,25 +336,24 @@ def status(tree_path, target_repo):
     from agent_arborist.git.state import scan_completed_tasks, TaskState, get_task_trailers, task_state_from_trailers
 
     target = target_repo.resolve() if target_repo else Path(_default_repo()).resolve()
+    branch = git_current_branch(target)
     if tree_path is None:
-        tree_path = Path("specs") / git_current_branch(target) / "task-tree.json"
+        tree_path = Path("specs") / branch / "task-tree.json"
     tree = _load_tree(tree_path)
-    anchor_sha = git_last_commit_for_file(str(tree_path), target)
-    rev = f"{anchor_sha}..HEAD" if anchor_sha else "HEAD"
 
     rich_tree = RichTree(f"[bold]{tree.spec_id}[/bold]")
 
     def _add_status_subtree(rich_node, node_id):
         node = tree.nodes[node_id]
         if node.is_leaf:
-            trailers = get_task_trailers(rev, node_id, target)
+            trailers = get_task_trailers("HEAD", node_id, target, current_branch=branch)
             state = task_state_from_trailers(trailers)
             icon = _status_icon(state)
             rich_node.add(f"{icon} [dim]{node.id}[/dim] {node.name} ({state.value})")
         else:
-            branch = rich_node.add(f"[cyan]{node.id}[/cyan] {node.name}")
+            branch_node = rich_node.add(f"[cyan]{node.id}[/cyan] {node.name}")
             for child_id in node.children:
-                _add_status_subtree(branch, child_id)
+                _add_status_subtree(branch_node, child_id)
 
     for root_id in tree.root_ids:
         _add_status_subtree(rich_tree, root_id)
@@ -375,11 +372,10 @@ def inspect(tree_path, task_id, target_repo):
     from agent_arborist.git.state import get_task_trailers, task_state_from_trailers
 
     target = target_repo.resolve() if target_repo else Path(_default_repo()).resolve()
+    branch = git_current_branch(target)
     if tree_path is None:
-        tree_path = Path("specs") / git_current_branch(target) / "task-tree.json"
+        tree_path = Path("specs") / branch / "task-tree.json"
     tree = _load_tree(tree_path)
-    anchor_sha = git_last_commit_for_file(str(tree_path), target)
-    rev = f"{anchor_sha}..HEAD" if anchor_sha else "HEAD"
 
     if task_id not in tree.nodes:
         console.print(f"[red]Error:[/red] Task '{task_id}' not found in tree.")
@@ -408,7 +404,8 @@ def inspect(tree_path, task_id, target_repo):
             console.print(f"    [{tc.type.value}] {tc.command}{fw}{to}")
 
     # Current state from most recent trailer
-    trailers = get_task_trailers(rev, task_id, target)
+    grep_pattern = f"task({branch}@{task_id}"
+    trailers = get_task_trailers("HEAD", task_id, target, current_branch=branch)
     state = task_state_from_trailers(trailers)
     if not trailers:
         console.print(f"\n[dim]No commits found for this task (not started).[/dim]")
@@ -421,14 +418,15 @@ def inspect(tree_path, task_id, target_repo):
             console.print(f"  {key}: {val}")
 
     # --- Full commit history for this task ---
-    console.print(f"\n[bold]Commit history[/bold] (grep: task({task_id}):)")
+    console.print(f"\n[bold]Commit history[/bold] (grep: {grep_pattern})")
     try:
         log_output = git_log(
-            rev,
+            "HEAD",
             "%h %s%n%(trailers:key=Arborist-Step,key=Arborist-Result,key=Arborist-Test,key=Arborist-Review,key=Arborist-Retry,key=Arborist-Test-Type,key=Arborist-Test-Passed,key=Arborist-Test-Failed,key=Arborist-Test-Runtime)",
             target,
             n=50,
-            grep=f"task({task_id}):",
+            grep=grep_pattern,
+            fixed_strings=True,
         )
         if log_output.strip():
             for line in log_output.split("\n"):

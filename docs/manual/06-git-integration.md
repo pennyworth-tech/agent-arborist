@@ -6,21 +6,43 @@ Arborist is **git-native** — all task state lives in the repository itself. No
 
 All task commits land directly on the current (initiating) branch. There are no per-phase branches — execution is sequential and the commit history is linear.
 
-## Commit Convention
+## Branch-Scoped Commits
 
-Every commit Arborist creates follows this format:
+Every commit Arborist creates embeds the **current branch name** in the commit prefix:
 
 ```
-task(<task-id>): <subject>
-
-<optional body with runner output or test results>
-
-Arborist-Step: implement
-Arborist-Result: pass
-Arborist-Retry: 0
+task(feature/my-branch@T001@implement-pass): implement "Create file"
+task(feature/my-branch@T001@test-pass): tests pass for "Create file"
+task(feature/my-branch@T001@review-approved): review approved for "Create file"
+task(feature/my-branch@T001@complete): complete "Create file"
 ```
 
-The `task(<id>):` prefix allows Arborist to find commits for a specific task using `git log --grep`.
+Format: `task({branch}@{task_id}@{status}): {subject}`
+
+The branch name in the prefix means `git log --grep` is naturally scoped to the current branch's run — commits from other branches or previous runs on different branches are invisible.
+
+### Grep examples
+
+```bash
+# All commits for task T001 on this branch
+git log --grep='task(feature/my-branch@T001' --fixed-strings --oneline
+
+# All arborist commits on this branch
+git log --grep='task(feature/my-branch@' --fixed-strings --oneline
+```
+
+### Status values
+
+| Status | Meaning |
+|--------|---------|
+| `implement-pass` | Implementation succeeded |
+| `implement-fail` | Implementation failed |
+| `test-pass` | Tests passed |
+| `test-fail` | Tests failed |
+| `review-approved` | Code review approved |
+| `review-rejected` | Code review rejected |
+| `complete` | Task fully complete |
+| `failed` | Task exhausted all retries |
 
 ## Git Trailers
 
@@ -28,7 +50,7 @@ Trailers are structured key-value metadata appended to commit messages. Arborist
 
 | Trailer | Values | Description |
 |---------|--------|-------------|
-| `Arborist-Step` | `implement`, `test`, `review`, `complete`, `phase-complete` | Which pipeline phase this commit represents |
+| `Arborist-Step` | `implement`, `test`, `review`, `complete` | Which pipeline phase this commit represents |
 | `Arborist-Result` | `pass`, `fail` | Whether the step succeeded |
 | `Arborist-Test` | `pass`, `fail` | Test command result |
 | `Arborist-Review` | `approved`, `rejected` | Code review result |
@@ -42,7 +64,7 @@ Trailers are structured key-value metadata appended to commit messages. Arborist
 Unlike tools that use `git commit --amend` or force-pushes to "clean up" work, Arborist is strictly append-only.
 
 - **No Rewrites:** Failed implementation attempts and rejected reviews stay in the Git history.
-- **Latest Wins:** The current status of a task is always derived from the *most recent* commit matching the `task(ID):` pattern.
+- **Latest Wins:** The current status of a task is always derived from the *most recent* commit matching the `task({branch}@{task_id}` pattern.
 - **Failures as Context:** When a task retries, Arborist reads the immutable body of previous failure commits to provide "lessons learned" to the next AI implementation pass.
 
 ## State Recovery
@@ -51,7 +73,7 @@ Arborist determines task state by reading trailers from git history on the curre
 
 ```mermaid
 flowchart TD
-    A["Read commits in anchor..HEAD<br/>matching task(ID):"] --> B{Found<br/>Arborist-Step: complete?}
+    A["Read commits on HEAD<br/>matching task(branch@ID)"] --> B{Found<br/>Arborist-Step: complete?}
     B -- Yes --> C{Arborist-Result?}
     C -- pass --> D["COMPLETE"]
     C -- fail --> E["FAILED"]
@@ -70,41 +92,23 @@ Task states:
 - **complete** — `Arborist-Step: complete` with `Arborist-Result: pass`
 - **failed** — `Arborist-Step: complete` with `Arborist-Result: fail`
 
-## Anchor-SHA Scoping
-
-When querying git history, Arborist only considers commits from the **current run**. It finds the SHA of the commit that last modified the `task-tree.json` file (the "anchor") and scopes all trailer queries to `anchor..HEAD`.
-
-This prevents false positives when a branch has old arborist commits from a previous run that used the same task IDs. Without scoping, `git log --grep="task(T001):"` would match stale commits and incorrectly report tasks as complete.
-
-If no anchor commit is found (e.g., the tree file hasn't been committed yet), Arborist falls back to scanning all of `HEAD`.
-
 ## Crash Recovery
 
 Because state is in git, recovery is automatic:
 
 1. Process crashes mid-task — branch has partial commits
 2. Run `arborist gardener` again
-3. Arborist scans git for completed tasks on the current branch
+3. Arborist scans git for completed tasks on the current branch (scoped by branch name in commit prefix)
 4. Skips completed tasks, finds the next ready one
 5. Continues from the next task (partial work from the crashed task stays in history, but a fresh implement pass will overwrite the files)
-
-## Phase Completion
-
-When all leaf tasks under a root phase complete, Arborist:
-
-1. Runs any phase-level tests (`integration` or `e2e` test commands on the parent node)
-2. If phase tests fail, the gardener run fails
-3. If phase tests pass (or there are none), commits a `phase(<id>): complete` marker with `Arborist-Step: phase-complete`
 
 ```mermaid
 gitGraph
     commit id: "base"
-    commit id: "T001: implement"
-    commit id: "T001: complete"
-    commit id: "T002: implement"
-    commit id: "T002: complete"
-    commit id: "phase1: complete"
-    commit id: "T003: implement"
-    commit id: "T003: complete"
-    commit id: "phase2: complete"
+    commit id: "task(main@T001@implement-pass)"
+    commit id: "task(main@T001@complete)"
+    commit id: "task(main@T002@implement-pass)"
+    commit id: "task(main@T002@complete)"
+    commit id: "task(main@T003@implement-pass)"
+    commit id: "task(main@T003@complete)"
 ```
