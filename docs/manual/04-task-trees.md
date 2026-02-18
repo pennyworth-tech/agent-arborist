@@ -89,7 +89,6 @@ The `build` command produces a JSON file:
 
 ```json
 {
-  "spec_id": "my-project",
   "nodes": {
     "phase1": {
       "id": "phase1",

@@ -87,7 +87,7 @@ def test_build_commit_message_without_body(git_repo):
 
 
 def _make_tree():
-    tree = TaskTree(spec_id="test")
+    tree = TaskTree()
     tree.nodes["phase1"] = TaskNode(id="phase1", name="Phase 1", children=["T001"])
     tree.nodes["T001"] = TaskNode(
         id="T001", name="Create user auth module", parent="phase1",

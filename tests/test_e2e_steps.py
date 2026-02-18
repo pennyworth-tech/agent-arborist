@@ -55,7 +55,7 @@ def _skip_if_missing(cli_binary: str):
 
 
 def _simple_tree() -> TaskTree:
-    tree = TaskTree(spec_id="steps")
+    tree = TaskTree()
     tree.nodes["phase1"] = TaskNode(id="phase1", name="Setup", children=["T001"])
     tree.nodes["T001"] = TaskNode(
         id="T001", name="Create a greeting file", parent="phase1",
@@ -65,7 +65,7 @@ def _simple_tree() -> TaskTree:
 
 
 def _two_task_tree() -> TaskTree:
-    tree = TaskTree(spec_id="steps")
+    tree = TaskTree()
     tree.nodes["phase1"] = TaskNode(id="phase1", name="Setup", children=["T001", "T002"])
     tree.nodes["T001"] = TaskNode(
         id="T001", name="Create a file", parent="phase1",
@@ -84,7 +84,7 @@ def _setup_repo_with_tree(git_repo: Path, tree: TaskTree) -> None:
     tree_path = git_repo / "task-tree.json"
     tree_path.write_text(json.dumps(tree.to_dict(), indent=2) + "\n")
     git_add_all(git_repo)
-    git_commit(f"arborist: build task tree for {tree.spec_id}", git_repo)
+    git_commit("arborist: build task tree", git_repo)
 
 
 # ---------------------------------------------------------------------------

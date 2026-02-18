@@ -60,12 +60,12 @@ def _setup_repo_with_tree(git_repo: Path, tree: TaskTree) -> None:
     tree_path = git_repo / "task-tree.json"
     tree_path.write_text(json.dumps(tree.to_dict(), indent=2) + "\n")
     git_add_all(git_repo)
-    git_commit(f"arborist: build task tree for {tree.spec_id}", git_repo)
+    git_commit("arborist: build task tree", git_repo)
 
 
 def _simple_tree() -> TaskTree:
     """Single phase, single trivial task."""
-    tree = TaskTree(spec_id="hello")
+    tree = TaskTree()
     tree.nodes["phase1"] = TaskNode(id="phase1", name="Setup", children=["T001"])
     tree.nodes["T001"] = TaskNode(
         id="T001", name="Create project structure", parent="phase1",
@@ -76,7 +76,7 @@ def _simple_tree() -> TaskTree:
 
 def _two_task_tree() -> TaskTree:
     """Single phase, two tasks, T002 depends on T001."""
-    tree = TaskTree(spec_id="hello")
+    tree = TaskTree()
     tree.nodes["phase1"] = TaskNode(id="phase1", name="Setup", children=["T001", "T002"])
     tree.nodes["T001"] = TaskNode(
         id="T001", name="Create a file", parent="phase1",
@@ -108,7 +108,6 @@ def test_ai_builds_valid_tree(tmp_path, runner_type, model, cli_binary):
 
     result = plan_tree(
         spec_dir=spec_dir,
-        spec_id="hello",
         runner_type=runner_type,
         model=model,
         timeout=300,
@@ -217,7 +216,7 @@ def test_ai_gardener_completes_all_tasks(git_repo, runner_type, model, cli_binar
 
 def _tree_with_test_commands() -> TaskTree:
     """Single phase, one task with a per-node unit test command."""
-    tree = TaskTree(spec_id="hello")
+    tree = TaskTree()
     tree.nodes["phase1"] = TaskNode(
         id="phase1", name="Setup", children=["T001"],
     )

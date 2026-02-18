@@ -140,28 +140,24 @@ def init():
 @click.option("--spec-dir", type=click.Path(exists=True, path_type=Path), default="spec")
 @click.option("--output", "-o", type=click.Path(path_type=Path), default=None,
               help="Output path (default: specs/{branch}/task-tree.json)")
-@click.option("--spec-id", default=None)
 @click.option("--no-ai", is_flag=True, help="Disable AI planning; use markdown parser instead")
 @click.option("--runner", default=None, help="Runner for AI planning (default: from config or 'claude')")
 @click.option("--model", default=None, help="Model for AI planning (default: from config or 'opus')")
 @click.option("--container-mode", "-c", "container_mode", default=None,
               type=click.Choice(["auto", "enabled", "disabled"]),
               help="Container mode for AI planning (default: from config or 'auto')")
-def build(spec_dir, output, spec_id, no_ai, runner, model, container_mode):
+def build(spec_dir, output, no_ai, runner, model, container_mode):
     """Build a task tree from a spec directory and write it to a JSON file."""
     if output is None:
         branch = git_current_branch(Path.cwd())
         output = Path("specs") / branch / "task-tree.json"
-    if spec_id is None:
-        spec_id = spec_dir.name if spec_dir.name != "spec" else Path.cwd().resolve().name
-
     if no_ai:
         from agent_arborist.tree.spec_parser import parse_spec
         spec_files = list(spec_dir.glob("tasks*.md")) + list(spec_dir.glob("*.md"))
         if not spec_files:
             console.print(f"[red]Error:[/red] No markdown files found in {spec_dir}")
             sys.exit(1)
-        tree = parse_spec(spec_files[0], spec_id=spec_id)
+        tree = parse_spec(spec_files[0])
     else:
         from agent_arborist.tree.ai_planner import plan_tree, DAG_DEFAULT_RUNNER, DAG_DEFAULT_MODEL
         # Resolve runner/model: CLI flag > config > DAG defaults
@@ -174,7 +170,6 @@ def build(spec_dir, output, spec_id, no_ai, runner, model, container_mode):
         container_ws = _resolve_container_workspace(container_mode, cfg, target)
         result = plan_tree(
             spec_dir=spec_dir,
-            spec_id=spec_id,
             runner_type=runner,
             model=model,
             container_workspace=container_ws,
@@ -192,7 +187,7 @@ def build(spec_dir, output, spec_id, no_ai, runner, model, container_mode):
     tree_path.parent.mkdir(parents=True, exist_ok=True)
     tree_path.write_text(json.dumps(tree.to_dict(), indent=2) + "\n")
 
-    console.print(f"\n[bold]Task Tree: {spec_id}[/bold]")
+    console.print(f"\n[bold]Task Tree: {Path(output).stem}[/bold]")
     console.print(f"  Output: {tree_path}")
     console.print(f"  Nodes: {len(tree.nodes)}")
     console.print(f"  Leaves: {len(tree.leaves())}")
@@ -345,7 +340,7 @@ def status(tree_path, target_repo):
         tree_path = Path("specs") / branch / "task-tree.json"
     tree = _load_tree(tree_path)
 
-    rich_tree = RichTree(f"[bold]{tree.spec_id}[/bold]")
+    rich_tree = RichTree(f"[bold]Task Tree[/bold]")
 
     def _add_status_subtree(rich_node, node_id):
         node = tree.nodes[node_id]
@@ -458,7 +453,7 @@ def _load_tree(tree_path: Path):
 
 
 def _print_tree(tree):
-    rich_tree = RichTree(f"[bold]{tree.spec_id}[/bold]")
+    rich_tree = RichTree(f"[bold]Task Tree[/bold]")
 
     def _add_subtree(rich_node, node_id):
         node = tree.nodes[node_id]

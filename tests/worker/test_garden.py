@@ -11,7 +11,7 @@ from agent_arborist.worker.garden import (
 
 def _make_tree():
     """phase1 -> T001, T002 (T002 depends on T001)."""
-    tree = TaskTree(spec_id="test")
+    tree = TaskTree()
     tree.nodes["phase1"] = TaskNode(id="phase1", name="Phase 1", children=["T001", "T002"])
     tree.nodes["T001"] = TaskNode(id="T001", name="Create files", parent="phase1", description="Create initial files")
     tree.nodes["T002"] = TaskNode(id="T002", name="Add tests", parent="phase1", depends_on=["T001"], description="Add test files")
@@ -101,7 +101,7 @@ def test_garden_fails_after_max_retries(git_repo, mock_runner_always_reject):
 
 def _deep_tree():
     """Ragged: phase1 -> group1 -> T001, T002; phase1 -> T003."""
-    tree = TaskTree(spec_id="test")
+    tree = TaskTree()
     tree.nodes["phase1"] = TaskNode(id="phase1", name="Phase 1", children=["group1", "T003"])
     tree.nodes["group1"] = TaskNode(id="group1", name="Group 1", parent="phase1", children=["T001", "T002"])
     tree.nodes["T001"] = TaskNode(id="T001", name="Schema", parent="group1", description="Create schema")

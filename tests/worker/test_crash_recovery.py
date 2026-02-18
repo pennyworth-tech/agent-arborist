@@ -14,7 +14,7 @@ from tests.conftest import CrashingRunner, MockRunner
 
 def _make_tree():
     """phase1 -> T001, T002 (T002 depends on T001)."""
-    tree = TaskTree(spec_id="test")
+    tree = TaskTree()
     tree.nodes["phase1"] = TaskNode(id="phase1", name="Phase 1", children=["T001", "T002"])
     tree.nodes["T001"] = TaskNode(id="T001", name="Create files", parent="phase1", description="Create initial files")
     tree.nodes["T002"] = TaskNode(id="T002", name="Add tests", parent="phase1", depends_on=["T001"], description="Add test files")

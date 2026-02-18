@@ -39,7 +39,6 @@ arborist build [OPTIONS]
 |--------|---------|-------------|
 | `--spec-dir` | `spec` | Directory containing task spec markdown files |
 | `--output`, `-o` | `task-tree.json` | Output path for the task tree JSON file |
-| `--spec-id` | directory name | Spec identifier |
 | `--no-ai` | off | Use deterministic markdown parser instead of AI planning |
 | `--runner` | from config | Runner for AI planning |
 | `--model` | from config | Model for AI planning |

@@ -7,7 +7,7 @@ from agent_arborist.tree.model import TaskNode, TaskTree, TestCommand, TestType
 
 def _make_tree():
     """Helper: phase1 -> T001, T002 (T002 depends on T001)."""
-    tree = TaskTree(spec_id="test")
+    tree = TaskTree()
     tree.nodes["phase1"] = TaskNode(
         id="phase1", name="Setup", children=["T001", "T002"]
     )
@@ -57,7 +57,7 @@ def test_compute_execution_order_respects_deps():
 
 
 def test_compute_execution_order_no_deps():
-    tree = TaskTree(spec_id="test")
+    tree = TaskTree()
     tree.nodes["phase1"] = TaskNode(id="phase1", name="P", children=["T001", "T002"])
     tree.nodes["T001"] = TaskNode(id="T001", name="A", parent="phase1")
     tree.nodes["T002"] = TaskNode(id="T002", name="B", parent="phase1")
@@ -68,7 +68,7 @@ def test_compute_execution_order_no_deps():
 
 def test_compute_execution_order_diamond():
     """T001 -> T002, T003 -> T004 (diamond dependency)."""
-    tree = TaskTree(spec_id="test")
+    tree = TaskTree()
     tree.nodes["phase1"] = TaskNode(id="phase1", name="P", children=["T001", "T002", "T003", "T004"])
     tree.nodes["T001"] = TaskNode(id="T001", name="A", parent="phase1")
     tree.nodes["T002"] = TaskNode(id="T002", name="B", parent="phase1", depends_on=["T001"])
@@ -89,7 +89,7 @@ def test_to_dict_includes_execution_order():
 
 def _deep_tree():
     """Ragged deep tree: phase1 -> group1 -> T001, T002; phase1 -> T003."""
-    tree = TaskTree(spec_id="test")
+    tree = TaskTree()
     tree.nodes["phase1"] = TaskNode(
         id="phase1", name="Setup", children=["group1", "T003"]
     )
@@ -129,7 +129,6 @@ def test_to_dict_and_from_dict_roundtrip():
     data = tree.to_dict()
     json_str = json.dumps(data)
     restored = TaskTree.from_dict(json.loads(json_str))
-    assert restored.spec_id == tree.spec_id
     assert set(restored.nodes.keys()) == set(tree.nodes.keys())
     assert restored.nodes["T002"].depends_on == ["T001"]
     assert restored.execution_order == ["T001", "T002"]
@@ -160,7 +159,7 @@ def test_test_command_minimal_round_trip():
 
 
 def test_task_node_with_test_commands_serializes():
-    tree = TaskTree(spec_id="test")
+    tree = TaskTree()
     tree.nodes["T001"] = TaskNode(
         id="T001", name="Test task",
         test_commands=[
@@ -181,7 +180,6 @@ def test_task_node_with_test_commands_serializes():
 
 def test_from_dict_missing_test_commands_defaults_empty():
     data = {
-        "spec_id": "test",
         "nodes": {
             "T001": {"id": "T001", "name": "Old task"},
         },
