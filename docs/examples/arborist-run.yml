@@ -1,4 +1,11 @@
 name: Arborist Run
+# CI workflow template for running Arborist task execution in GitHub Actions
+#
+# Architecture:
+# - Git-native execution: Tasks create branches with commits using task(branch@id@status) format
+# - No phase branches: All git operations scoped to current run via anchor-SHA
+# - Default tree path: specs/{branch}/task-tree.json
+# - Resume support: The gardener continues from completed tasks based on commit trailers
 on:
   workflow_dispatch:
     inputs:
@@ -83,7 +90,6 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
 
-      # ── Teardown (always, even on failure) ─────────
       - name: Push commits
         if: always()
         run: git push origin "${{ inputs.spec_branch }}" --force-with-lease
