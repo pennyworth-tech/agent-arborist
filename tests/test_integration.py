@@ -29,7 +29,7 @@ class _MockRunner:
         self.name = "mock"
         self.model = "mock-model"
 
-    def run(self, prompt, timeout=60, cwd=None, container_workspace=None):
+    def run(self, prompt, timeout=60, cwd=None, container_workspace=None, **kwargs):
         if "review" in prompt.lower():
             ok = self.review_ok
             return RunResult(success=ok, output="APPROVED" if ok else "REJECTED")

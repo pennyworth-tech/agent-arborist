@@ -132,6 +132,8 @@ def _parse_test_counts(output: str, framework: str | None) -> dict | None:
 def _run_tests(
     node: TaskNode, cwd: Path, global_test_command: str, config_timeout: int | None,
     container_workspace: Path | None = None,
+    container_up_timeout: int | None = None,
+    container_check_timeout: int | None = None,
 ) -> list[TestResult]:
     """Run test commands for a node. Falls back to global_test_command if no per-node tests."""
     commands: list[tuple[str, str, str | None, int | None]] = []  # (command, type, framework, timeout)
@@ -149,7 +151,12 @@ def _run_tests(
         try:
             if container_workspace:
                 from agent_arborist.devcontainer import ensure_container_running, devcontainer_exec
-                ensure_container_running(container_workspace)
+                kwargs = {}
+                if container_up_timeout is not None:
+                    kwargs["timeout_up"] = container_up_timeout
+                if container_check_timeout is not None:
+                    kwargs["timeout_check"] = container_check_timeout
+                ensure_container_running(container_workspace, **kwargs)
                 proc = devcontainer_exec(cmd, container_workspace, timeout=timeout)
             else:
                 proc = subprocess.run(
@@ -280,6 +287,8 @@ def garden(
     runner_timeout: int | None = None,
     test_timeout: int | None = None,
     container_workspace: Path | None = None,
+    container_up_timeout: int | None = None,
+    container_check_timeout: int | None = None,
     branch: str,
 ) -> GardenResult:
     """Execute one task through the implement → test → review pipeline."""
@@ -317,7 +326,12 @@ def garden(
                 if feedback:
                     prompt += feedback
             logger.debug("Implement prompt: %.200s", prompt)
-            run_kwargs = {"cwd": cwd, "container_workspace": container_workspace}
+            run_kwargs = {
+                "cwd": cwd,
+                "container_workspace": container_workspace,
+                "container_up_timeout": container_up_timeout,
+                "container_check_timeout": container_check_timeout,
+            }
             if runner_timeout is not None:
                 run_kwargs["timeout"] = runner_timeout
             result = implement_runner.run(prompt, **run_kwargs)
@@ -342,7 +356,10 @@ def garden(
             )
 
             # --- test ---
-            test_results = _run_tests(task, cwd, test_command, test_timeout, container_workspace)
+            test_results = _run_tests(
+                task, cwd, test_command, test_timeout, container_workspace,
+                container_up_timeout, container_check_timeout,
+            )
             all_tests_passed = all(tr.passed for tr in test_results)
             test_val = "pass" if all_tests_passed else "fail"
             logger.info("Task %s test %s", task.id, test_val)

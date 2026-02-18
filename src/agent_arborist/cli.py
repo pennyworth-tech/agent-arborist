@@ -253,6 +253,8 @@ def garden(tree_path, runner, model, max_retries, target_repo, base_branch, repo
         runner_timeout=cfg.timeouts.runner_timeout,
         test_timeout=resolved_test_timeout,
         container_workspace=container_ws,
+        container_up_timeout=cfg.timeouts.container_up,
+        container_check_timeout=cfg.timeouts.container_check,
         branch=base_branch,
     )
 
@@ -315,6 +317,8 @@ def gardener(tree_path, runner, model, max_retries, target_repo, base_branch, re
         runner_timeout=cfg.timeouts.runner_timeout,
         test_timeout=resolved_test_timeout,
         container_workspace=container_ws,
+        container_up_timeout=cfg.timeouts.container_up,
+        container_check_timeout=cfg.timeouts.container_check,
         branch=base_branch,
     )
 
