@@ -8,7 +8,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-from agent_arborist.git.state import scan_completed_tasks
+from agent_arborist.git.state import get_run_start_sha, scan_completed_tasks
 from agent_arborist.tree.model import TaskTree
 from agent_arborist.worker.garden import garden, find_next_task
 
@@ -43,6 +43,9 @@ def gardener(
     result = GardenerResult(success=False)
     all_leaves = {n.id for n in tree.leaves()}
 
+    # Create run-start marker once for the entire gardener run
+    run_start_sha = get_run_start_sha(cwd, branch=branch)
+
     while True:
         completed = scan_completed_tasks(tree, cwd, branch=branch)
         logger.debug("Completed tasks: %s", completed)
@@ -74,6 +77,7 @@ def gardener(
             container_up_timeout=container_up_timeout,
             container_check_timeout=container_check_timeout,
             branch=branch,
+            run_start_sha=run_start_sha,
         )
 
         if gr.success:

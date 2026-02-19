@@ -16,7 +16,33 @@ from agent_arborist.constants import (
     TRAILER_RETRY,
     TRAILER_REPORT,
 )
-from agent_arborist.git.repo import git_log, GitError
+from agent_arborist.git.repo import git_log, git_commit, GitError
+
+
+def get_run_start_sha(cwd: Path, *, branch: str, create: bool = True) -> str | None:
+    """Find or create a run-start marker commit on the current branch."""
+    grep_pattern = f"task({branch}@@run-start)"
+    try:
+        sha = git_log(
+            "HEAD", "%H", cwd,
+            n=1, grep=grep_pattern, fixed_strings=True,
+        )
+        if sha.strip():
+            logger.debug("Found existing run-start commit: %s", sha.strip())
+            return sha.strip()
+    except GitError:
+        pass
+
+    if not create:
+        return None
+
+    msg = (
+        f"task({branch}@@run-start): run started\n\n"
+        f"Arborist-Step: run-start"
+    )
+    sha = git_commit(msg, cwd, allow_empty=True)
+    logger.info("Created run-start commit: %s", sha)
+    return sha
 
 
 class TaskState(Enum):
