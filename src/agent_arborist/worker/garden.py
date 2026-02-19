@@ -30,11 +30,11 @@ from agent_arborist.constants import (
 from agent_arborist.git.repo import (
     git_add_all,
     git_commit,
-    git_diff,
+    git_diff_stat,
     git_log,
     git_rev_parse,
 )
-from agent_arborist.git.state import scan_completed_tasks, TaskState
+from agent_arborist.git.state import get_run_start_sha, scan_completed_tasks, TaskState
 from agent_arborist.tree.model import TaskNode, TaskTree, TestCommand, TestType
 
 
@@ -290,6 +290,7 @@ def garden(
     container_up_timeout: int | None = None,
     container_check_timeout: int | None = None,
     branch: str,
+    run_start_sha: str | None = None,
 ) -> GardenResult:
     """Execute one task through the implement → test → review pipeline."""
     # Resolve runners: explicit implement/review runners take precedence,
@@ -307,8 +308,10 @@ def garden(
     _rev_id = f"{getattr(review_runner, 'name', '?')}/{getattr(review_runner, 'model', '?')}"
     logger.info("Starting task %s: %s (implement=%s, review=%s)", task.id, task.name, _impl_id, _rev_id)
 
-    # Save start SHA for scoping review diffs to this task only
-    start_sha = git_rev_parse("HEAD", cwd)
+    # Use run-start SHA for scoping review diffs
+    if run_start_sha is None:
+        run_start_sha = get_run_start_sha(cwd, branch=branch)
+    start_sha = run_start_sha
 
     try:
         for attempt in range(max_retries):
@@ -417,14 +420,17 @@ def garden(
 
             # --- review ---
             try:
-                diff = git_diff(start_sha, "HEAD", cwd)
+                diff_stat = git_diff_stat(start_sha, "HEAD", cwd)
             except Exception:
-                diff = "(no diff available)"
+                diff_stat = "(no diff available)"
 
             review_prompt = (
                 f"Review the changes for task {task.id}: {task.name}\n\n"
-                f"Diff:\n{diff[:8000]}\n\n"
-                f"Reply APPROVED if the code is correct, or REJECTED with reasons."
+                f"Task description: {task.description}\n\n"
+                f"Files changed since run start:\n{diff_stat}\n\n"
+                f"Focus on whether the right files are present and changed for this task. "
+                f"Tests have already passed.\n\n"
+                f"Reply APPROVED if the deliverables look correct, or REJECTED with reasons."
             )
             review_result = review_runner.run(review_prompt, **run_kwargs)
             review_log_file = _write_log(log_dir, task.id, "review", review_result)

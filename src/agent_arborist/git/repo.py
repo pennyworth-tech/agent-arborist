@@ -98,6 +98,10 @@ def git_diff(ref1: str, ref2: str, cwd: Path) -> str:
     return _run(["diff", f"{ref1}..{ref2}"], cwd)
 
 
+def git_diff_stat(ref1: str, ref2: str, cwd: Path) -> str:
+    return _run(["diff", "--stat", f"{ref1}..{ref2}"], cwd)
+
+
 def git_branch_list(cwd: Path, pattern: str | None = None) -> list[str]:
     args = ["branch", "--list", "--format=%(refname:short)"]
     if pattern:
