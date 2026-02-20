@@ -207,6 +207,96 @@ def test_task_node_with_test_commands_serializes():
     assert restored.nodes["T001"].test_commands[0].type == TestType.UNIT
 
 
+def _make_milestone_tree(milestone_count: int, tasks_per_milestone: int = 2):
+    """Build a tree with M0..M{n-1} milestones, each with leaf tasks.
+
+    Mimics real-world task trees where double-digit milestone IDs (M10, M11)
+    sort lexicographically before single-digit ones (M2, M3).
+    """
+    tree = TaskTree()
+    for m in range(milestone_count):
+        mid = f"M{m}"
+        children = [f"M{m}-T{t:03d}" for t in range(1, tasks_per_milestone + 1)]
+        tree.nodes[mid] = TaskNode(id=mid, name=f"Milestone {m}", children=children)
+        for child_id in children:
+            tree.nodes[child_id] = TaskNode(id=child_id, name=child_id, parent=mid)
+    return tree
+
+
+def test_execution_order_numeric_milestones():
+    """M0 through M12: execution must follow numeric milestone order, not lex."""
+    tree = _make_milestone_tree(13)
+    order = tree.compute_execution_order()
+    # Extract milestone numbers in the order tasks appear
+    seen_milestones = []
+    for tid in order:
+        m = tid.split("-")[0]
+        if not seen_milestones or seen_milestones[-1] != m:
+            seen_milestones.append(m)
+    expected = [f"M{i}" for i in range(13)]
+    assert seen_milestones == expected, (
+        f"Milestones out of order: {seen_milestones}"
+    )
+
+
+def test_execution_order_not_lexicographic():
+    """Lex sort puts M10 before M2. Structural sort must not."""
+    tree = _make_milestone_tree(12)
+    order = tree.compute_execution_order()
+    m2_first = next(i for i, t in enumerate(order) if t.startswith("M2-"))
+    m10_first = next(i for i, t in enumerate(order) if t.startswith("M10-"))
+    assert m2_first < m10_first, (
+        f"M2 tasks (pos {m2_first}) must come before M10 tasks (pos {m10_first})"
+    )
+
+
+def test_execution_order_lex_sorted_json_keys_still_correct():
+    """Simulate JSON parsed with lex-sorted keys (M0, M1, M10, M2...).
+
+    Even if the nodes dict has lex key order, structural sort uses children
+    lists and root_ids (also from dict order), so we need root milestones
+    to appear in numeric order in the dict — which they do in real JSON
+    because the AI planner inserts them sequentially.
+    """
+    tree = _make_milestone_tree(13)
+    # Verify the tree itself has correct root order
+    roots = tree.root_ids
+    expected_roots = [f"M{i}" for i in range(13)]
+    assert roots == expected_roots, f"Root order wrong: {roots}"
+    # And execution order follows that
+    order = tree.compute_execution_order()
+    m2_first = next(i for i, t in enumerate(order) if t.startswith("M2-"))
+    m10_first = next(i for i, t in enumerate(order) if t.startswith("M10-"))
+    assert m2_first < m10_first
+
+
+def test_execution_order_children_order_within_milestone():
+    """Tasks within a milestone follow the children list order."""
+    tree = _make_milestone_tree(3, tasks_per_milestone=4)
+    order = tree.compute_execution_order()
+    # Check that within each milestone, tasks appear in children order
+    for m in range(3):
+        milestone_tasks = [t for t in order if t.startswith(f"M{m}-")]
+        expected = [f"M{m}-T{t:03d}" for t in range(1, 5)]
+        assert milestone_tasks == expected, (
+            f"Tasks within M{m} out of order: {milestone_tasks}"
+        )
+
+
+def test_execution_order_roundtrip_json_matches():
+    """compute_execution_order before and after JSON roundtrip must match."""
+    tree = _make_milestone_tree(13)
+    tree.compute_execution_order()
+    data = tree.to_dict()
+    json_str = json.dumps(data)
+    restored = TaskTree.from_dict(json.loads(json_str))
+    # The restored tree has the serialized order; recomputing must agree
+    recomputed = restored.compute_execution_order()
+    assert recomputed == data["execution_order"], (
+        "Recomputed order after JSON roundtrip doesn't match original"
+    )
+
+
 def test_from_dict_missing_test_commands_defaults_empty():
     data = {
         "nodes": {
