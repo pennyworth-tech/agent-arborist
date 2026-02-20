@@ -1,6 +1,6 @@
 # Agent Arborist
 
-Git-native task tree orchestration. Break complex projects into hierarchical tasks, then let AI execute them — one branch, one commit at a time.
+Git-native task tree orchestration. Break complex projects into hierarchical tasks, then let AI execute them — one task, one commit at a time.
 
 ## Quick Start
 
@@ -52,11 +52,12 @@ arborist gardener --tree task-tree.json
 ```
 
 Arborist works through each task in dependency order. For each task it:
-1. Creates a git branch
-2. Sends the task to an AI runner to implement
-3. Runs your test command
-4. Sends the diff for AI code review
-5. On approval, commits and merges back
+1. Sends the task to an AI runner to implement
+2. Runs your test command
+3. Sends the diff for AI code review
+4. On approval, commits to the current branch
+
+All work happens on your current branch — no task-specific branches or merges needed.
 
 ### 6. Check Status
 
@@ -66,21 +67,38 @@ arborist status --tree task-tree.json
 
 ## How It Works
 
-Arborist stores all state in git — branches for isolation, commit trailers for tracking. No external database, no daemon. If a process crashes, pick up where you left off by running `gardener` again.
+Arborist stores all state in git with commit trailers for tracking. No external database, no daemon. If a process crashes, pick up where you left off by running `gardener` again.
 
 ```
 spec/*.md  ──►  arborist build  ──►  task-tree.json
-                                          │
-                                    arborist gardener
-                                          │
-                              ┌───────────┼───────────┐
-                              ▼           ▼           ▼
-                          branch/T001  branch/T002  branch/T003
-                          implement    implement    implement
-                          test         test         test
-                          review       review       review
-                          merge ◄──────merge ◄──────merge
+                                           │
+                                     arborist gardener
+                                           │
+                               ┌───────────┼───────────┐
+                               ▼           ▼           ▼
+                           commit/T001  commit/T002  commit/T003
+                           implement    implement    implement
+                           test         test         test
+                           review       review       review
+                              │           │           │
+                              └───── working branch (no merges)
 ```
+
+## State & Recovery
+
+All task state is stored in git commit trailers:
+
+```bash
+$ git log --format=%B -1
+task(main@T001@complete): implement database schema
+
+Arborist-Step: implement
+Arborist-Result: complete
+Arborist-Test-Passed: 1
+Arborist-Test-Result: pass
+```
+
+If the process crashes mid-task, `gardener` scans git history to find completed tasks and resumes from the last pending one.
 
 ## Configuration
 
