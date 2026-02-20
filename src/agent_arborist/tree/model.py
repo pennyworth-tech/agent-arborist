@@ -101,7 +101,7 @@ class TaskTree:
 
         Only includes leaf tasks (actual work items).
         """
-        leaves = {n.id for n in self.leaves()}
+        leaves = [n.id for n in self.leaves()]
 
         # Build in-degree map for leaf dependencies
         in_degree: dict[str, int] = {}
@@ -116,13 +116,13 @@ class TaskTree:
                 dependents.setdefault(d, []).append(nid)
 
         # Kahn's: start with nodes that have no dependencies
-        queue = deque(sorted(nid for nid, deg in in_degree.items() if deg == 0))
+        queue = deque(nid for nid, deg in in_degree.items() if deg == 0)
         order: list[str] = []
 
         while queue:
             nid = queue.popleft()
             order.append(nid)
-            for dep in sorted(dependents.get(nid, [])):
+            for dep in dependents.get(nid, []):
                 in_degree[dep] -= 1
                 if in_degree[dep] == 0:
                     queue.append(dep)
