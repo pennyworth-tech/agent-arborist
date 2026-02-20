@@ -62,7 +62,7 @@ def test_compute_execution_order_no_deps():
     tree.nodes["T001"] = TaskNode(id="T001", name="A", parent="phase1")
     tree.nodes["T002"] = TaskNode(id="T002", name="B", parent="phase1")
     order = tree.compute_execution_order()
-    # Both have no deps, sorted alphabetically
+    # Both have no deps, preserves insertion order from tree.nodes
     assert order == ["T001", "T002"]
 
 
@@ -132,6 +132,21 @@ def test_to_dict_and_from_dict_roundtrip():
     assert set(restored.nodes.keys()) == set(tree.nodes.keys())
     assert restored.nodes["T002"].depends_on == ["T001"]
     assert restored.execution_order == ["T001", "T002"]
+
+
+def test_compute_execution_order_preserves_spec_order():
+    """Test that execution order preserves spec insertion order, not lexicographic."""
+    tree = TaskTree()
+    # Insert tasks in a specific order: T003, T001, T002
+    tree.nodes["root"] = TaskNode(id="root", name="Root", children=["T003", "T001", "T002"])
+    tree.nodes["T003"] = TaskNode(id="T003", name="Third", parent="root")
+    tree.nodes["T001"] = TaskNode(id="T001", name="First", parent="root")
+    tree.nodes["T002"] = TaskNode(id="T002", name="Second", parent="root")
+
+    order = tree.compute_execution_order()
+    # Should preserve insertion order (T003, T001, T002), not sort alphabetically
+    assert order == ["T003", "T001", "T002"]
+    assert order != sorted(order), "Order should not be sorted alphabetically"
 
 
 # --- TestCommand / TestType tests ---
