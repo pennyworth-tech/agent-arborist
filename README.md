@@ -43,7 +43,7 @@ T004 -> T003
 arborist build --spec-dir spec/
 ```
 
-This sends your spec to an AI planner (Claude Opus by default) which produces a `task-tree.json` with the full hierarchy and execution order.
+This sends your spec to an AI planner (Claude Opus by default) which produces a `task-tree.json` with the full hierarchy and execution order, including suggested test commands for each task.
 
 ### 5. Run All Tasks
 
