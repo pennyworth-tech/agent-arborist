@@ -1,6 +1,6 @@
 # Agent Arborist
 
-Git-native task tree orchestration. Break complex projects into hierarchical tasks, then let AI execute them — one task at a time.
+Git-native task tree orchestration. Grow your task tree and let AI execute it — our arborist tends to each branch (task) in turn.
 
 ## Quick Start
 
