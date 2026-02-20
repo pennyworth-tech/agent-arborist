@@ -110,10 +110,38 @@ class TaskTree:
             result.extend(self.leaves_under(child_id))
         return result
 
+    def _structural_sort_key(self, node_id: str) -> tuple:
+        """Return a sort key that respects tree structure order.
+
+        Produces (root_index, child_index_path...) so that tasks under M2
+        sort before tasks under M10, matching the order roots and children
+        appear in the tree rather than lexicographic order.
+        """
+        # Walk up to build the path from root to this node
+        path = [node_id]
+        nid = node_id
+        while self.nodes[nid].parent is not None:
+            nid = self.nodes[nid].parent
+            path.append(nid)
+        path.reverse()  # root first
+
+        # Convert each level to its index among siblings
+        key: list[int] = []
+        root_ids = self.root_ids
+        root = path[0]
+        key.append(root_ids.index(root) if root in root_ids else 0)
+        for i in range(1, len(path)):
+            parent = self.nodes[path[i - 1]]
+            child = path[i]
+            key.append(parent.children.index(child) if child in parent.children else 0)
+        return tuple(key)
+
     def compute_execution_order(self) -> list[str]:
         """Compute topological execution order using Kahn's algorithm.
 
         Only includes leaf tasks (actual work items).
+        Ties are broken by structural tree order (root_ids and children
+        ordering) so that e.g. M2 tasks execute before M10 tasks.
         """
         leaves = [n.id for n in self.leaves()]
 
@@ -130,16 +158,24 @@ class TaskTree:
                 dependents.setdefault(d, []).append(nid)
 
         # Kahn's: start with nodes that have no dependencies
-        queue = deque(nid for nid, deg in in_degree.items() if deg == 0)
+        # Use sorted order to break ties by structural position
+        ready = sorted(
+            (nid for nid, deg in in_degree.items() if deg == 0),
+            key=self._structural_sort_key,
+        )
+        queue = deque(ready)
         order: list[str] = []
 
         while queue:
             nid = queue.popleft()
             order.append(nid)
+            newly_ready = []
             for dep in dependents.get(nid, []):
                 in_degree[dep] -= 1
                 if in_degree[dep] == 0:
-                    queue.append(dep)
+                    newly_ready.append(dep)
+            newly_ready.sort(key=self._structural_sort_key)
+            queue.extend(newly_ready)
 
         self.execution_order = order
         return order
