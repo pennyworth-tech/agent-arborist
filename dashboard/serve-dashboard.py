@@ -3,8 +3,12 @@
 Arborist Run Dashboard — Live Server
 Reads task-tree, reports, and logs from disk on each request.
 
+NOTE: This is a standalone prototype. Ideally this functionality should be
+folded into the arborist CLI itself (e.g. `arborist dashboard`) rather than
+living as a separate Python script.
+
 Usage:
-    python3 docs/tasks/serve-dashboard.py [--port 8484] [--tree docs/tasks/task-tree-opus.json]
+    python3 dashboard/serve-dashboard.py [--port 8484] [--tree docs/tasks/task-tree-opus.json]
 
 Then open http://localhost:8484
 """
