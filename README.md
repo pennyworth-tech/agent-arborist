@@ -65,6 +65,42 @@ All work happens on your current branch — no task-specific branches or merges 
 arborist status --tree task-tree.json
 ```
 
+### 7. Monitor with Dashboard
+
+Start a read-only monitoring dashboard:
+
+```bash
+arborist dashboard [--port 8484] [--tree task-tree.json]
+```
+
+The dashboard shows:
+- Overall progress and completion status
+- Milestone completion with progress bars
+- Task attempt counts (implements/reviews)
+- Duration distribution
+- Full task tree with status indicators
+- Timeline (Gantt-style) view
+
+Open http://localhost:8484 in your browser.
+
+### Command-Line Monitoring
+
+All monitoring data is also available via CLI commands with JSON output:
+
+```bash
+# Task status
+arborist status --format json
+
+# Execution reports
+arborist reports --format json
+
+# Execution logs
+arborist logs --format json
+
+# Detailed task inspection
+arborist inspect T003 --format json
+```
+
 ## How It Works
 
 Arborist stores all state in git with commit trailers for tracking. No external database, no daemon. If a process crashes, pick up where you left off by running `gardener` again.

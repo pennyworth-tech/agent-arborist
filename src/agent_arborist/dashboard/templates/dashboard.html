@@ -1,0 +1,542 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Arborist Dashboard</title>
+<style>
+  :root {
+    --bg: #0d1117; --surface: #161b22; --border: #30363d;
+    --text: #e6edf3; --text-dim: #8b949e; --green: #3fb950;
+    --green-dim: #238636; --yellow: #d29922; --red: #f85149;
+    --cyan: #58a6ff; --purple: #bc8cff; --orange: #d18616;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    background: var(--bg); color: var(--text);
+    padding: 24px; line-height: 1.5;
+  }
+  h1 { font-size: 24px; font-weight: 600; margin-bottom: 4px; }
+  h2 { font-size: 16px; font-weight: 600; margin-bottom: 12px; color: var(--text-dim); }
+  .header-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+  .subtitle { color: var(--text-dim); font-size: 14px; margin-bottom: 24px; }
+  .refresh-info { font-size: 12px; color: var(--text-dim); }
+  .refresh-btn {
+    background: var(--green-dim); color: var(--text); border: none; border-radius: 6px;
+    padding: 6px 14px; cursor: pointer; font-size: 13px; margin-left: 8px;
+  }
+  .refresh-btn:hover { background: var(--green); }
+  .auto-label { font-size: 12px; color: var(--text-dim); margin-left: 8px; }
+  .grid { display: grid; gap: 16px; margin-bottom: 24px; }
+  .grid-2 { grid-template-columns: 1fr 1fr; }
+  .grid-4 { grid-template-columns: 1fr 1fr 1fr 1fr; }
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 16px;
+  }
+  .stat-value { font-size: 32px; font-weight: 700; }
+  .stat-label { font-size: 13px; color: var(--text-dim); }
+  .progress-outer {
+    background: var(--border); border-radius: 6px; height: 12px;
+    overflow: hidden; margin: 8px 0;
+  }
+  .progress-inner { height: 100%; border-radius: 6px; transition: width 0.5s ease; }
+
+  .group {
+    border-bottom: 1px solid var(--border); padding: 12px 0;
+  }
+  .group:last-child { border-bottom: none; }
+  .group-header {
+    display: flex; align-items: center; gap: 12px; cursor: pointer;
+    user-select: none; padding: 4px 0;
+  }
+  .group-header:hover { opacity: 0.85; }
+  .group-toggle {
+    font-size: 11px; color: var(--text-dim); width: 16px; text-align: center;
+    transition: transform 0.2s;
+  }
+  .group-toggle.collapsed { transform: rotate(-90deg); }
+  .group-id { font-weight: 600; font-size: 14px; color: var(--cyan); min-width: 40px; }
+  .group-name { font-size: 14px; font-weight: 500; flex: 1; }
+  .group-progress {
+    font-size: 12px; color: var(--text-dim);
+    display: flex; align-items: center; gap: 8px;
+  }
+  .group-bar {
+    width: 80px; height: 6px; background: var(--border); border-radius: 3px; overflow: hidden;
+  }
+  .group-bar-inner { height: 100%; border-radius: 3px; transition: width 0.5s ease; }
+  .group-tasks { padding-left: 26px; }
+  .group-tasks.hidden { display: none; }
+  .task {
+    display: flex; align-items: flex-start; gap: 10px;
+    padding: 6px 0; border-bottom: 1px solid #21262d;
+    font-size: 13px;
+  }
+  .task:last-child { border-bottom: none; }
+  .task-icon { min-width: 18px; text-align: center; font-size: 14px; padding-top: 1px; }
+  .task-id { font-family: monospace; font-size: 12px; min-width: 38px; color: var(--text-dim); }
+  .task-name { flex: 1; line-height: 1.4; }
+  .task-name.done { color: var(--text-dim); }
+  .badge {
+    padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 500;
+  }
+  .badge-pass { background: #238636; color: #e6edf3; }
+  .badge-pending { background: #30363d; color: #8b949e; }
+  .badge-active { background: #0c2d6b; color: var(--cyan); }
+  .badge-retry { background: #d18616; color: #e6edf3; }
+
+  @media (max-width: 768px) {
+    .grid-2, .grid-4 { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<div class="header-row">
+  <div>
+    <h1>Arborist Dashboard</h1>
+    <div class="subtitle" id="subtitle">Loading...</div>
+  </div>
+  <div style="display:flex;align-items:center;">
+    <span class="refresh-info" id="refresh-info"></span>
+    <button class="refresh-btn" onclick="fetchAndRender()">Refresh</button>
+    <label class="auto-label">
+      <input type="checkbox" id="auto-refresh" checked> Auto (5s)
+    </label>
+  </div>
+</div>
+
+<div class="grid grid-4" id="stats"></div>
+
+<div class="card" style="margin-bottom: 16px;">
+  <h2>Overall Progress</h2>
+  <div id="overall-progress"></div>
+</div>
+
+<div class="card">
+  <h2>Task Groups</h2>
+  <div id="groups"></div>
+</div>
+
+<div class="card" style="margin-top: 16px;">
+  <h2>Full Task Tree</h2>
+  <div id="full-tree"></div>
+</div>
+
+<!-- Log Viewer Modal -->
+<div id="log-modal" class="modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.8);z-index:1000;justify-content:center;align-items:center;">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;width:80%;max-width:1000px;height:80%;display:flex;flex-direction:column;">
+    <div style="padding:16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;">
+      <div style="display:flex;flex-direction:column;gap:8px;">
+        <h3 id="log-title" style="font-size:16px;margin:0;">Log Viewer</h3>
+        <div id="log-selector" style="display:none;"></div>
+      </div>
+      <button onclick="closeLogModal()" style="background:none;border:none;color:var(--text-dim);font-size:20px;cursor:pointer;">&times;</button>
+    </div>
+    <pre id="log-content" style="flex:1;overflow:auto;padding:16px;margin:0;font-family:monospace;font-size:12px;line-height:1.4;white-space:pre-wrap;word-wrap:break-word;"></pre>
+  </div>
+</div>
+
+<script>
+let autoRefreshInterval = null;
+
+function parseTs(ts) {
+  const year = parseInt(ts.slice(0, 4));
+  const month = parseInt(ts.slice(4, 6)) - 1;
+  const day = parseInt(ts.slice(6, 8));
+  const hour = parseInt(ts.slice(9, 11));
+  const min = parseInt(ts.slice(11, 13));
+  const sec = parseInt(ts.slice(13, 15));
+  return new Date(year, month, day, hour, min, sec);
+}
+
+function fmtTime(d) {
+  const m = d.getMonth() + 1;
+  const date = d.getDate();
+  const h = d.getHours().toString().padStart(2, '0');
+  const min = d.getMinutes().toString().padStart(2, '0');
+  return `${m}/${date} ${h}:${min}`;
+}
+
+function startAutoRefresh() {
+  if (autoRefreshInterval) clearInterval(autoRefreshInterval);
+  autoRefreshInterval = setInterval(fetchAndRender, 5000);
+}
+
+function stopAutoRefresh() {
+  if (autoRefreshInterval) {
+    clearInterval(autoRefreshInterval);
+    autoRefreshInterval = null;
+  }
+}
+
+document.getElementById('auto-refresh').addEventListener('change', () => {
+  if (document.getElementById('auto-refresh').checked) startAutoRefresh();
+  else stopAutoRefresh();
+});
+
+async function fetchAndRender() {
+  const btn = document.querySelector('.refresh-btn');
+  const info = document.getElementById('refresh-info');
+  btn.textContent = 'Refreshing...';
+  btn.style.opacity = '0.6';
+  info.textContent = 'Fetching...';
+  try {
+    const [statusResp, reportsResp, logsResp] = await Promise.all([
+      fetch('/api/status?t=' + Date.now()),
+      fetch('/api/reports?t=' + Date.now()),
+      fetch('/api/logs?t=' + Date.now())
+    ]);
+    const status = await statusResp.json();
+    const reports = await reportsResp.json();
+    const logs = await logsResp.json();
+
+    render(status, reports, logs);
+    info.textContent = 'Updated ' + new Date().toLocaleTimeString();
+    document.body.style.transition = 'background 0.15s';
+    document.body.style.background = '#111820';
+    setTimeout(() => { document.body.style.background = 'var(--bg)'; }, 150);
+  } catch (e) {
+    info.textContent = 'Error: ' + e.message;
+    info.style.color = 'var(--red)';
+    setTimeout(() => { info.style.color = ''; }, 3000);
+  }
+  btn.textContent = 'Refresh';
+  btn.style.opacity = '1';
+}
+
+function render(status, reports, logs) {
+  window.dashboardLogs = logs.logs;
+  const reportMap = {};
+  reports.reports.forEach(r => reportMap[r.task_id] = r);
+
+  const leafTasks = Object.entries(status.tasks).filter(([id, task]) => {
+    const node = status.tree.nodes[id];
+    return node && !node.children || node.children.length === 0;
+  });
+
+  const totalTasks = leafTasks.length;
+  const completedTasks = leafTasks.filter(([id]) => reportMap[id]).length;
+
+  // Calculate attempts from logs
+  const attempts = {};
+  for (const [taskId, entries] of Object.entries(logs.logs)) {
+    const implCount = entries.filter(e => e.phase === 'implement').length;
+    const reviewCount = entries.filter(e => e.phase === 'review').length;
+    attempts[taskId] = {
+      implement_attempts: implCount,
+      review_attempts: reviewCount,
+      total_phases: entries.length
+    };
+  }
+
+  const logRetried = Object.entries(attempts)
+    .filter(([tid, a]) => a.implement_attempts > 1 && reportMap[tid])
+    .length;
+  const reportRetried = Object.values(reportMap).filter(r => r.retries > 0).length;
+
+  // Time range from logs
+  let allTs = [];
+  for (const entries of Object.values(logs.logs)) {
+    for (const e of entries) allTs.push(parseTs(e.timestamp));
+  }
+  if (allTs.length === 0) { allTs = [new Date()]; }
+  const minTime = Math.min(...allTs.map(d => d.getTime()));
+  const maxTime = Math.max(...allTs.map(d => d.getTime()));
+  const durationMin = Math.round((maxTime - minTime) / 60000);
+
+  document.getElementById('subtitle').textContent =
+    status.branch + ' \u2014 Generated ' + new Date(status.generated_at).toLocaleTimeString();
+
+  // Stats
+  document.getElementById('stats').innerHTML = [
+    { value: `${completedTasks}/${totalTasks}`, label: 'Tasks Completed', color: 'var(--green)' },
+    { value: `${Math.round(completedTasks/totalTasks*100)}%`, label: 'Progress', color: 'var(--cyan)' },
+    { value: `${logRetried}`, label: `Retried (${reportRetried} per report)`, color: logRetried > 0 ? 'var(--orange)' : 'var(--green)' },
+    { value: `${durationMin}m`, label: 'Elapsed Time', color: 'var(--text)' },
+  ].map(s => `
+    <div class="card">
+      <div class="stat-value" style="color:${s.color}">${s.value}</div>
+      <div class="stat-label">${s.label}</div>
+    </div>
+  `).join('');
+
+  // Overall progress
+  const pct = totalTasks > 0 ? Math.round(completedTasks / totalTasks * 100) : 0;
+  document.getElementById('overall-progress').innerHTML = `
+    <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px;">
+      <span>${completedTasks} of ${totalTasks} tasks</span><span>${pct}%</span>
+    </div>
+    <div class="progress-outer">
+      <div class="progress-inner" style="width:${pct}%;background:var(--green);"></div>
+    </div>
+    <div style="font-size:12px;color:var(--text-dim);margin-top:4px;">
+      ${fmtTime(new Date(minTime))} &mdash; ${fmtTime(new Date(maxTime))}
+      &bull; ${durationMin} minutes
+    </div>
+  `;
+
+  // Build task groups (non-leaf nodes that directly contain leaf tasks)
+  const groups = [];
+  for (const [nodeId, node] of Object.entries(status.tree.nodes)) {
+    if (node.children && node.children.length > 0) {
+      const leafChildren = node.children.filter(cid => {
+        const child = status.tree.nodes[cid];
+        return child && (!child.children || child.children.length === 0);
+      });
+      if (leafChildren.length > 0) {
+        groups.push({
+          id: nodeId,
+          name: node.name,
+          children: leafChildren
+        });
+      }
+    }
+  }
+
+  // Groups panel
+  document.getElementById('groups').innerHTML = groups.map(g => {
+    const done = g.children.filter(c => reportMap[c]).length;
+    const total = g.children.length;
+    const gpct = total > 0 ? Math.round(done / total * 100) : 0;
+    const color = done === total ? 'var(--green)' : done > 0 ? 'var(--yellow)' : 'var(--border)';
+    return `<div class="group">
+      <div class="group-header" onclick="toggleGroup(this)">
+        <span class="group-toggle">▼</span>
+        <span class="group-id">${g.id}</span>
+        <span class="group-name">${g.name}</span>
+        <div class="group-progress">
+          <span>${done}/${total}</span>
+          <div class="group-bar"><div class="group-bar-inner" style="width:${gpct}%;background:${color};"></div></div>
+        </div>
+      </div>
+      <div class="group-tasks" style="display:block;">
+        ${g.children.map(cid => {
+          const task = status.tasks[cid] || { name: cid };
+          const isDone = !!reportMap[cid];
+          const isActive = !isDone && !!logs.logs[cid];
+          const a = attempts[cid] || {};
+          const hadRetry = a.implement_attempts > 1;
+          let icon, badge, nameClass;
+          if (isDone) {
+            icon = '<span style="color:var(--green)">&#10003;</span>';
+            badge = hadRetry
+              ? `<span class="badge badge-retry">${a.implement_attempts - 1} retry</span>`
+              : `<span class="badge badge-pass">pass</span>`;
+            nameClass = 'task-name done';
+          } else if (isActive) {
+            icon = '<span style="color:var(--cyan)">&#9654;</span>';
+            badge = '<span class="badge badge-active">running</span>';
+            nameClass = 'task-name';
+          } else {
+            icon = '<span style="color:var(--text-dim)">&#9675;</span>';
+            badge = '<span class="badge badge-pending">pending</span>';
+            nameClass = 'task-name';
+          }
+          const taskLogs = logs.logs[cid] || [];
+          const logsHtml = taskLogs.length > 0
+            ? `<div style="margin-left:8px;margin-top:4px;">${taskLogs.map(l => `<span onclick="viewLog('${l.filename}')" style="cursor:pointer;color:var(--cyan);font-size:11px;margin-right:8px;">${l.phase}</span>`).join('')}</div>`
+            : '';
+          const cidLogs = logs.logs[cid] || [];
+          const implCount = cidLogs.filter(l => l.phase === 'implement').length;
+          const reviewCount = cidLogs.filter(l => l.phase === 'review').length;
+          const testCount = cidLogs.filter(l => l.phase === 'test').length;
+
+          const implBtn = implCount > 0
+            ? `<button onclick="viewPhaseLogs('${cid}', 'implement')" style="background:${getPhaseColor(implCount)};border:none;cursor:pointer;font-size:11px;padding:4px 8px;border-radius:4px;color:${implCount === 0 || implCount >= 5 ? 'var(--bg)' : 'var(--bg)'};">implement ${implCount}</button>`
+            : `<span style="font-size:11px;color:var(--text-dim);padding:4px 8px;">implement 0</span>`;
+          const reviewBtn = reviewCount > 0
+            ? `<button onclick="viewPhaseLogs('${cid}', 'review')" style="background:${getPhaseColor(reviewCount)};border:none;cursor:pointer;font-size:11px;padding:4px 8px;border-radius:4px;color:var(--bg);">review ${reviewCount}</button>`
+            : `<span style="font-size:11px;color:var(--text-dim);padding:4px 8px;">review 0</span>`;
+          const testBtn = testCount > 0
+            ? `<button onclick="viewPhaseLogs('${cid}', 'test')" style="background:${getPhaseColor(testCount)};border:none;cursor:pointer;font-size:11px;padding:4px 8px;border-radius:4px;color:var(--bg);">test ${testCount}</button>`
+            : '';
+
+          return `<div class="task">
+            <span class="task-icon">${icon}</span>
+            <span class="task-id">${cid}</span>
+            <span class="${nameClass}">${task.name}</span>
+            <div style="margin-left:8px;display:flex;gap:4px;align-items:center;">
+              ${implBtn}
+              ${reviewBtn}
+              ${testBtn}
+            </div>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>`;
+  }).join('');
+
+  // Full tree (expanded)
+  document.getElementById('full-tree').innerHTML = renderFullTree(status.tree.root_ids, status.tree, status.tasks, reportMap, attempts, logs.logs, 0);
+}
+
+function renderFullTree(nodeIds, tree, tasks, reportMap, attempts, logs, level) {
+  return nodeIds.map(nodeId => {
+    const node = tree.nodes[nodeId];
+    const isLeaf = !node.children || node.children.length === 0;
+
+    if (isLeaf) {
+      const task = tasks[nodeId] || { name: node.name };
+      const isDone = !!reportMap[nodeId];
+      const isActive = !isDone && !!logs[nodeId];
+      const a = attempts[nodeId] || {};
+      const hadRetry = a.implement_attempts > 1;
+      let icon, badge, nameClass;
+      if (isDone) {
+        icon = '<span style="color:var(--green)">&#10003;</span>';
+        badge = hadRetry
+          ? `<span class="badge badge-retry">${a.implement_attempts - 1} retry</span>`
+          : `<span class="badge badge-pass">pass</span>`;
+        nameClass = 'task-name done';
+      } else if (isActive) {
+        icon = '<span style="color:var(--cyan)">&#9654;</span>';
+        badge = '<span class="badge badge-active">running</span>';
+        nameClass = 'task-name';
+      } else {
+        icon = '<span style="color:var(--text-dim)">&#9675;</span>';
+        badge = '<span class="badge badge-pending">pending</span>';
+        nameClass = 'task-name';
+      }
+      const nodeLogs = logs[nodeId] || [];
+      const implCount = nodeLogs.filter(l => l.phase === 'implement').length;
+      const reviewCount = nodeLogs.filter(l => l.phase === 'review').length;
+      const testCount = nodeLogs.filter(l => l.phase === 'test').length;
+
+      const implBtn = implCount > 0
+        ? `<button onclick="viewPhaseLogs('${nodeId}', 'implement')" style="background:${getPhaseColor(implCount)};border:none;cursor:pointer;font-size:11px;padding:4px 8px;border-radius:4px;color:var(--bg);">implement ${implCount}</button>`
+        : `<span style="font-size:11px;color:var(--text-dim);padding:4px 8px;">implement 0</span>`;
+      const reviewBtn = reviewCount > 0
+        ? `<button onclick="viewPhaseLogs('${nodeId}', 'review')" style="background:${getPhaseColor(reviewCount)};border:none;cursor:pointer;font-size:11px;padding:4px 8px;border-radius:4px;color:var(--bg);">review ${reviewCount}</button>`
+        : `<span style="font-size:11px;color:var(--text-dim);padding:4px 8px;">review 0</span>`;
+      const testBtn = testCount > 0
+        ? `<button onclick="viewPhaseLogs('${nodeId}', 'test')" style="background:${getPhaseColor(testCount)};border:none;cursor:pointer;font-size:11px;padding:4px 8px;border-radius:4px;color:var(--bg);">test ${testCount}</button>`
+        : '';
+
+      return `<div class="task" style="padding-left:${level * 26 + 10}px;">
+        <span class="task-icon">${icon}</span>
+        <span class="task-id">${nodeId}</span>
+        <span class="${nameClass}">${task.name}</span>
+        <div style="margin-left:8px;display:flex;gap:4px;align-items:center;">
+          ${implBtn}
+          ${reviewBtn}
+          ${testBtn}
+        </div>
+      </div>`;
+    } else {
+      const done = node.children.filter(cid => reportMap[cid]).length;
+      const total = node.children.length;
+      return `<div class="group">
+        <div class="group-header" onclick="toggleGroup(this)" style="padding-left:${level * 26}px;">
+          <span class="group-toggle">▼</span>
+          <span class="group-id">${nodeId}</span>
+          <span class="group-name">${node.name}</span>
+          <div class="group-progress">
+            <span>${done}/${total}</span>
+          </div>
+        </div>
+        <div class="group-tasks" style="display:block;">
+          ${renderFullTree(node.children, tree, tasks, reportMap, attempts, logs, level + 1)}
+        </div>
+      </div>`;
+    }
+  }).join('');
+}
+
+function toggleGroup(header) {
+  const toggle = header.querySelector('.group-toggle');
+  const tasks = header.nextElementSibling;
+  toggle.classList.toggle('collapsed');
+  tasks.classList.toggle('hidden');
+}
+
+async function viewLog(filename) {
+  const modal = document.getElementById('log-modal');
+  const title = document.getElementById('log-title');
+  const content = document.getElementById('log-content');
+  const selector = document.getElementById('log-selector');
+
+  modal.style.display = 'flex';
+  title.textContent = filename;
+  content.textContent = 'Loading...';
+  selector.style.display = 'none';
+
+  try {
+    const resp = await fetch(`/api/log/${filename}`);
+    if (!resp.ok) throw new Error('Failed to load log');
+    const text = await resp.text();
+    content.textContent = text;
+  } catch (e) {
+    content.textContent = 'Error loading log: ' + e.message;
+  }
+}
+
+async function viewPhaseLogs(taskId, phase) {
+  const taskLogs = window.dashboardLogs[taskId] || [];
+  const phaseLogs = taskLogs.filter(l => l.phase === phase);
+
+  if (phaseLogs.length === 0) return;
+
+  const modal = document.getElementById('log-modal');
+  const title = document.getElementById('log-title');
+  const content = document.getElementById('log-content');
+  const selector = document.getElementById('log-selector');
+
+  modal.style.display = 'flex';
+
+  if (phaseLogs.length === 1) {
+    title.textContent = `${taskId} - ${phase}`;
+    selector.style.display = 'none';
+    await loadLogContent(phaseLogs[0].filename);
+  } else {
+    title.textContent = `${taskId} - ${phase} (${phaseLogs.length} runs)`;
+    selector.style.display = 'block';
+    selector.innerHTML = `
+      <select onchange="loadLogContent(this.value)" style="background:var(--surface);color:var(--text);border:1px solid var(--border);padding:8px;border-radius:4px;width:200px;">
+        ${phaseLogs.map((l, i) => `<option value="${l.filename}">Run ${i + 1} - ${fmtTime(parseTs(l.timestamp))}</option>`).join('')}
+      </select>
+    `;
+    await loadLogContent(phaseLogs[0].filename);
+  }
+}
+
+async function loadLogContent(filename) {
+  const content = document.getElementById('log-content');
+  content.textContent = 'Loading...';
+
+  try {
+    const resp = await fetch(`/api/log/${filename}`);
+    if (!resp.ok) throw new Error('Failed to load log');
+    const text = await resp.text();
+    content.textContent = text;
+  } catch (e) {
+    content.textContent = 'Error loading log: ' + e.message;
+  }
+}
+
+function getPhaseColor(count) {
+  if (count === 0) return 'var(--text-dim)';
+  if (count === 1) return 'var(--green)';
+  if (count <= 4) return 'var(--yellow)';
+  return 'var(--red)';
+}
+
+function closeLogModal() {
+  document.getElementById('log-modal').style.display = 'none';
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeLogModal();
+});
+
+document.getElementById('log-modal').addEventListener('click', (e) => {
+  if (e.target.id === 'log-modal') closeLogModal();
+});
+
+startAutoRefresh();
+fetchAndRender();
+</script>
+</body>
+</html>

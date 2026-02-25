@@ -145,3 +145,34 @@ class CrashingRunner:
 
     def is_available(self):
         return True
+
+
+@pytest.fixture
+def minimal_tree():
+    """Create a minimal task tree for testing."""
+    return {
+        "nodes": {
+            "T001": {
+                "id": "T001",
+                "name": "Test Task 1",
+                "description": "A test task",
+                "is_leaf": True,
+                "parent": None,
+                "children": [],
+                "depends_on": [],
+                "test_commands": []
+            },
+            "M1": {
+                "id": "M1",
+                "name": "Milestone 1",
+                "description": "Test milestone",
+                "is_leaf": False,
+                "parent": None,
+                "children": ["T001"],
+                "depends_on": [],
+                "test_commands": []
+            }
+        },
+        "execution_order": ["T001"],
+        "spec_files": []
+    }

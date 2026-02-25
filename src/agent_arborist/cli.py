@@ -30,7 +30,7 @@ from agent_arborist.config import (
     VALID_RUNNERS, generate_config_template,
 )
 from agent_arborist.git.repo import (
-    git_current_branch, git_toplevel, GitError,
+    git_current_branch, git_toplevel,
 )
 
 
@@ -345,9 +345,11 @@ def gardener(tree_path, runner, model, max_retries, target_repo, base_branch, re
 @click.option("--tree", "tree_path", type=click.Path(exists=True, path_type=Path), default=None,
               help="Path to task-tree.json (default: specs/{branch}/task-tree.json)")
 @click.option("--target-repo", type=click.Path(path_type=Path), default=None)
-def status(tree_path, target_repo):
+@click.option("--format", "output_format", type=click.Choice(["text", "json"]), default="text",
+              help="Output format (text or json)")
+def status(tree_path, target_repo, output_format):
     """Show current status of all tasks."""
-    from agent_arborist.git.state import scan_completed_tasks, TaskState, get_task_trailers, task_state_from_trailers
+    from agent_arborist.git.state import scan_completed_tasks, get_task_trailers, task_state_from_trailers
 
     target = target_repo.resolve() if target_repo else Path(_default_repo()).resolve()
     branch = git_current_branch(target)
@@ -355,24 +357,47 @@ def status(tree_path, target_repo):
         tree_path = Path("specs") / branch / "task-tree.json"
     tree = _load_tree(tree_path)
 
-    rich_tree = RichTree(f"[bold]Task Tree[/bold]")
+    completed = scan_completed_tasks(tree, target, branch=branch)
 
-    def _add_status_subtree(rich_node, node_id):
-        node = tree.nodes[node_id]
-        if node.is_leaf:
-            trailers = get_task_trailers("HEAD", node_id, target, current_branch=branch)
-            state = task_state_from_trailers(trailers)
-            icon = _status_icon(state)
-            rich_node.add(f"{icon} [dim]{node.id}[/dim] {node.name} ({state.value})")
-        else:
-            branch_node = rich_node.add(f"[cyan]{node.id}[/cyan] {node.name}")
-            for child_id in node.children:
-                _add_status_subtree(branch_node, child_id)
+    if output_format == "json":
+        status_data = {
+            "tree": tree.to_dict(),
+            "branch": branch,
+            "completed": list(completed),
+            "tasks": {}
+        }
 
-    for root_id in tree.root_ids:
-        _add_status_subtree(rich_tree, root_id)
+        for node_id, node in tree.nodes.items():
+            if node.is_leaf:
+                trailers = get_task_trailers("HEAD", node_id, target, current_branch=branch)
+                state = task_state_from_trailers(trailers)
+                status_data["tasks"][node_id] = {
+                    "id": node.id,
+                    "name": node.name,
+                    "state": state.value,
+                    "trailers": trailers
+                }
 
-    console.print(rich_tree)
+        print(json.dumps(status_data, indent=2, ensure_ascii=False))
+    else:
+        rich_tree = RichTree("[bold]Task Tree[/bold]")
+
+        def _add_status_subtree(rich_node, node_id):
+            node = tree.nodes[node_id]
+            if node.is_leaf:
+                trailers = get_task_trailers("HEAD", node_id, target, current_branch=branch)
+                state = task_state_from_trailers(trailers)
+                icon = _status_icon(state)
+                rich_node.add(f"{icon} [dim]{node.id}[/dim] {node.name} ({state.value})")
+            else:
+                branch_node = rich_node.add(f"[cyan]{node.id}[/cyan] {node.name}")
+                for child_id in node.children:
+                    _add_status_subtree(branch_node, child_id)
+
+        for root_id in tree.root_ids:
+            _add_status_subtree(rich_tree, root_id)
+
+        console.print(rich_tree)
 
 
 @main.command()
@@ -380,9 +405,11 @@ def status(tree_path, target_repo):
               help="Path to task-tree.json (default: specs/{branch}/task-tree.json)")
 @click.option("--task-id", required=True, help="Task ID to inspect (e.g. T003)")
 @click.option("--target-repo", type=click.Path(path_type=Path), default=None)
-def inspect(tree_path, task_id, target_repo):
+@click.option("--format", "output_format", type=click.Choice(["text", "json"]), default="text",
+              help="Output format (text or json)")
+def inspect(tree_path, task_id, target_repo, output_format):
     """Deep-dive into a single task: metadata, commit history, trailers, and state."""
-    from agent_arborist.git.repo import git_log, GitError
+    from agent_arborist.git.repo import git_log
     from agent_arborist.git.state import get_task_trailers, task_state_from_trailers
 
     target = target_repo.resolve() if target_repo else Path(_default_repo()).resolve()
@@ -398,65 +425,263 @@ def inspect(tree_path, task_id, target_repo):
 
     node = tree.nodes[task_id]
 
-    # --- Task metadata ---
-    console.print(f"\n[bold]Task: {task_id}[/bold] — {node.name}")
-    if node.description:
-        console.print(f"  Description: {node.description}")
-    console.print(f"  Leaf: {node.is_leaf}")
-    if node.parent:
-        console.print(f"  Parent: {node.parent}")
-    if node.children:
-        console.print(f"  Children: {', '.join(node.children)}")
-    if node.depends_on:
-        console.print(f"  Depends on: {', '.join(node.depends_on)}")
+    if output_format == "json":
+        inspect_data = {
+            "task": {
+                "id": node.id,
+                "name": node.name,
+                "description": node.description,
+                "is_leaf": node.is_leaf,
+                "parent": node.parent,
+                "children": node.children,
+                "depends_on": node.depends_on,
+                "test_commands": [tc.to_dict() for tc in node.test_commands],
+            },
+            "state": None,
+            "trailers": {}
+        }
 
-    if node.test_commands:
-        console.print(f"  Test commands:")
-        for tc in node.test_commands:
-            fw = f" ({tc.framework})" if tc.framework else ""
-            to = f" timeout={tc.timeout}s" if tc.timeout else ""
-            console.print(f"    [{tc.type.value}] {tc.command}{fw}{to}")
+        trailers = get_task_trailers("HEAD", task_id, target, current_branch=branch)
+        state = task_state_from_trailers(trailers)
+        inspect_data["state"] = state.value
+        inspect_data["trailers"] = trailers
 
-    # Current state from most recent trailer
-    grep_pattern = f"task({branch}@{task_id}"
-    trailers = get_task_trailers("HEAD", task_id, target, current_branch=branch)
-    state = task_state_from_trailers(trailers)
-    if not trailers:
-        console.print(f"\n[dim]No commits found for this task (not started).[/dim]")
+        if trailers:
+            grep_pattern = f"task({branch}@{task_id}"
+            try:
+                log_output = git_log(
+                    "HEAD",
+                    "%h %s%n%(trailers:key=Arborist-Step,key=Arborist-Result,key=Arborist-Test,key=Arborist-Review,key=Arborist-Retry,key=Arborist-Test-Type,key=Arborist-Test-Passed,key=Arborist-Test-Failed,key=Arborist-Test-Runtime)",
+                    target,
+                    n=50,
+                    grep=grep_pattern,
+                    fixed_strings=True,
+                )
+                inspect_data["commits"] = [
+                    line.strip() for line in log_output.split("\n") if line.strip()
+                ]
+            except GitError:
+                inspect_data["commits"] = []
+
+        print(json.dumps(inspect_data, indent=2))
+    else:
+        # --- Task metadata ---
+        console.print(f"\n[bold]Task: {task_id}[/bold] — {node.name}")
+        if node.description:
+            console.print(f"  Description: {node.description}")
+        console.print(f"  Leaf: {node.is_leaf}")
+        if node.parent:
+            console.print(f"  Parent: {node.parent}")
+        if node.children:
+            console.print(f"  Children: {', '.join(node.children)}")
+        if node.depends_on:
+            console.print(f"  Depends on: {', '.join(node.depends_on)}")
+
+        if node.test_commands:
+            console.print("  Test commands:")
+            for tc in node.test_commands:
+                fw = f" ({tc.framework})" if tc.framework else ""
+                to = f" timeout={tc.timeout}s" if tc.timeout else ""
+                console.print(f"    [{tc.type.value}] {tc.command}{fw}{to}")
+
+        # Current state from most recent trailer
+        grep_pattern = f"task({branch}@{task_id}"
+        trailers = get_task_trailers("HEAD", task_id, target, current_branch=branch)
+        state = task_state_from_trailers(trailers)
+        if not trailers:
+            console.print("\n[dim]No commits found for this task (not started).[/dim]")
+            return
+
+        console.print(f"\n[bold]State:[/bold] {state.value}")
+        if trailers:
+            console.print("[bold]Latest trailers:[/bold]")
+            for key, val in trailers.items():
+                console.print(f"  {key}: {val}")
+
+        # --- Full commit history for this task ---
+        console.print(f"\n[bold]Commit history[/bold] (grep: {grep_pattern})")
+        try:
+            log_output = git_log(
+                "HEAD",
+                "%h %s%n%(trailers:key=Arborist-Step,key=Arborist-Result,key=Arborist-Test,key=Arborist-Review,key=Arborist-Retry,key=Arborist-Test-Type,key=Arborist-Test-Passed,key=Arborist-Test-Failed,key=Arborist-Test-Runtime)",
+                target,
+                n=50,
+                grep=grep_pattern,
+                fixed_strings=True,
+            )
+            if log_output.strip():
+                for line in log_output.split("\n"):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if line.startswith("Arborist-"):
+                        console.print(f"    [dim]{line}[/dim]")
+                    else:
+                        console.print(f"  [cyan]{line}[/cyan]")
+            else:
+                console.print("  [dim]No commits found for this task.[/dim]")
+        except GitError:
+            console.print("  [dim]No commits found for this task.[/dim]")
+
+        console.print()
+
+
+@main.command()
+@click.option("--tree", "tree_path", type=click.Path(exists=True, path_type=Path), default=None,
+              help="Path to task-tree.json (default: specs/{branch}/task-tree.json)")
+@click.option("--report-dir", type=click.Path(path_type=Path), default=None,
+              help="Directory for reports (default: next to task tree)")
+@click.option("--format", "output_format", type=click.Choice(["text", "json"]), default="text",
+              help="Output format (text or json)")
+@click.option("--task-id", help="Filter by specific task ID")
+def reports(tree_path, report_dir, output_format, task_id):
+    """List task execution reports."""
+    target = Path(_default_repo()).resolve()
+    branch = git_current_branch(target)
+
+    if tree_path is None:
+        tree_path = Path("specs") / branch / "task-tree.json"
+
+    tree_path = Path(tree_path).resolve()
+    if report_dir is None:
+        report_dir = tree_path.parent / "reports"
+
+    report_dir = Path(report_dir).resolve()
+
+    if not report_dir.exists():
+        if output_format == "json":
+            print(json.dumps({"reports": [], "summary": {"total": 0, "passed": 0, "failed": 0, "avg_retries": 0}}, indent=2))
+        else:
+            console.print("[yellow]No reports directory found[/yellow]")
         return
 
-    console.print(f"\n[bold]State:[/bold] {state.value}")
-    if trailers:
-        console.print("[bold]Latest trailers:[/bold]")
-        for key, val in trailers.items():
-            console.print(f"  {key}: {val}")
+    all_reports = []
+    for fname in sorted(report_dir.glob("*.json")):
+        try:
+            data = json.loads(fname.read_text())
+            if task_id is None or data.get("task_id") == task_id:
+                all_reports.append(data)
+        except Exception:
+            pass
 
-    # --- Full commit history for this task ---
-    console.print(f"\n[bold]Commit history[/bold] (grep: {grep_pattern})")
-    try:
-        log_output = git_log(
-            "HEAD",
-            "%h %s%n%(trailers:key=Arborist-Step,key=Arborist-Result,key=Arborist-Test,key=Arborist-Review,key=Arborist-Retry,key=Arborist-Test-Type,key=Arborist-Test-Passed,key=Arborist-Test-Failed,key=Arborist-Test-Runtime)",
-            target,
-            n=50,
-            grep=grep_pattern,
-            fixed_strings=True,
-        )
-        if log_output.strip():
-            for line in log_output.split("\n"):
-                line = line.strip()
-                if not line:
-                    continue
-                if line.startswith("Arborist-"):
-                    console.print(f"    [dim]{line}[/dim]")
-                else:
-                    console.print(f"  [cyan]{line}[/cyan]")
+    summary = {
+        "total": len(all_reports),
+        "passed": sum(1 for r in all_reports if r.get("result") == "pass"),
+        "failed": sum(1 for r in all_reports if r.get("result") == "fail"),
+        "avg_retries": round(sum(r.get("retries", 0) for r in all_reports) / len(all_reports), 2) if all_reports else 0
+    }
+
+    if output_format == "json":
+        print(json.dumps({"reports": all_reports, "summary": summary}, indent=2))
+    else:
+        console.print(f"\n[bold]Reports[/bold] ({summary['total']} total)")
+        console.print(f"  Passed: {summary['passed']} | Failed: {summary['failed']} | Avg Retries: {summary['avg_retries']}")
+        console.print()
+        for r in all_reports:
+            icon = "[green]✓[/green]" if r.get("result") == "pass" else "[red]✗[/red]"
+            retries_str = f" ({r.get('retries', 0)} retries)" if r.get('retries', 0) > 0 else ""
+            console.print(f"  {icon} {r.get('task_id', 'unknown')} - {r.get('completed_at', 'unknown')}{retries_str}")
+
+
+@main.command()
+@click.option("--tree", "tree_path", type=click.Path(exists=True, path_type=Path), default=None,
+              help="Path to task-tree.json (default: specs/{branch}/task-tree.json)")
+@click.option("--log-dir", type=click.Path(path_type=Path), default=None,
+              help="Directory for logs (default: next to task tree)")
+@click.option("--format", "output_format", type=click.Choice(["text", "json"]), default="text",
+              help="Output format (text or json)")
+@click.option("--task-id", help="Filter by specific task ID")
+def logs(tree_path, log_dir, output_format, task_id):
+    """List task execution logs."""
+    import re
+
+    target = Path(_default_repo()).resolve()
+    branch = git_current_branch(target)
+
+    if tree_path is None:
+        tree_path = Path("specs") / branch / "task-tree.json"
+
+    tree_path = Path(tree_path).resolve()
+    if log_dir is None:
+        log_dir = tree_path.parent / "logs"
+
+    log_dir = Path(log_dir).resolve()
+
+    if not log_dir.exists():
+        if output_format == "json":
+            print(json.dumps({"logs": {}, "summary": {"total_tasks": 0, "total_entries": 0, "phase_counts": {"implement": 0, "review": 0, "test": 0}}}, indent=2))
         else:
-            console.print("  [dim]No commits found for this task.[/dim]")
-    except GitError:
-        console.print("  [dim]No commits found for this task.[/dim]")
+            console.print("[yellow]No logs directory found[/yellow]")
+        return
 
-    console.print()
+    logs_by_task = {}
+    for fname in sorted(log_dir.glob("*.log")):
+        m = re.match(r'(?:M\d+-)?(\w\d+)_(\w+)_(\d{8}T\d{6})\.log', fname.name)
+        if m:
+            tid, phase, ts = m.groups()
+            if task_id is None or tid == task_id:
+                size = fname.stat().st_size
+                if tid not in logs_by_task:
+                    logs_by_task[tid] = []
+                logs_by_task[tid].append({
+                    "task_id": tid,
+                    "phase": phase,
+                    "timestamp": ts,
+                    "filename": fname.name,
+                    "size": size
+                })
+
+    for tid in logs_by_task:
+        logs_by_task[tid].sort(key=lambda e: e["timestamp"])
+
+    summary = {
+        "total_tasks": len(logs_by_task),
+        "total_entries": sum(len(entries) for entries in logs_by_task.values()),
+        "phase_counts": {
+            "implement": sum(1 for entries in logs_by_task.values() for e in entries if e["phase"] == "implement"),
+            "review": sum(1 for entries in logs_by_task.values() for e in entries if e["phase"] == "review"),
+            "test": sum(1 for entries in logs_by_task.values() for e in entries if e["phase"] == "test")
+        }
+    }
+
+    if output_format == "json":
+        print(json.dumps({"logs": logs_by_task, "summary": summary}, indent=2))
+    else:
+        console.print(f"\n[bold]Logs[/bold] ({summary['total_tasks']} tasks, {summary['total_entries']} entries)")
+        console.print(f"  Implement: {summary['phase_counts']['implement']} | Review: {summary['phase_counts']['review']} | Test: {summary['phase_counts']['test']}")
+        console.print()
+        for tid, entries in sorted(logs_by_task.items()):
+            console.print(f"  [cyan]{tid}[/cyan] ({len(entries)} phases)")
+            for e in entries:
+                size_kb = round(e["size"] / 1024, 1)
+                console.print(f"    {e['phase']:10s} {e['timestamp']}  ({size_kb} KB)")
+
+
+@main.command()
+@click.option("--tree", "tree_path", type=click.Path(exists=True, path_type=Path), default=None,
+              help="Path to task-tree.json")
+@click.option("--port", type=int, default=8484,
+              help="Port for dashboard server (default: 8484)")
+@click.option("--report-dir", type=click.Path(path_type=Path), default=None,
+              help="Directory for reports (default: next to task tree)")
+@click.option("--log-dir", type=click.Path(path_type=Path), default=None,
+              help="Directory for logs (default: next to task tree)")
+def dashboard(tree_path, port, report_dir, log_dir):
+    """Start read-only monitoring dashboard for task execution."""
+    from agent_arborist.dashboard.server import start_dashboard
+
+    target = Path(_default_repo()).resolve()
+    branch = git_current_branch(target)
+
+    if tree_path is None:
+        tree_path = Path("specs") / branch / "task-tree.json"
+
+    tree_path = Path(tree_path).resolve()
+    if not tree_path.exists():
+        console.print(f"[red]Error:[/red] {tree_path} not found")
+        sys.exit(1)
+
+    start_dashboard(tree_path, report_dir, log_dir, port)
 
 
 def _load_tree(tree_path: Path):
