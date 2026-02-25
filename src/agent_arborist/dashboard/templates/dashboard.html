@@ -44,11 +44,11 @@
   .progress-inner { height: 100%; border-radius: 6px; transition: width 0.5s ease; }
 
   .group {
-    border-bottom: 1px solid var(--border); padding: 12px 0;
+    border-bottom: 1px solid var(--border); padding: 8px 0;
   }
   .group:last-child { border-bottom: none; }
   .group-header {
-    display: flex; align-items: center; gap: 12px; cursor: pointer;
+    display: flex; align-items: center; gap: 8px; cursor: pointer;
     user-select: none; padding: 4px 0;
   }
   .group-header:hover { opacity: 0.85; }
@@ -57,18 +57,11 @@
     transition: transform 0.2s;
   }
   .group-toggle.collapsed { transform: rotate(-90deg); }
-  .group-id { font-weight: 600; font-size: 14px; color: var(--cyan); min-width: 40px; }
-  .group-name { font-size: 14px; font-weight: 500; flex: 1; }
-  .group-progress {
-    font-size: 12px; color: var(--text-dim);
-    display: flex; align-items: center; gap: 8px;
-  }
-  .group-bar {
-    width: 80px; height: 6px; background: var(--border); border-radius: 3px; overflow: hidden;
-  }
-  .group-bar-inner { height: 100%; border-radius: 3px; transition: width 0.5s ease; }
-  .group-tasks { padding-left: 26px; }
-  .group-tasks.hidden { display: none; }
+  .group-id { font-weight: 600; font-size: 13px; color: var(--cyan); min-width: 50px; }
+  .group-name { font-size: 13px; font-weight: 500; flex: 1; }
+  .group-tasks { }
+  .group-tasks.hidden { display: none !important; }
+  .group-progress { font-size: 12px; color: var(--text-dim); }
   .task {
     display: flex; align-items: flex-start; gap: 10px;
     padding: 6px 0; border-bottom: 1px solid #21262d;
@@ -115,13 +108,8 @@
   <div id="overall-progress"></div>
 </div>
 
-<div class="card">
-  <h2>Task Groups</h2>
-  <div id="groups"></div>
-</div>
-
 <div class="card" style="margin-top: 16px;">
-  <h2>Full Task Tree</h2>
+  <h2>Task Tree</h2>
   <div id="full-tree"></div>
 </div>
 
@@ -278,99 +266,13 @@ function render(status, reports, logs) {
     </div>
   `;
 
-  // Build task groups (non-leaf nodes that directly contain leaf tasks)
-  const groups = [];
-  for (const [nodeId, node] of Object.entries(status.tree.nodes)) {
-    if (node.children && node.children.length > 0) {
-      const leafChildren = node.children.filter(cid => {
-        const child = status.tree.nodes[cid];
-        return child && (!child.children || child.children.length === 0);
-      });
-      if (leafChildren.length > 0) {
-        groups.push({
-          id: nodeId,
-          name: node.name,
-          children: leafChildren
-        });
-      }
-    }
-  }
-
-  // Groups panel
-  document.getElementById('groups').innerHTML = groups.map(g => {
-    const done = g.children.filter(c => reportMap[c]).length;
-    const total = g.children.length;
-    const gpct = total > 0 ? Math.round(done / total * 100) : 0;
-    const color = done === total ? 'var(--green)' : done > 0 ? 'var(--yellow)' : 'var(--border)';
-    return `<div class="group">
-      <div class="group-header" onclick="toggleGroup(this)">
-        <span class="group-toggle">▼</span>
-        <span class="group-id">${g.id}</span>
-        <span class="group-name">${g.name}</span>
-        <div class="group-progress">
-          <span>${done}/${total}</span>
-          <div class="group-bar"><div class="group-bar-inner" style="width:${gpct}%;background:${color};"></div></div>
-        </div>
-      </div>
-      <div class="group-tasks" style="display:block;">
-        ${g.children.map(cid => {
-          const task = status.tasks[cid] || { name: cid };
-          const isDone = !!reportMap[cid];
-          const isActive = !isDone && !!logs.logs[cid];
-          const a = attempts[cid] || {};
-          const hadRetry = a.implement_attempts > 1;
-          let icon, badge, nameClass;
-          if (isDone) {
-            icon = '<span style="color:var(--green)">&#10003;</span>';
-            badge = hadRetry
-              ? `<span class="badge badge-retry">${a.implement_attempts - 1} retry</span>`
-              : `<span class="badge badge-pass">pass</span>`;
-            nameClass = 'task-name done';
-          } else if (isActive) {
-            icon = '<span style="color:var(--cyan)">&#9654;</span>';
-            badge = '<span class="badge badge-active">running</span>';
-            nameClass = 'task-name';
-          } else {
-            icon = '<span style="color:var(--text-dim)">&#9675;</span>';
-            badge = '<span class="badge badge-pending">pending</span>';
-            nameClass = 'task-name';
-          }
-          const taskLogs = logs.logs[cid] || [];
-          const logsHtml = taskLogs.length > 0
-            ? `<div style="margin-left:8px;margin-top:4px;">${taskLogs.map(l => `<span onclick="viewLog('${l.filename}')" style="cursor:pointer;color:var(--cyan);font-size:11px;margin-right:8px;">${l.phase}</span>`).join('')}</div>`
-            : '';
-          const cidLogs = logs.logs[cid] || [];
-          const implCount = cidLogs.filter(l => l.phase === 'implement').length;
-          const reviewCount = cidLogs.filter(l => l.phase === 'review').length;
-          const testCount = cidLogs.filter(l => l.phase === 'test').length;
-
-          const implBtn = implCount > 0
-            ? `<button onclick="viewPhaseLogs('${cid}', 'implement')" style="background:${getPhaseColor(implCount)};border:none;cursor:pointer;font-size:11px;padding:4px 8px;border-radius:4px;color:${implCount === 0 || implCount >= 5 ? 'var(--bg)' : 'var(--bg)'};">implement ${implCount}</button>`
-            : `<span style="font-size:11px;color:var(--text-dim);padding:4px 8px;">implement 0</span>`;
-          const reviewBtn = reviewCount > 0
-            ? `<button onclick="viewPhaseLogs('${cid}', 'review')" style="background:${getPhaseColor(reviewCount)};border:none;cursor:pointer;font-size:11px;padding:4px 8px;border-radius:4px;color:var(--bg);">review ${reviewCount}</button>`
-            : `<span style="font-size:11px;color:var(--text-dim);padding:4px 8px;">review 0</span>`;
-          const testBtn = testCount > 0
-            ? `<button onclick="viewPhaseLogs('${cid}', 'test')" style="background:${getPhaseColor(testCount)};border:none;cursor:pointer;font-size:11px;padding:4px 8px;border-radius:4px;color:var(--bg);">test ${testCount}</button>`
-            : '';
-
-          return `<div class="task">
-            <span class="task-icon">${icon}</span>
-            <span class="task-id">${cid}</span>
-            <span class="${nameClass}">${task.name}</span>
-            <div style="margin-left:8px;display:flex;gap:4px;align-items:center;">
-              ${implBtn}
-              ${reviewBtn}
-              ${testBtn}
-            </div>
-          </div>`;
-        }).join('')}
-      </div>
-    </div>`;
-  }).join('');
-
-  // Full tree (expanded)
+  // Full tree
   document.getElementById('full-tree').innerHTML = renderFullTree(status.tree.root_ids, status.tree, status.tasks, reportMap, attempts, logs.logs, 0);
+}
+
+function getGroupState(nodeId) {
+  const state = localStorage.getItem('arborist-group-' + nodeId);
+  return state === 'true';
 }
 
 function renderFullTree(nodeIds, tree, tasks, reportMap, attempts, logs, level) {
@@ -428,16 +330,18 @@ function renderFullTree(nodeIds, tree, tasks, reportMap, attempts, logs, level) 
     } else {
       const done = node.children.filter(cid => reportMap[cid]).length;
       const total = node.children.length;
+      const isExpanded = getGroupState(nodeId);
+      const toggleClass = isExpanded ? '' : 'collapsed';
+      const tasksStyle = isExpanded ? '' : 'display:none;';
+      const tasksHidden = isExpanded ? '' : 'hidden';
       return `<div class="group">
         <div class="group-header" onclick="toggleGroup(this)" style="padding-left:${level * 26}px;">
-          <span class="group-toggle">▼</span>
+          <span class="group-toggle ${toggleClass}">▼</span>
           <span class="group-id">${nodeId}</span>
           <span class="group-name">${node.name}</span>
-          <div class="group-progress">
-            <span>${done}/${total}</span>
-          </div>
+          <span class="group-progress">${done}/${total}</span>
         </div>
-        <div class="group-tasks" style="display:block;">
+        <div class="group-tasks ${tasksHidden}" style="${tasksStyle}">
           ${renderFullTree(node.children, tree, tasks, reportMap, attempts, logs, level + 1)}
         </div>
       </div>`;
@@ -448,8 +352,21 @@ function renderFullTree(nodeIds, tree, tasks, reportMap, attempts, logs, level) 
 function toggleGroup(header) {
   const toggle = header.querySelector('.group-toggle');
   const tasks = header.nextElementSibling;
-  toggle.classList.toggle('collapsed');
-  tasks.classList.toggle('hidden');
+  const idSpan = header.querySelector('.group-id');
+  const nodeId = idSpan ? idSpan.textContent : null;
+  const isCollapsed = toggle.classList.contains('collapsed');
+  
+  if (isCollapsed) {
+    toggle.classList.remove('collapsed');
+    tasks.classList.remove('hidden');
+    tasks.style.display = '';
+    if (nodeId) localStorage.setItem('arborist-group-' + nodeId, 'true');
+  } else {
+    toggle.classList.add('collapsed');
+    tasks.classList.add('hidden');
+    tasks.style.display = 'none';
+    if (nodeId) localStorage.setItem('arborist-group-' + nodeId, 'false');
+  }
 }
 
 async function viewLog(filename) {
