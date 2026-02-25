@@ -43,6 +43,17 @@
   }
   .progress-inner { height: 100%; border-radius: 6px; transition: width 0.5s ease; }
 
+  .tabs { display: flex; gap: 2px; margin-bottom: 16px; border-bottom: 1px solid var(--border); }
+  .tab {
+    padding: 8px 16px; cursor: pointer; font-size: 13px; font-weight: 500;
+    color: var(--text-dim); border-bottom: 2px solid transparent;
+    transition: all 0.15s;
+  }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--text); border-bottom-color: var(--cyan); }
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+
   .group {
     border-bottom: 1px solid var(--border); padding: 8px 0;
   }
@@ -80,6 +91,23 @@
   .badge-active { background: #0c2d6b; color: var(--cyan); }
   .badge-retry { background: #d18616; color: #e6edf3; }
 
+  .gantt { position: relative; overflow-x: auto; }
+  .gantt-row { display: flex; align-items: center; height: 28px; gap: 8px; }
+  .gantt-label { font-size: 12px; font-family: monospace; min-width: 40px; color: var(--text-dim); }
+  .gantt-track { flex: 1; position: relative; height: 20px; }
+  .gantt-bar {
+    position: absolute; height: 16px; top: 2px; border-radius: 3px;
+    min-width: 4px; cursor: pointer;
+  }
+  .gantt-bar:hover { filter: brightness(1.3); }
+  .gantt-bar.implement { background: var(--cyan); opacity: 0.7; }
+  .gantt-bar.review { background: var(--purple); opacity: 0.7; }
+  .gantt-bar.test { background: var(--yellow); opacity: 0.7; }
+  .gantt-bar.retry-attempt { border: 2px solid var(--orange); }
+  .legend { display: flex; gap: 16px; margin-bottom: 12px; flex-wrap: wrap; }
+  .legend-item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-dim); }
+  .legend-dot { width: 12px; height: 12px; border-radius: 3px; }
+
   @media (max-width: 768px) {
     .grid-2, .grid-4 { grid-template-columns: 1fr; }
   }
@@ -109,8 +137,22 @@
 </div>
 
 <div class="card" style="margin-top: 16px;">
-  <h2>Task Tree</h2>
-  <div id="full-tree"></div>
+  <div class="tabs">
+    <div class="tab active" onclick="switchTab('tree')">Task Tree</div>
+    <div class="tab" onclick="switchTab('gantt')">Timeline</div>
+  </div>
+  <div class="tab-content active" id="tab-tree">
+    <div id="full-tree"></div>
+  </div>
+  <div class="tab-content" id="tab-gantt">
+    <div class="legend">
+      <div class="legend-item"><div class="legend-dot" style="background:var(--cyan);"></div> Implement</div>
+      <div class="legend-item"><div class="legend-dot" style="background:var(--purple);"></div> Review</div>
+      <div class="legend-item"><div class="legend-dot" style="background:var(--yellow);"></div> Test</div>
+      <div class="legend-item"><div class="legend-dot" style="border:2px solid var(--orange);background:transparent;"></div> Retry attempt</div>
+    </div>
+    <div class="gantt" id="gantt"></div>
+  </div>
 </div>
 
 <!-- Log Viewer Modal -->
@@ -129,6 +171,7 @@
 
 <script>
 let autoRefreshInterval = null;
+let currentTab = localStorage.getItem('arborist-tab') || 'tree';
 
 function parseTs(ts) {
   const year = parseInt(ts.slice(0, 4));
@@ -146,6 +189,17 @@ function fmtTime(d) {
   const h = d.getHours().toString().padStart(2, '0');
   const min = d.getMinutes().toString().padStart(2, '0');
   return `${m}/${date} ${h}:${min}`;
+}
+
+function switchTab(tabId) {
+  currentTab = tabId;
+  localStorage.setItem('arborist-tab', tabId);
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+  const tabEl = document.querySelector(`.tab[onclick="switchTab('${tabId}')"]`);
+  const contentEl = document.getElementById('tab-' + tabId);
+  if (tabEl) tabEl.classList.add('active');
+  if (contentEl) contentEl.classList.add('active');
 }
 
 function startAutoRefresh() {
@@ -197,6 +251,7 @@ async function fetchAndRender() {
 
 function render(status, reports, logs) {
   window.dashboardLogs = logs.logs;
+
   const reportMap = {};
   reports.reports.forEach(r => reportMap[r.task_id] = r);
 
@@ -208,7 +263,6 @@ function render(status, reports, logs) {
   const totalTasks = leafTasks.length;
   const completedTasks = leafTasks.filter(([id]) => reportMap[id]).length;
 
-  // Calculate attempts from logs
   const attempts = {};
   for (const [taskId, entries] of Object.entries(logs.logs)) {
     const implCount = entries.filter(e => e.phase === 'implement').length;
@@ -225,7 +279,6 @@ function render(status, reports, logs) {
     .length;
   const reportRetried = Object.values(reportMap).filter(r => r.retries > 0).length;
 
-  // Time range from logs
   let allTs = [];
   for (const entries of Object.values(logs.logs)) {
     for (const e of entries) allTs.push(parseTs(e.timestamp));
@@ -238,7 +291,6 @@ function render(status, reports, logs) {
   document.getElementById('subtitle').textContent =
     status.branch + ' \u2014 Generated ' + new Date(status.generated_at).toLocaleTimeString();
 
-  // Stats
   document.getElementById('stats').innerHTML = [
     { value: `${completedTasks}/${totalTasks}`, label: 'Tasks Completed', color: 'var(--green)' },
     { value: `${Math.round(completedTasks/totalTasks*100)}%`, label: 'Progress', color: 'var(--cyan)' },
@@ -251,7 +303,6 @@ function render(status, reports, logs) {
     </div>
   `).join('');
 
-  // Overall progress
   const pct = totalTasks > 0 ? Math.round(completedTasks / totalTasks * 100) : 0;
   document.getElementById('overall-progress').innerHTML = `
     <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px;">
@@ -266,8 +317,9 @@ function render(status, reports, logs) {
     </div>
   `;
 
-  // Full tree
   document.getElementById('full-tree').innerHTML = renderFullTree(status.tree.root_ids, status.tree, status.tasks, reportMap, attempts, logs.logs, 0);
+
+  renderGantt(logs.logs, minTime, maxTime);
 }
 
 function getGroupState(nodeId) {
@@ -369,6 +421,41 @@ function toggleGroup(header) {
   }
 }
 
+function renderGantt(logs, minTime, maxTime) {
+  const totalMs = maxTime - minTime || 1;
+  let html = '';
+
+  const taskIds = Object.keys(logs).sort((a, b) => {
+    const firstA = logs[a][0]?.timestamp;
+    const firstB = logs[b][0]?.timestamp;
+    return firstA ? (firstB ? firstA.localeCompare(firstB) : -1) : 1;
+  });
+
+  for (const taskId of taskIds) {
+    const entries = logs[taskId];
+    if (!entries.length) continue;
+
+    html += `<div class="gantt-row">
+      <span class="gantt-label">${taskId}</span>
+      <div class="gantt-track">`;
+
+    for (const entry of entries) {
+      const start = parseTs(entry.timestamp);
+      const startMs = start.getTime() - minTime;
+      const startTime = start.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+      const isRetry = entries.filter(e => e.phase === entry.phase && e.timestamp <= entry.timestamp).length > 1;
+      html += `<div class="gantt-bar ${entry.phase} ${isRetry ? 'retry-attempt' : ''}"
+        style="left:${(startMs/totalMs*100)}%;width:30px;"
+        title="${taskId} - ${entry.phase}\\n${startTime}\\n${isRetry ? '(retry)' : ''}"
+      ></div>`;
+    }
+
+    html += `</div></div>`;
+  }
+
+  document.getElementById('gantt').innerHTML = html || '<p style="color:var(--text-dim);padding:16px;">No timeline data available</p>';
+}
+
 async function viewLog(filename) {
   const modal = document.getElementById('log-modal');
   const title = document.getElementById('log-title');
@@ -452,6 +539,7 @@ document.getElementById('log-modal').addEventListener('click', (e) => {
   if (e.target.id === 'log-modal') closeLogModal();
 });
 
+switchTab(currentTab);
 startAutoRefresh();
 fetchAndRender();
 </script>
