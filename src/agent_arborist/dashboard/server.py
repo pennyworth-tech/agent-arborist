@@ -14,10 +14,9 @@
 
 """Dashboard FastAPI server - read-only monitoring interface."""
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, PlainTextResponse
-from fastapi import HTTPException
 from pathlib import Path
 from typing import Dict, List, Optional
 from datetime import datetime
@@ -25,12 +24,15 @@ import json
 
 from rich.console import Console
 
-from agent_arborist.git.state import scan_completed_tasks, get_task_trailers, task_state_from_trailers
+from agent_arborist.git.state import (
+    scan_completed_tasks, get_task_trailers, task_state_from_trailers,
+    get_task_commit_history,
+)
 from agent_arborist.tree.model import TaskTree
 from agent_arborist.git.repo import git_current_branch
 from agent_arborist.dashboard.schemas import (
-    StatusOutput, ReportsOutput, LogsOutput, TaskStateData,
-    Report, LogEntry
+    StatusOutput, ReportsOutput, LogsOutput, TaskStateData, TaskCommit,
+    Report, LogEntry,
 )
 
 console = Console()
@@ -76,18 +78,35 @@ def create_app(tree_path: Path, report_dir: Optional[Path], log_dir: Optional[Pa
 
     @app.get("/api/status", response_model=StatusOutput)
     async def get_status() -> StatusOutput:
-        """Get task status data."""
+        """Get task status data with per-task commit history."""
         completed = scan_completed_tasks(tree, target, branch=branch)
 
         tasks: Dict[str, TaskStateData] = {}
         for node_id, node in tree.nodes.items():
             trailers = get_task_trailers("HEAD", node_id, target, current_branch=branch)
             state = task_state_from_trailers(trailers)
+
+            commits: List[TaskCommit] = []
+            if node.is_leaf:
+                raw_commits = get_task_commit_history(node_id, target, current_branch=branch)
+                commits = [
+                    TaskCommit(
+                        sha=c["sha"],
+                        subject=c["subject"],
+                        step=c["step"],
+                        result=c["result"],
+                        retry=c["retry"],
+                        trailers=c["trailers"],
+                    )
+                    for c in raw_commits
+                ]
+
             tasks[node_id] = TaskStateData(
                 id=node_id,
                 name=node.name,
                 state=state.value,
-                trailers=trailers
+                trailers=trailers,
+                commits=commits,
             )
 
         return StatusOutput(
@@ -123,54 +142,23 @@ def create_app(tree_path: Path, report_dir: Optional[Path], log_dir: Optional[Pa
 
     @app.get("/api/logs", response_model=LogsOutput)
     async def get_logs() -> LogsOutput:
-        """Get task execution logs metadata."""
-        import re
+        """Get log file listing for detail viewing."""
+        from agent_arborist.dashboard.logs import scan_log_files
 
-        if not log_dir.exists():
-            return LogsOutput(
-                logs={},
-                summary={
-                    "total_tasks": 0,
-                    "total_entries": 0,
-                    "implement": 0,
-                    "review": 0,
-                    "test": 0
-                }
-            )
+        if not log_dir or not log_dir.exists():
+            return LogsOutput(logs={})
 
+        raw = scan_log_files(log_dir, list(tree.nodes.keys()))
         logs: Dict[str, List[LogEntry]] = {}
-        for fname in sorted(log_dir.glob("*.log")):
-            m = re.match(r'(?:M\d+-)?(\w\d+)_(\w+)_(\d{8}T\d{6})\.log', fname.name)
-            if m:
-                task_id, phase, timestamp = m.groups()
-                size = fname.stat().st_size
-                if task_id not in logs:
-                    logs[task_id] = []
-                logs[task_id].append(LogEntry(
-                    task_id=task_id,
-                    phase=phase,
-                    timestamp=timestamp,
-                    filename=fname.name,
-                    size=size
-                ))
+        for tid, entries in raw.items():
+            logs[tid] = [LogEntry(**e) for e in entries]
 
-        for task_id in logs:
-            logs[task_id].sort(key=lambda e: e.timestamp)
-
-        summary = {
-            "total_tasks": len(logs),
-            "total_entries": sum(len(entries) for entries in logs.values()),
-            "implement": sum(1 for entries in logs.values() for e in entries if e.phase == "implement"),
-            "review": sum(1 for entries in logs.values() for e in entries if e.phase == "review"),
-            "test": sum(1 for entries in logs.values() for e in entries if e.phase == "test")
-        }
-
-        return LogsOutput(logs=logs, summary=summary)
+        return LogsOutput(logs=logs)
 
     @app.get("/api/log/{filename:path}", response_class=PlainTextResponse)
     async def get_log_file(filename: str) -> str:
         """Get individual log file content securely."""
-        if not log_dir.exists():
+        if not log_dir or not log_dir.exists():
             raise HTTPException(status_code=404, detail="Logs directory not found")
 
         log_file = (log_dir / filename).resolve()
@@ -196,7 +184,6 @@ def start_dashboard(tree_path: Path, report_dir: Optional[Path], log_dir: Option
     console.print(f"[green]Dashboard:[/green] http://localhost:{port}")
     console.print(f"  Tree:    {tree_path}")
     console.print(f"  Reports: {report_dir}")
-    console.print(f"  Logs:    {log_dir}")
     console.print("\n[dim]Press Ctrl+C to stop[/dim]")
 
     uvicorn.run(app, host="localhost", port=port, log_level="warning")

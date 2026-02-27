@@ -108,6 +108,14 @@
   .legend-item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-dim); }
   .legend-dot { width: 12px; height: 12px; border-radius: 3px; }
 
+  /* Commit detail modal */
+  .commit-list { list-style: none; padding: 0; margin: 0; }
+  .commit-item { padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+  .commit-item:last-child { border-bottom: none; }
+  .commit-sha { font-family: monospace; color: var(--cyan); font-size: 12px; }
+  .commit-subject { margin-left: 8px; }
+  .commit-trailers { font-size: 11px; color: var(--text-dim); margin-top: 2px; padding-left: 16px; }
+
   @media (max-width: 768px) {
     .grid-2, .grid-4 { grid-template-columns: 1fr; }
   }
@@ -155,41 +163,25 @@
   </div>
 </div>
 
-<!-- Log Viewer Modal -->
-<div id="log-modal" class="modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.8);z-index:1000;justify-content:center;align-items:center;">
+<!-- Detail Modal (log files + commit info) -->
+<div id="detail-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.8);z-index:1000;justify-content:center;align-items:center;">
   <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;width:80%;max-width:1000px;height:80%;display:flex;flex-direction:column;">
     <div style="padding:16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;">
       <div style="display:flex;flex-direction:column;gap:8px;">
-        <h3 id="log-title" style="font-size:16px;margin:0;">Log Viewer</h3>
-        <div id="log-selector" style="display:none;"></div>
+        <h3 id="detail-modal-title" style="font-size:16px;margin:0;">Details</h3>
+        <div id="detail-selector" style="display:none;"></div>
       </div>
-      <button onclick="closeLogModal()" style="background:none;border:none;color:var(--text-dim);font-size:20px;cursor:pointer;">&times;</button>
+      <button onclick="closeDetailModal()" style="background:none;border:none;color:var(--text-dim);font-size:20px;cursor:pointer;">&times;</button>
     </div>
-    <pre id="log-content" style="flex:1;overflow:auto;padding:16px;margin:0;font-family:monospace;font-size:12px;line-height:1.4;white-space:pre-wrap;word-wrap:break-word;"></pre>
+    <pre id="detail-content" style="flex:1;overflow:auto;padding:16px;margin:0;font-family:monospace;font-size:12px;line-height:1.4;white-space:pre-wrap;word-wrap:break-word;"></pre>
   </div>
 </div>
 
 <script>
 let autoRefreshInterval = null;
 let currentTab = localStorage.getItem('arborist-tab') || 'tree';
-
-function parseTs(ts) {
-  const year = parseInt(ts.slice(0, 4));
-  const month = parseInt(ts.slice(4, 6)) - 1;
-  const day = parseInt(ts.slice(6, 8));
-  const hour = parseInt(ts.slice(9, 11));
-  const min = parseInt(ts.slice(11, 13));
-  const sec = parseInt(ts.slice(13, 15));
-  return new Date(year, month, day, hour, min, sec);
-}
-
-function fmtTime(d) {
-  const m = d.getMonth() + 1;
-  const date = d.getDate();
-  const h = d.getHours().toString().padStart(2, '0');
-  const min = d.getMinutes().toString().padStart(2, '0');
-  return `${m}/${date} ${h}:${min}`;
-}
+let currentStatus = null;
+let currentLogs = {};
 
 function switchTab(tabId) {
   currentTab = tabId;
@@ -219,6 +211,25 @@ document.getElementById('auto-refresh').addEventListener('change', () => {
   else stopAutoRefresh();
 });
 
+function getCommitCounts(taskData) {
+  const commits = taskData.commits || [];
+  return {
+    implement: commits.filter(c => c.step === 'implement').length,
+    review: commits.filter(c => c.step === 'review').length,
+    test: commits.filter(c => c.step === 'test').length,
+  };
+}
+
+function getMaxRetry(taskData) {
+  const commits = taskData.commits || [];
+  let max = 0;
+  for (const c of commits) {
+    const r = parseInt(c.retry);
+    if (!isNaN(r) && r > max) max = r;
+  }
+  return max;
+}
+
 async function fetchAndRender() {
   const btn = document.querySelector('.refresh-btn');
   const info = document.getElementById('refresh-info');
@@ -229,13 +240,15 @@ async function fetchAndRender() {
     const [statusResp, reportsResp, logsResp] = await Promise.all([
       fetch('/api/status?t=' + Date.now()),
       fetch('/api/reports?t=' + Date.now()),
-      fetch('/api/logs?t=' + Date.now())
+      fetch('/api/logs?t=' + Date.now()),
     ]);
     const status = await statusResp.json();
     const reports = await reportsResp.json();
-    const logs = await logsResp.json();
+    const logsData = await logsResp.json();
+    currentStatus = status;
+    currentLogs = logsData.logs || {};
 
-    render(status, reports, logs);
+    render(status, reports);
     info.textContent = 'Updated ' + new Date().toLocaleTimeString();
     document.body.style.transition = 'background 0.15s';
     document.body.style.background = '#111820';
@@ -249,9 +262,7 @@ async function fetchAndRender() {
   btn.style.opacity = '1';
 }
 
-function render(status, reports, logs) {
-  window.dashboardLogs = logs.logs;
-
+function render(status, reports) {
   const reportMap = {};
   reports.reports.forEach(r => reportMap[r.task_id] = r);
 
@@ -263,39 +274,21 @@ function render(status, reports, logs) {
   const totalTasks = leafTasks.length;
   const completedTasks = leafTasks.filter(([id]) => reportMap[id]).length;
 
-  const attempts = {};
-  for (const [taskId, entries] of Object.entries(logs.logs)) {
-    const implCount = entries.filter(e => e.phase === 'implement').length;
-    const reviewCount = entries.filter(e => e.phase === 'review').length;
-    attempts[taskId] = {
-      implement_attempts: implCount,
-      review_attempts: reviewCount,
-      total_phases: entries.length
-    };
+  // Count retried tasks from commit data
+  let retriedCount = 0;
+  for (const [id, task] of leafTasks) {
+    if (reportMap[id] && getMaxRetry(task) > 0) retriedCount++;
   }
-
-  const logRetried = Object.entries(attempts)
-    .filter(([tid, a]) => a.implement_attempts > 1 && reportMap[tid])
-    .length;
   const reportRetried = Object.values(reportMap).filter(r => r.retries > 0).length;
-
-  let allTs = [];
-  for (const entries of Object.values(logs.logs)) {
-    for (const e of entries) allTs.push(parseTs(e.timestamp));
-  }
-  if (allTs.length === 0) { allTs = [new Date()]; }
-  const minTime = Math.min(...allTs.map(d => d.getTime()));
-  const maxTime = Math.max(...allTs.map(d => d.getTime()));
-  const durationMin = Math.round((maxTime - minTime) / 60000);
 
   document.getElementById('subtitle').textContent =
     status.branch + ' \u2014 Generated ' + new Date(status.generated_at).toLocaleTimeString();
 
   document.getElementById('stats').innerHTML = [
     { value: `${completedTasks}/${totalTasks}`, label: 'Tasks Completed', color: 'var(--green)' },
-    { value: `${Math.round(completedTasks/totalTasks*100)}%`, label: 'Progress', color: 'var(--cyan)' },
-    { value: `${logRetried}`, label: `Retried (${reportRetried} per report)`, color: logRetried > 0 ? 'var(--orange)' : 'var(--green)' },
-    { value: `${durationMin}m`, label: 'Elapsed Time', color: 'var(--text)' },
+    { value: `${Math.round(completedTasks/totalTasks*100 || 0)}%`, label: 'Progress', color: 'var(--cyan)' },
+    { value: `${retriedCount}`, label: `Retried (${reportRetried} per report)`, color: retriedCount > 0 ? 'var(--orange)' : 'var(--green)' },
+    { value: `${totalTasks}`, label: 'Total Leaf Tasks', color: 'var(--text)' },
   ].map(s => `
     <div class="card">
       <div class="stat-value" style="color:${s.color}">${s.value}</div>
@@ -311,15 +304,11 @@ function render(status, reports, logs) {
     <div class="progress-outer">
       <div class="progress-inner" style="width:${pct}%;background:var(--green);"></div>
     </div>
-    <div style="font-size:12px;color:var(--text-dim);margin-top:4px;">
-      ${fmtTime(new Date(minTime))} &mdash; ${fmtTime(new Date(maxTime))}
-      &bull; ${durationMin} minutes
-    </div>
   `;
 
-  document.getElementById('full-tree').innerHTML = renderFullTree(status.tree.root_ids, status.tree, status.tasks, reportMap, attempts, logs.logs, 0);
+  document.getElementById('full-tree').innerHTML = renderFullTree(status.tree.root_ids, status.tree, status.tasks, reportMap, 0);
 
-  renderGantt(logs.logs, minTime, maxTime);
+  renderGantt(status.tasks);
 }
 
 function getGroupState(nodeId) {
@@ -327,22 +316,25 @@ function getGroupState(nodeId) {
   return state === 'true';
 }
 
-function renderFullTree(nodeIds, tree, tasks, reportMap, attempts, logs, level) {
+function renderFullTree(nodeIds, tree, tasks, reportMap, level) {
   return nodeIds.map(nodeId => {
     const node = tree.nodes[nodeId];
     const isLeaf = !node.children || node.children.length === 0;
 
     if (isLeaf) {
-      const task = tasks[nodeId] || { name: node.name };
+      const task = tasks[nodeId] || { name: node.name, commits: [] };
       const isDone = !!reportMap[nodeId];
-      const isActive = !isDone && !!logs[nodeId];
-      const a = attempts[nodeId] || {};
-      const hadRetry = a.implement_attempts > 1;
+      const hasCommits = task.commits && task.commits.length > 0;
+      const isActive = !isDone && hasCommits;
+      const counts = getCommitCounts(task);
+      const maxRetry = getMaxRetry(task);
+      const hadRetry = maxRetry > 0;
+
       let icon, badge, nameClass;
       if (isDone) {
         icon = '<span style="color:var(--green)">&#10003;</span>';
         badge = hadRetry
-          ? `<span class="badge badge-retry">${a.implement_attempts - 1} retry</span>`
+          ? `<span class="badge badge-retry">${maxRetry} retry</span>`
           : `<span class="badge badge-pass">pass</span>`;
         nameClass = 'task-name done';
       } else if (isActive) {
@@ -354,19 +346,15 @@ function renderFullTree(nodeIds, tree, tasks, reportMap, attempts, logs, level) 
         badge = '<span class="badge badge-pending">pending</span>';
         nameClass = 'task-name';
       }
-      const nodeLogs = logs[nodeId] || [];
-      const implCount = nodeLogs.filter(l => l.phase === 'implement').length;
-      const reviewCount = nodeLogs.filter(l => l.phase === 'review').length;
-      const testCount = nodeLogs.filter(l => l.phase === 'test').length;
 
-      const implBtn = implCount > 0
-        ? `<button onclick="viewPhaseLogs('${nodeId}', 'implement')" style="background:${getPhaseColor(implCount)};border:none;cursor:pointer;font-size:11px;padding:4px 8px;border-radius:4px;color:var(--bg);">implement ${implCount}</button>`
+      const implBtn = counts.implement > 0
+        ? `<button onclick="viewPhaseCommits('${nodeId}', 'implement')" style="background:${getPhaseColor(counts.implement)};border:none;cursor:pointer;font-size:11px;padding:4px 8px;border-radius:4px;color:var(--bg);">implement ${counts.implement}</button>`
         : `<span style="font-size:11px;color:var(--text-dim);padding:4px 8px;">implement 0</span>`;
-      const reviewBtn = reviewCount > 0
-        ? `<button onclick="viewPhaseLogs('${nodeId}', 'review')" style="background:${getPhaseColor(reviewCount)};border:none;cursor:pointer;font-size:11px;padding:4px 8px;border-radius:4px;color:var(--bg);">review ${reviewCount}</button>`
+      const reviewBtn = counts.review > 0
+        ? `<button onclick="viewPhaseCommits('${nodeId}', 'review')" style="background:${getPhaseColor(counts.review)};border:none;cursor:pointer;font-size:11px;padding:4px 8px;border-radius:4px;color:var(--bg);">review ${counts.review}</button>`
         : `<span style="font-size:11px;color:var(--text-dim);padding:4px 8px;">review 0</span>`;
-      const testBtn = testCount > 0
-        ? `<button onclick="viewPhaseLogs('${nodeId}', 'test')" style="background:${getPhaseColor(testCount)};border:none;cursor:pointer;font-size:11px;padding:4px 8px;border-radius:4px;color:var(--bg);">test ${testCount}</button>`
+      const testBtn = counts.test > 0
+        ? `<button onclick="viewPhaseCommits('${nodeId}', 'test')" style="background:${getPhaseColor(counts.test)};border:none;cursor:pointer;font-size:11px;padding:4px 8px;border-radius:4px;color:var(--bg);">test ${counts.test}</button>`
         : '';
 
       return `<div class="task" style="padding-left:${level * 26 + 10}px;">
@@ -394,7 +382,7 @@ function renderFullTree(nodeIds, tree, tasks, reportMap, attempts, logs, level) 
           <span class="group-progress">${done}/${total}</span>
         </div>
         <div class="group-tasks ${tasksHidden}" style="${tasksStyle}">
-          ${renderFullTree(node.children, tree, tasks, reportMap, attempts, logs, level + 1)}
+          ${renderFullTree(node.children, tree, tasks, reportMap, level + 1)}
         </div>
       </div>`;
     }
@@ -407,7 +395,7 @@ function toggleGroup(header) {
   const idSpan = header.querySelector('.group-id');
   const nodeId = idSpan ? idSpan.textContent : null;
   const isCollapsed = toggle.classList.contains('collapsed');
-  
+
   if (isCollapsed) {
     toggle.classList.remove('collapsed');
     tasks.classList.remove('hidden');
@@ -421,103 +409,125 @@ function toggleGroup(header) {
   }
 }
 
-function renderGantt(logs, minTime, maxTime) {
-  const totalMs = maxTime - minTime || 1;
+function renderGantt(tasks) {
+  // Build timeline from commit data - use commit order as proxy for time
+  const taskEntries = {};
+  for (const [taskId, task] of Object.entries(tasks)) {
+    const commits = task.commits || [];
+    if (commits.length === 0) continue;
+    taskEntries[taskId] = commits.map(c => ({
+      step: c.step,
+      retry: parseInt(c.retry) || 0,
+      sha: c.sha,
+      subject: c.subject,
+    }));
+  }
+
+  const taskIds = Object.keys(taskEntries);
+  if (taskIds.length === 0) {
+    document.getElementById('gantt').innerHTML = '<p style="color:var(--text-dim);padding:16px;">No timeline data available</p>';
+    return;
+  }
+
+  // Assign sequential index to each commit across all tasks for positioning
+  let totalCommits = 0;
+  for (const entries of Object.values(taskEntries)) totalCommits += entries.length;
+
   let html = '';
-
-  const taskIds = Object.keys(logs).sort((a, b) => {
-    const firstA = logs[a][0]?.timestamp;
-    const firstB = logs[b][0]?.timestamp;
-    return firstA ? (firstB ? firstA.localeCompare(firstB) : -1) : 1;
-  });
-
   for (const taskId of taskIds) {
-    const entries = logs[taskId];
-    if (!entries.length) continue;
+    const entries = taskEntries[taskId];
+    // Commits are returned newest-first from git log, reverse for timeline
+    const reversed = [...entries].reverse();
 
     html += `<div class="gantt-row">
       <span class="gantt-label">${taskId}</span>
       <div class="gantt-track">`;
 
-    for (const entry of entries) {
-      const start = parseTs(entry.timestamp);
-      const startMs = start.getTime() - minTime;
-      const startTime = start.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
-      const isRetry = entries.filter(e => e.phase === entry.phase && e.timestamp <= entry.timestamp).length > 1;
-      html += `<div class="gantt-bar ${entry.phase} ${isRetry ? 'retry-attempt' : ''}"
-        style="left:${(startMs/totalMs*100)}%;width:30px;"
-        title="${taskId} - ${entry.phase}\\n${startTime}\\n${isRetry ? '(retry)' : ''}"
+    const total = reversed.length;
+    for (let i = 0; i < reversed.length; i++) {
+      const entry = reversed[i];
+      const pct = total > 1 ? (i / (total - 1)) * 90 : 0;
+      const isRetry = entry.retry > 0;
+      const stepClass = ['implement', 'review', 'test'].includes(entry.step) ? entry.step : 'implement';
+      html += `<div class="gantt-bar ${stepClass} ${isRetry ? 'retry-attempt' : ''}"
+        style="left:${pct}%;width:30px;"
+        title="${taskId} - ${entry.step} (attempt ${entry.retry + 1})\\n${entry.sha}: ${entry.subject}"
       ></div>`;
     }
 
     html += `</div></div>`;
   }
 
-  document.getElementById('gantt').innerHTML = html || '<p style="color:var(--text-dim);padding:16px;">No timeline data available</p>';
+  document.getElementById('gantt').innerHTML = html;
 }
 
-async function viewLog(filename) {
-  const modal = document.getElementById('log-modal');
-  const title = document.getElementById('log-title');
-  const content = document.getElementById('log-content');
-  const selector = document.getElementById('log-selector');
+function viewPhaseCommits(taskId, phase) {
+  if (!currentStatus) return;
+  const task = currentStatus.tasks[taskId];
+  if (!task) return;
 
-  modal.style.display = 'flex';
-  title.textContent = filename;
-  content.textContent = 'Loading...';
-  selector.style.display = 'none';
+  const modal = document.getElementById('detail-modal');
+  const title = document.getElementById('detail-modal-title');
+  const content = document.getElementById('detail-content');
+  const selector = document.getElementById('detail-selector');
 
-  try {
-    const resp = await fetch(`/api/log/${filename}`);
-    if (!resp.ok) throw new Error('Failed to load log');
-    const text = await resp.text();
-    content.textContent = text;
-  } catch (e) {
-    content.textContent = 'Error loading log: ' + e.message;
-  }
-}
-
-async function viewPhaseLogs(taskId, phase) {
-  const taskLogs = window.dashboardLogs[taskId] || [];
+  // Check for log files first
+  const taskLogs = currentLogs[taskId] || [];
   const phaseLogs = taskLogs.filter(l => l.phase === phase);
 
-  if (phaseLogs.length === 0) return;
+  if (phaseLogs.length > 0) {
+    // Show log file content
+    modal.style.display = 'flex';
+    if (phaseLogs.length === 1) {
+      title.textContent = `${taskId} - ${phase}`;
+      selector.style.display = 'none';
+      loadLogContent(phaseLogs[0].filename);
+    } else {
+      title.textContent = `${taskId} - ${phase} (${phaseLogs.length} runs)`;
+      selector.style.display = 'block';
+      selector.innerHTML = `
+        <select onchange="loadLogContent(this.value)" style="background:var(--surface);color:var(--text);border:1px solid var(--border);padding:8px;border-radius:4px;width:200px;">
+          ${phaseLogs.map((l, i) => `<option value="${l.filename}">Run ${i + 1} - ${l.timestamp}</option>`).join('')}
+        </select>
+      `;
+      loadLogContent(phaseLogs[0].filename);
+    }
+    return;
+  }
 
-  const modal = document.getElementById('log-modal');
-  const title = document.getElementById('log-title');
-  const content = document.getElementById('log-content');
-  const selector = document.getElementById('log-selector');
+  // Fallback: show commit details
+  const commits = (task.commits || []).filter(c => c.step === phase);
+  if (commits.length === 0) return;
 
   modal.style.display = 'flex';
+  selector.style.display = 'none';
+  title.textContent = `${taskId} - ${phase} (${commits.length} commits, no log files)`;
 
-  if (phaseLogs.length === 1) {
-    title.textContent = `${taskId} - ${phase}`;
-    selector.style.display = 'none';
-    await loadLogContent(phaseLogs[0].filename);
-  } else {
-    title.textContent = `${taskId} - ${phase} (${phaseLogs.length} runs)`;
-    selector.style.display = 'block';
-    selector.innerHTML = `
-      <select onchange="loadLogContent(this.value)" style="background:var(--surface);color:var(--text);border:1px solid var(--border);padding:8px;border-radius:4px;width:200px;">
-        ${phaseLogs.map((l, i) => `<option value="${l.filename}">Run ${i + 1} - ${fmtTime(parseTs(l.timestamp))}</option>`).join('')}
-      </select>
-    `;
-    await loadLogContent(phaseLogs[0].filename);
+  let text = '';
+  for (const c of commits) {
+    text += `=== ${c.sha} ===\n${c.subject}\n`;
+    for (const [k, v] of Object.entries(c.trailers || {})) {
+      text += `  ${k}: ${v}\n`;
+    }
+    text += '\n';
   }
+  content.textContent = text;
 }
 
 async function loadLogContent(filename) {
-  const content = document.getElementById('log-content');
+  const content = document.getElementById('detail-content');
   content.textContent = 'Loading...';
-
   try {
     const resp = await fetch(`/api/log/${filename}`);
     if (!resp.ok) throw new Error('Failed to load log');
-    const text = await resp.text();
-    content.textContent = text;
+    content.textContent = await resp.text();
   } catch (e) {
     content.textContent = 'Error loading log: ' + e.message;
   }
+}
+
+function closeDetailModal() {
+  document.getElementById('detail-modal').style.display = 'none';
 }
 
 function getPhaseColor(count) {
@@ -527,16 +537,12 @@ function getPhaseColor(count) {
   return 'var(--red)';
 }
 
-function closeLogModal() {
-  document.getElementById('log-modal').style.display = 'none';
-}
-
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') closeLogModal();
+  if (e.key === 'Escape') closeDetailModal();
 });
 
-document.getElementById('log-modal').addEventListener('click', (e) => {
-  if (e.target.id === 'log-modal') closeLogModal();
+document.getElementById('detail-modal').addEventListener('click', (e) => {
+  if (e.target.id === 'detail-modal') closeDetailModal();
 });
 
 switchTab(currentTab);

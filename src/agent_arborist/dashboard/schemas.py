@@ -18,11 +18,21 @@ from pydantic import BaseModel
 from typing import Dict, List, Literal
 
 
+class TaskCommit(BaseModel):
+    sha: str
+    subject: str
+    step: str
+    result: str
+    retry: str
+    trailers: Dict[str, str] = {}
+
+
 class TaskStateData(BaseModel):
     id: str
     name: str
     state: Literal["pending", "implementing", "testing", "reviewing", "complete", "failed"]
     trailers: Dict[str, str] = {}
+    commits: List[TaskCommit] = []
 
 
 class StatusOutput(BaseModel):
@@ -54,4 +64,3 @@ class LogEntry(BaseModel):
 
 class LogsOutput(BaseModel):
     logs: Dict[str, List[LogEntry]]
-    summary: Dict[str, int]

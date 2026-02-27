@@ -124,6 +124,48 @@ def is_task_complete(task_id: str, cwd: Path, *, current_branch: str) -> bool:
     return state == TaskState.COMPLETE
 
 
+def get_task_commit_history(task_id: str, cwd: Path, *, current_branch: str) -> list[dict[str, str]]:
+    """Get all commits for a task, each as a dict of trailers + commit metadata."""
+    grep_pattern = f"task({current_branch}@{task_id}"
+    try:
+        raw = git_log(
+            "HEAD",
+            "%h%n%s%n%(trailers)%n---COMMIT_SEP---",
+            cwd,
+            n=50,
+            grep=grep_pattern,
+            fixed_strings=True,
+        )
+    except GitError:
+        return []
+
+    commits = []
+    for block in raw.split("---COMMIT_SEP---"):
+        block = block.strip()
+        if not block:
+            continue
+        lines = block.split("\n")
+        if len(lines) < 2:
+            continue
+        sha = lines[0].strip()
+        subject = lines[1].strip()
+        trailers: dict[str, str] = {}
+        for line in lines[2:]:
+            line = line.strip()
+            if ": " in line and line.startswith("Arborist-"):
+                key, _, val = line.partition(": ")
+                trailers[key] = val.strip()
+        commits.append({
+            "sha": sha,
+            "subject": subject,
+            "step": trailers.get(TRAILER_STEP, ""),
+            "result": trailers.get(TRAILER_RESULT, ""),
+            "retry": trailers.get(TRAILER_RETRY, ""),
+            "trailers": trailers,
+        })
+    return commits
+
+
 def scan_completed_tasks(tree, cwd: Path, *, branch: str) -> set[str]:
     """Scan all leaf tasks on HEAD and return IDs of completed ones.
 

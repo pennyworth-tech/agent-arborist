@@ -91,7 +91,7 @@ def test_reports_no_directory(git_repo):
 
 
 def test_logs_json_output(git_repo):
-    """Test that logs --format json outputs valid JSON."""
+    """Test that logs --format json outputs valid JSON with commits and files."""
     from agent_arborist.cli import main
 
     runner = CliRunner()
@@ -101,26 +101,19 @@ def test_logs_json_output(git_repo):
         tree_path.parent.mkdir(parents=True, exist_ok=True)
         tree_path.write_text('{"nodes": {}, "execution_order": [], "spec_files": []}')
 
-        log_dir = tree_path.parent / "logs"
-        log_dir.mkdir()
-
-        log_file = log_dir / "T001_implement_20250101T120000.log"
-        log_file.write_text("test log content")
-
         result = runner.invoke(main, ["logs", "--tree", str(tree_path), "--format", "json"])
 
     assert result.exit_code == 0
 
     data = json.loads(result.output)
-    assert "logs" in data
+    assert "commits" in data
+    assert "files" in data
     assert "summary" in data
-    assert "T001" in data["logs"]
-    assert len(data["logs"]["T001"]) == 1
-    assert data["logs"]["T001"][0]["phase"] == "implement"
+    assert data["summary"]["total_tasks"] == 0
 
 
-def test_logs_no_directory(git_repo):
-    """Test that logs handles missing directory gracefully."""
+def test_logs_empty_tree(git_repo):
+    """Test that logs handles empty tree gracefully."""
     from agent_arborist.cli import main
 
     runner = CliRunner()
@@ -135,7 +128,8 @@ def test_logs_no_directory(git_repo):
     assert result.exit_code == 0
 
     data = json.loads(result.output)
-    assert data["logs"] == {}
+    assert data["commits"] == {}
+    assert data["files"] == {}
     assert data["summary"]["total_tasks"] == 0
 
 

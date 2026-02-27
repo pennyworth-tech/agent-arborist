@@ -591,9 +591,11 @@ def reports(tree_path, report_dir, output_format, task_id):
 @click.option("--format", "output_format", type=click.Choice(["text", "json"]), default="text",
               help="Output format (text or json)")
 @click.option("--task-id", help="Filter by specific task ID")
-def logs(tree_path, log_dir, output_format, task_id):
-    """List task execution logs."""
-    import re
+@click.option("--show", "show_file", default=None, help="Show content of a specific log file")
+def logs(tree_path, log_dir, output_format, task_id, show_file):
+    """List task execution history (commits + log files)."""
+    from agent_arborist.git.state import get_task_commit_history
+    from agent_arborist.tree.model import TaskTree
 
     target = Path(_default_repo()).resolve()
     branch = git_current_branch(target)
@@ -602,59 +604,101 @@ def logs(tree_path, log_dir, output_format, task_id):
         tree_path = Path("specs") / branch / "task-tree.json"
 
     tree_path = Path(tree_path).resolve()
+
     if log_dir is None:
         log_dir = tree_path.parent / "logs"
-
     log_dir = Path(log_dir).resolve()
 
-    if not log_dir.exists():
-        if output_format == "json":
-            print(json.dumps({"logs": {}, "summary": {"total_tasks": 0, "total_entries": 0, "phase_counts": {"implement": 0, "review": 0, "test": 0}}}, indent=2))
-        else:
-            console.print("[yellow]No logs directory found[/yellow]")
+    # --show: print a specific log file and exit
+    if show_file:
+        log_file = (log_dir / show_file).resolve()
+        if not str(log_file).startswith(str(log_dir)):
+            console.print("[red]Access denied[/red]")
+            sys.exit(1)
+        if not log_file.exists():
+            console.print(f"[red]Log file not found:[/red] {show_file}")
+            sys.exit(1)
+        print(log_file.read_text())
         return
 
-    logs_by_task = {}
-    for fname in sorted(log_dir.glob("*.log")):
-        m = re.match(r'(?:M\d+-)?(\w\d+)_(\w+)_(\d{8}T\d{6})\.log', fname.name)
-        if m:
-            tid, phase, ts = m.groups()
-            if task_id is None or tid == task_id:
-                size = fname.stat().st_size
-                if tid not in logs_by_task:
-                    logs_by_task[tid] = []
-                logs_by_task[tid].append({
-                    "task_id": tid,
-                    "phase": phase,
-                    "timestamp": ts,
-                    "filename": fname.name,
-                    "size": size
-                })
+    tree = TaskTree.from_dict(json.loads(tree_path.read_text()))
 
-    for tid in logs_by_task:
-        logs_by_task[tid].sort(key=lambda e: e["timestamp"])
+    # Gather commit history per task
+    commits_by_task = {}
+    for node in tree.leaves():
+        tid = node.id
+        if task_id is not None and tid != task_id:
+            continue
+        commits = get_task_commit_history(tid, target, current_branch=branch)
+        if commits:
+            commits_by_task[tid] = commits
+
+    # Gather log files per task by searching for files matching known task IDs
+    from agent_arborist.dashboard.logs import scan_log_files
+
+    leaf_ids = [n.id for n in tree.leaves()]
+    if task_id is not None:
+        leaf_ids = [tid for tid in leaf_ids if tid == task_id]
+    files_by_task = scan_log_files(log_dir, leaf_ids)
+
+    # Merge task IDs from both sources
+    all_task_ids = sorted(set(commits_by_task) | set(files_by_task))
 
     summary = {
-        "total_tasks": len(logs_by_task),
-        "total_entries": sum(len(entries) for entries in logs_by_task.values()),
+        "total_tasks": len(all_task_ids),
+        "total_commits": sum(len(c) for c in commits_by_task.values()),
+        "total_files": sum(len(f) for f in files_by_task.values()),
         "phase_counts": {
-            "implement": sum(1 for entries in logs_by_task.values() for e in entries if e["phase"] == "implement"),
-            "review": sum(1 for entries in logs_by_task.values() for e in entries if e["phase"] == "review"),
-            "test": sum(1 for entries in logs_by_task.values() for e in entries if e["phase"] == "test")
+            "implement": sum(1 for cs in commits_by_task.values() for c in cs if c["step"] == "implement"),
+            "review": sum(1 for cs in commits_by_task.values() for c in cs if c["step"] == "review"),
+            "test": sum(1 for cs in commits_by_task.values() for c in cs if c["step"] == "test"),
         }
     }
 
     if output_format == "json":
-        print(json.dumps({"logs": logs_by_task, "summary": summary}, indent=2))
+        print(json.dumps({
+            "commits": commits_by_task,
+            "files": files_by_task,
+            "summary": summary,
+        }, indent=2))
     else:
-        console.print(f"\n[bold]Logs[/bold] ({summary['total_tasks']} tasks, {summary['total_entries']} entries)")
+        console.print(f"\n[bold]Logs[/bold] ({summary['total_tasks']} tasks, {summary['total_commits']} commits, {summary['total_files']} log files)")
         console.print(f"  Implement: {summary['phase_counts']['implement']} | Review: {summary['phase_counts']['review']} | Test: {summary['phase_counts']['test']}")
         console.print()
-        for tid, entries in sorted(logs_by_task.items()):
-            console.print(f"  [cyan]{tid}[/cyan] ({len(entries)} phases)")
-            for e in entries:
-                size_kb = round(e["size"] / 1024, 1)
-                console.print(f"    {e['phase']:10s} {e['timestamp']}  ({size_kb} KB)")
+        for tid in all_task_ids:
+            commits = commits_by_task.get(tid, [])
+            files = files_by_task.get(tid, [])
+            console.print(f"  [cyan]{tid}[/cyan] ({len(commits)} commits, {len(files)} log files)")
+            for c in commits:
+                # Determine result: use step-specific trailer values
+                step = c.get("step", "")
+                trailers = c.get("trailers", {})
+                result = c.get("result", "")
+                # For test/review, check their specific trailer
+                if step == "test":
+                    result = trailers.get("Arborist-Test", result)
+                elif step == "review":
+                    rv = trailers.get("Arborist-Review", "")
+                    result = "pass" if rv == "approved" else "fail" if rv == "rejected" else result
+
+                if result == "pass" or result == "approved":
+                    result_icon = "[green]✓[/green]"
+                elif result == "fail" or result == "rejected":
+                    result_icon = "[red]✗[/red]"
+                else:
+                    result_icon = " "
+
+                # Strip the task(...): prefix from subjects
+                subject = c['subject']
+                if "): " in subject:
+                    subject = subject.split("): ", 1)[1]
+                console.print(f"    {result_icon} {step:10s} {c['sha']}  {subject[:60]}")
+            if files:
+                console.print(f"    [dim]Log files:[/dim]")
+                for f in files:
+                    size_kb = round(f["size"] / 1024, 1)
+                    console.print(f"      {f['phase']:10s} {f['timestamp']}  {f['filename']} ({size_kb} KB)")
+                    console.print(f"      [dim]  arborist logs --tree {tree_path} --show {f['filename']}[/dim]")
 
 
 @main.command()

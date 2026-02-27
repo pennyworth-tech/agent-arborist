@@ -229,10 +229,9 @@ def _write_log(log_dir: Path | None, task_id: str, step: str, result) -> Path | 
         parts.append(f"=== stdout ===\n{result.output}")
     if result.error:
         parts.append(f"=== stderr ===\n{result.error}")
-    if parts:
-        log_file.write_text("\n".join(parts))
-        return log_file
-    return None
+    content = "\n".join(parts) if parts else f"=== {step} completed (no output) ==="
+    log_file.write_text(content)
+    return log_file
 
 
 def _collect_feedback_from_git(task_id: str, cwd: Path, *, branch: str) -> str:
