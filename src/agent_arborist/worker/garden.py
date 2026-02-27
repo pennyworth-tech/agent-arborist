@@ -335,7 +335,11 @@ def garden(
             prompt = (
                 f"Implement task {task.id}: {task.name}\n\n"
                 f"Description: {task.description}\n\n"
-                f"Work in the current directory. Make all necessary file changes."
+                f"Work in the current directory. Make all necessary file changes.\n\n"
+                f"IMPORTANT: Before making changes, check whether this task has already been "
+                f"implemented (e.g. the files, variables, or state it requires already exist). "
+                f"If a previous step has deterministically verified the work is already done "
+                f"and shown its reasoning, you may confirm completion without making changes."
             )
             if attempt > 0:
                 feedback = _collect_feedback_from_git(task.id, cwd, branch=branch)
@@ -443,6 +447,9 @@ def garden(
                 f"Files changed since run start:\n{diff_stat}\n\n"
                 f"Focus on whether the right files are present and changed for this task. "
                 f"Tests have already passed.\n\n"
+                f"NOTE: If the implement step made no file changes but deterministically "
+                f"verified that the required state already exists (and showed its work), "
+                f"that is acceptable — approve if the task's goals are met.\n\n"
                 f"Reply APPROVED if the deliverables look correct, or REJECTED with reasons."
             )
             review_result = review_runner.run(review_prompt, **run_kwargs)
