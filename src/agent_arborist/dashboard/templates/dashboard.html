@@ -316,6 +316,20 @@ function getGroupState(nodeId) {
   return state === 'true';
 }
 
+function countLeaves(nodeId, tree, reportMap) {
+  const node = tree[nodeId];
+  if (!node || !node.children || node.children.length === 0) {
+    return { done: reportMap[nodeId] ? 1 : 0, total: 1 };
+  }
+  let done = 0, total = 0;
+  for (const cid of node.children) {
+    const child = countLeaves(cid, tree, reportMap);
+    done += child.done;
+    total += child.total;
+  }
+  return { done, total };
+}
+
 function renderFullTree(nodeIds, tree, tasks, reportMap, level) {
   return nodeIds.map(nodeId => {
     const node = tree.nodes[nodeId];
@@ -368,8 +382,9 @@ function renderFullTree(nodeIds, tree, tasks, reportMap, level) {
         </div>
       </div>`;
     } else {
-      const done = node.children.filter(cid => reportMap[cid]).length;
-      const total = node.children.length;
+      const counts = countLeaves(nodeId, tree, reportMap);
+      const done = counts.done;
+      const total = counts.total;
       const isExpanded = getGroupState(nodeId);
       const toggleClass = isExpanded ? '' : 'collapsed';
       const tasksStyle = isExpanded ? '' : 'display:none;';
