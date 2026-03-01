@@ -45,7 +45,7 @@ class TestCommand:
     @classmethod
     def from_dict(cls, data: dict) -> TestCommand:
         return cls(
-            type=TestType(data["type"]),
+            type=TestType(data.get("type", "unit")),
             command=data["command"],
             framework=data.get("framework"),
             timeout=data.get("timeout"),
