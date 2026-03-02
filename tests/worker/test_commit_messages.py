@@ -69,7 +69,7 @@ def test_build_commit_message_with_body(git_repo):
     """Subject + body + trailers all present."""
     sha = _commit_with_trailers(
         "T001", 'implement "Create files"', git_repo,
-        branch="main", status="implement-pass",
+        spec_id="main", status="implement-pass",
         body="Runner output:\nsome output here",
         **{"Arborist-Step": "implement", "Arborist-Result": "pass"},
     )
@@ -86,7 +86,7 @@ def test_build_commit_message_without_body(git_repo):
     """No body → subject directly followed by trailers (no double blank lines)."""
     sha = _commit_with_trailers(
         "T001", "complete", git_repo,
-        branch="main", status="complete",
+        spec_id="main", status="complete",
         **{"Arborist-Step": "complete"},
     )
     msg = subprocess.run(
@@ -138,7 +138,7 @@ def _find_commit_containing(commits, substring):
 @pytest.mark.integration
 def test_implement_commit_contains_runner_output(git_repo, mock_runner_all_pass):
     tree = _make_tree()
-    garden(tree, git_repo, mock_runner_all_pass, branch="main")
+    garden(tree, git_repo, mock_runner_all_pass, spec_id="main")
     commits = _get_all_commits(git_repo)
     msg = _find_commit_containing(commits, "implement")
     assert msg is not None
@@ -149,7 +149,7 @@ def test_implement_commit_contains_runner_output(git_repo, mock_runner_all_pass)
 @pytest.mark.integration
 def test_test_commit_contains_stdout(git_repo, mock_runner_all_pass):
     tree = _make_tree()
-    garden(tree, git_repo, mock_runner_all_pass, test_command="echo 'all tests passed'", branch="main")
+    garden(tree, git_repo, mock_runner_all_pass, test_command="echo 'all tests passed'", spec_id="main")
     commits = _get_all_commits(git_repo)
     msg = _find_commit_containing(commits, "tests pass")
     assert msg is not None
@@ -159,7 +159,7 @@ def test_test_commit_contains_stdout(git_repo, mock_runner_all_pass):
 @pytest.mark.integration
 def test_review_commit_contains_review_text(git_repo, mock_runner_all_pass):
     tree = _make_tree()
-    garden(tree, git_repo, mock_runner_all_pass, branch="main")
+    garden(tree, git_repo, mock_runner_all_pass, spec_id="main")
     commits = _get_all_commits(git_repo)
     msg = _find_commit_containing(commits, "review approved")
     assert msg is not None
@@ -171,7 +171,7 @@ def test_failed_implement_commit_contains_error(git_repo):
     from tests.conftest import MockRunner
     runner = MockRunner(implement_ok=False)
     tree = _make_tree()
-    garden(tree, git_repo, runner, max_retries=1, branch="main")
+    garden(tree, git_repo, runner, max_retries=1, spec_id="main")
     commits = _get_all_commits(git_repo)
     msg = _find_commit_containing(commits, "implement")
     assert msg is not None
@@ -182,7 +182,7 @@ def test_failed_implement_commit_contains_error(git_repo):
 @pytest.mark.integration
 def test_commit_subjects_include_task_name(git_repo, mock_runner_all_pass):
     tree = _make_tree()
-    garden(tree, git_repo, mock_runner_all_pass, branch="main")
+    garden(tree, git_repo, mock_runner_all_pass, spec_id="main")
     subjects = _get_all_subjects(git_repo)
     assert "Create user auth module" in subjects
 
@@ -192,7 +192,7 @@ def test_retry_commits_show_attempt_number(git_repo):
     from tests.conftest import MockRunner
     runner = MockRunner(implement_ok=True, review_sequence=[False, True])
     tree = _make_tree()
-    garden(tree, git_repo, runner, branch="main")
+    garden(tree, git_repo, runner, spec_id="main")
     subjects = _get_all_subjects(git_repo)
     assert "attempt 1/" in subjects
 
@@ -215,7 +215,7 @@ def test_long_output_truncated_in_commit(git_repo):
 
     tree = _make_tree()
     runner = BigOutputRunner()
-    garden(tree, git_repo, runner, branch="main")
+    garden(tree, git_repo, runner, spec_id="main")
     commits = _get_all_commits(git_repo)
     msg = _find_commit_containing(commits, "implement")
     assert msg is not None
@@ -225,7 +225,7 @@ def test_long_output_truncated_in_commit(git_repo):
 @pytest.mark.integration
 def test_trailers_still_parseable(git_repo, mock_runner_all_pass):
     tree = _make_tree()
-    garden(tree, git_repo, mock_runner_all_pass, branch="main")
+    garden(tree, git_repo, mock_runner_all_pass, spec_id="main")
     # Check trailers on complete commit
     result = subprocess.run(
         ["git", "log", "--format=%(trailers)", "--all"],

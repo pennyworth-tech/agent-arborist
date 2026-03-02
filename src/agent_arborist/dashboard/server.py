@@ -29,7 +29,7 @@ from agent_arborist.git.state import (
     get_task_commit_history,
 )
 from agent_arborist.tree.model import TaskTree
-from agent_arborist.git.repo import git_current_branch
+from agent_arborist.git.repo import git_current_branch, spec_id_from_branch
 from agent_arborist.dashboard.schemas import (
     StatusOutput, ReportsOutput, LogsOutput, TaskStateData, TaskCommit,
     Report, LogEntry,
@@ -58,6 +58,7 @@ def create_app(tree_path: Path, report_dir: Optional[Path], log_dir: Optional[Pa
     tree = TaskTree.from_dict(json.loads(tree_path.read_text()))
     target = Path.cwd()
     branch = git_current_branch(target)
+    spec_id = spec_id_from_branch(branch)
 
     if report_dir is None:
         report_dir = tree_path.parent / "reports"
@@ -79,16 +80,16 @@ def create_app(tree_path: Path, report_dir: Optional[Path], log_dir: Optional[Pa
     @app.get("/api/status", response_model=StatusOutput)
     async def get_status() -> StatusOutput:
         """Get task status data with per-task commit history."""
-        completed = scan_completed_tasks(tree, target, branch=branch)
+        completed = scan_completed_tasks(tree, target, spec_id=spec_id)
 
         tasks: Dict[str, TaskStateData] = {}
         for node_id, node in tree.nodes.items():
-            trailers = get_task_trailers("HEAD", node_id, target, current_branch=branch)
+            trailers = get_task_trailers("HEAD", node_id, target, spec_id=spec_id)
             state = task_state_from_trailers(trailers)
 
             commits: List[TaskCommit] = []
             if node.is_leaf:
-                raw_commits = get_task_commit_history(node_id, target, current_branch=branch)
+                raw_commits = get_task_commit_history(node_id, target, spec_id=spec_id)
                 commits = [
                     TaskCommit(
                         sha=c["sha"],
@@ -111,7 +112,7 @@ def create_app(tree_path: Path, report_dir: Optional[Path], log_dir: Optional[Pa
 
         return StatusOutput(
             tree=tree.to_dict(),
-            branch=branch,
+            spec_id=spec_id,
             completed=list(completed),
             tasks=tasks,
             generated_at=datetime.now().isoformat()

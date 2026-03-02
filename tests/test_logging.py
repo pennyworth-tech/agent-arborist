@@ -17,7 +17,9 @@
 import json
 import logging
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from click.testing import CliRunner
 
@@ -34,13 +36,15 @@ def test_cli_log_level_option_configures_logging(tmp_path):
     """--log-level INFO should cause INFO messages to appear."""
     output = tmp_path / "tree.json"
     runner = CliRunner()
-    result = runner.invoke(main, [
-        "--log-level", "INFO",
-        "build",
-        "--no-ai",
-        "--spec-dir", str(FIXTURES),
-        "--output", str(output),
-    ])
+    with patch("agent_arborist.cli.git_current_branch", return_value="my-branch"), \
+         patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)):
+        result = runner.invoke(main, [
+            "--log-level", "INFO",
+            "build",
+            "--no-ai",
+            "--spec-dir", str(FIXTURES),
+            "--output", str(output),
+        ])
     assert result.exit_code == 0, result.output
 
 
@@ -48,12 +52,14 @@ def test_cli_log_level_default_is_warning(tmp_path):
     """Default log level should be WARNING — no INFO in output."""
     output = tmp_path / "tree.json"
     runner = CliRunner()
-    result = runner.invoke(main, [
-        "build",
-        "--no-ai",
-        "--spec-dir", str(FIXTURES),
-        "--output", str(output),
-    ])
+    with patch("agent_arborist.cli.git_current_branch", return_value="my-branch"), \
+         patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)):
+        result = runner.invoke(main, [
+            "build",
+            "--no-ai",
+            "--spec-dir", str(FIXTURES),
+            "--output", str(output),
+        ])
     assert result.exit_code == 0
     # INFO-level messages should not appear with default WARNING level
     assert "Parsed spec:" not in result.output
@@ -63,13 +69,15 @@ def test_cli_log_level_case_insensitive(tmp_path):
     """--log-level should accept lowercase."""
     output = tmp_path / "tree.json"
     runner = CliRunner()
-    result = runner.invoke(main, [
-        "--log-level", "debug",
-        "build",
-        "--no-ai",
-        "--spec-dir", str(FIXTURES),
-        "--output", str(output),
-    ])
+    with patch("agent_arborist.cli.git_current_branch", return_value="my-branch"), \
+         patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)):
+        result = runner.invoke(main, [
+            "--log-level", "debug",
+            "build",
+            "--no-ai",
+            "--spec-dir", str(FIXTURES),
+            "--output", str(output),
+        ])
     assert result.exit_code == 0
 
 
@@ -102,7 +110,7 @@ def test_git_state_scan_logs_debug(caplog, git_repo):
     tree.nodes["T001"] = TaskNode(id="T001", name="Task 1")
     tree.compute_execution_order()
     with caplog.at_level(logging.DEBUG, logger="agent_arborist.git.state"):
-        scan_completed_tasks(tree, git_repo, branch="main")
+        scan_completed_tasks(tree, git_repo, spec_id="main")
     assert any("Scan found" in r.message for r in caplog.records)
 
 
@@ -137,7 +145,7 @@ def test_garden_logs_task_start(caplog, git_repo):
     mock_runner.run.return_value = MagicMock(success=True, output="APPROVED")
 
     with caplog.at_level(logging.INFO, logger="agent_arborist.worker.garden"):
-        garden(tree, git_repo, mock_runner, max_retries=1, branch="main")
+        garden(tree, git_repo, mock_runner, max_retries=1, spec_id="main")
     assert any("Starting task T001" in r.message for r in caplog.records)
 
 
@@ -148,5 +156,5 @@ def test_gardener_logs_progress(caplog, git_repo):
     mock_runner.run.return_value = MagicMock(success=True, output="APPROVED")
 
     with caplog.at_level(logging.INFO, logger="agent_arborist.worker.gardener"):
-        gardener(tree, git_repo, mock_runner, max_retries=1, branch="main")
+        gardener(tree, git_repo, mock_runner, max_retries=1, spec_id="main")
     assert any("[1/" in r.message for r in caplog.records)

@@ -59,9 +59,9 @@ class GardenResult:
     error: str | None = None
 
 
-def find_next_task(tree: TaskTree, cwd: Path, *, branch: str) -> TaskNode | None:
+def find_next_task(tree: TaskTree, cwd: Path, *, spec_id: str) -> TaskNode | None:
     """Find the next task to execute based on execution order and completed state."""
-    completed = scan_completed_tasks(tree, cwd, branch=branch)
+    completed = scan_completed_tasks(tree, cwd, spec_id=spec_id)
     for task_id in tree.execution_order:
         if task_id in completed:
             continue
@@ -199,16 +199,16 @@ def _run_tests(
 
 def _commit_with_trailers(
     task_id: str, subject: str, cwd: Path,
-    *, branch: str, status: str,
+    *, spec_id: str, status: str,
     body: str | None = None, **trailers: str,
 ) -> str:
     """Stage all and commit with trailers.
 
-    Commit prefix: ``task({branch}@{task_id}@{status}): {subject}``
+    Commit prefix: ``task({spec_id}@{task_id}@{status}): {subject}``
     """
     git_add_all(cwd)
     trailer_block = _build_trailers(**trailers)
-    parts = [f"task({branch}@{task_id}@{status}): {subject}"]
+    parts = [f"task({spec_id}@{task_id}@{status}): {subject}"]
     if body:
         parts.append(body)
     parts.append(trailer_block)
@@ -234,7 +234,7 @@ def _write_log(log_dir: Path | None, task_id: str, step: str, result) -> Path | 
     return log_file
 
 
-def _collect_feedback_from_git(task_id: str, cwd: Path, *, branch: str) -> str:
+def _collect_feedback_from_git(task_id: str, cwd: Path, *, spec_id: str) -> str:
     """Collect previous review/test feedback from git commit history.
 
     Reads commit bodies for this task's review-rejected and test-fail commits,
@@ -242,8 +242,8 @@ def _collect_feedback_from_git(task_id: str, cwd: Path, *, branch: str) -> str:
     """
     sections: list[str] = []
 
-    # Get all commits for this task on the current branch
-    grep_pattern = f"task({branch}@{task_id}"
+    # Get all commits for this task on the current spec_id
+    grep_pattern = f"task({spec_id}@{task_id}"
     try:
         raw = git_log(
             "HEAD", "%B---COMMIT_SEP---", cwd,
@@ -302,7 +302,7 @@ def garden(
     container_workspace: Path | None = None,
     container_up_timeout: int | None = None,
     container_check_timeout: int | None = None,
-    branch: str,
+    spec_id: str,
     run_start_sha: str | None = None,
 ) -> GardenResult:
     """Execute one task through the implement → test → review pipeline."""
@@ -313,7 +313,7 @@ def garden(
     if review_runner is None:
         review_runner = runner
 
-    task = find_next_task(tree, cwd, branch=branch)
+    task = find_next_task(tree, cwd, spec_id=spec_id)
     if task is None:
         return GardenResult(task_id="", success=False, error="no ready task")
 
@@ -323,7 +323,7 @@ def garden(
 
     # Use run-start SHA for scoping review diffs
     if run_start_sha is None:
-        run_start_sha = get_run_start_sha(cwd, branch=branch)
+        run_start_sha = get_run_start_sha(cwd, spec_id=spec_id)
     start_sha = run_start_sha
 
     try:
@@ -342,7 +342,7 @@ def garden(
                 f"and shown its reasoning, you may confirm completion without making changes."
             )
             if attempt > 0:
-                feedback = _collect_feedback_from_git(task.id, cwd, branch=branch)
+                feedback = _collect_feedback_from_git(task.id, cwd, spec_id=spec_id)
                 if feedback:
                     prompt += feedback
             logger.debug("Implement prompt: %.200s", prompt)
@@ -363,7 +363,7 @@ def garden(
                 _commit_with_trailers(
                     task.id,
                     f'implement "{tname}" (failed, attempt {attempt + 1}/{max_retries})',
-                    cwd, branch=branch, status="implement-fail", body=body,
+                    cwd, spec_id=spec_id, status="implement-fail", body=body,
                     **{TRAILER_STEP: "implement", TRAILER_RESULT: "fail", TRAILER_RETRY: retry_trailer},
                 )
                 continue
@@ -371,7 +371,7 @@ def garden(
             logger.info("Task %s implement passed (%s)", task.id, _impl_id)
             body = f"Runner output (truncated to 2000 chars):\n{_truncate_output(result.output)}"
             _commit_with_trailers(
-                task.id, f'implement "{tname}"', cwd, branch=branch, status="implement-pass", body=body,
+                task.id, f'implement "{tname}"', cwd, spec_id=spec_id, status="implement-pass", body=body,
                 **{TRAILER_STEP: "implement", TRAILER_RESULT: "pass", TRAILER_RETRY: retry_trailer},
             )
 
@@ -427,7 +427,7 @@ def garden(
                     test_trailers[TRAILER_TEST_FAILED] = str(tr0.counts["failed"])
                     test_trailers[TRAILER_TEST_SKIPPED] = str(tr0.counts["skipped"])
             _commit_with_trailers(
-                task.id, test_subject, cwd, branch=branch, status=test_status,
+                task.id, test_subject, cwd, spec_id=spec_id, status=test_status,
                 body=test_body,
                 **test_trailers,
             )
@@ -471,7 +471,7 @@ def garden(
                 except ValueError:
                     review_trailers[TRAILER_REVIEW_LOG] = str(review_log_file)
             _commit_with_trailers(
-                task.id, review_subject, cwd, branch=branch, status=review_status,
+                task.id, review_subject, cwd, spec_id=spec_id, status=review_status,
                 body=review_body,
                 **review_trailers,
             )
@@ -496,7 +496,7 @@ def garden(
 
             complete_body = f"Completed after {attempt + 1} attempt(s). Report: {report_path}"
             _commit_with_trailers(
-                task.id, f'complete "{tname}"', cwd, branch=branch, status="complete",
+                task.id, f'complete "{tname}"', cwd, spec_id=spec_id, status="complete",
                 body=complete_body,
                 **{TRAILER_STEP: "complete", TRAILER_RESULT: "pass", TRAILER_REPORT: report_path},
             )
@@ -508,7 +508,7 @@ def garden(
         # --- exhausted retries ---
         _commit_with_trailers(
             task.id, f'failed "{_truncate_name(task.name)}" after {max_retries} retries', cwd,
-            branch=branch, status="failed",
+            spec_id=spec_id, status="failed",
             **{TRAILER_STEP: "complete", TRAILER_RESULT: "fail"},
         )
 

@@ -28,6 +28,7 @@ from agent_arborist.git.repo import (
     git_merge,
     git_diff,
     git_branch_list,
+    spec_id_from_branch,
 )
 
 
@@ -111,3 +112,13 @@ def test_git_log_with_grep(git_repo):
 
     log = git_log("main", "%s", git_repo, n=10, grep="task(main@T001")
     assert "T001" in log
+
+
+def test_spec_id_from_branch():
+    assert spec_id_from_branch("bl-jjjj-blah-blah") == "bl-jjjj-blah-blah"
+    assert spec_id_from_branch("bl-jjjj-blah-blah/ver2") == "bl-jjjj-blah-blah"
+    assert spec_id_from_branch("bl-jjjj-blah-blah/hithere/anotherone") == "bl-jjjj-blah-blah"
+    assert spec_id_from_branch("feature/bl-jjjj-blah-blah") == "bl-jjjj-blah-blah"
+    assert spec_id_from_branch("feature/bl-jjjj-blah-blah/ver2") == "bl-jjjj-blah-blah"
+    assert spec_id_from_branch("feature/bl-jjjj-blah-blah/ver200/blahblah") == "bl-jjjj-blah-blah"
+    assert spec_id_from_branch("feature/bl-jjj-blah-blah/anything-okeydokey") == "bl-jjj-blah-blah"

@@ -63,7 +63,7 @@ def test_get_task_trailers_from_head(git_repo):
     _commit_task(git_repo, "T001", branch="main", status="complete",
                  **{TRAILER_STEP: "complete", TRAILER_RESULT: "pass"})
 
-    trailers = get_task_trailers("HEAD", "T001", git_repo, current_branch="main")
+    trailers = get_task_trailers("HEAD", "T001", git_repo, spec_id="main")
     assert trailers[TRAILER_STEP] == "complete"
     assert trailers[TRAILER_RESULT] == "pass"
 
@@ -72,11 +72,11 @@ def test_is_task_complete(git_repo):
     _commit_task(git_repo, "T001", branch="main", status="complete",
                  **{TRAILER_STEP: "complete", TRAILER_RESULT: "pass"})
 
-    assert is_task_complete("T001", git_repo, current_branch="main")
+    assert is_task_complete("T001", git_repo, spec_id="main")
 
 
 def test_is_task_not_complete_when_pending(git_repo):
-    assert not is_task_complete("T001", git_repo, current_branch="main")
+    assert not is_task_complete("T001", git_repo, spec_id="main")
 
 
 def test_scan_completed_tasks(git_repo):
@@ -89,7 +89,7 @@ def test_scan_completed_tasks(git_repo):
     _commit_task(git_repo, "T001", branch="main", status="complete",
                  **{TRAILER_STEP: "complete", TRAILER_RESULT: "pass"})
 
-    completed = scan_completed_tasks(tree, git_repo, branch="main")
+    completed = scan_completed_tasks(tree, git_repo, spec_id="main")
     assert "T001" in completed
     assert "T002" not in completed
 
@@ -110,11 +110,11 @@ def test_scan_scoped_by_branch_name(git_repo):
                  **{TRAILER_STEP: "complete", TRAILER_RESULT: "pass"})
 
     # Scanning for "main" should only see T002
-    completed = scan_completed_tasks(tree, git_repo, branch="main")
+    completed = scan_completed_tasks(tree, git_repo, spec_id="main")
     assert "T001" not in completed
     assert "T002" in completed
 
     # Scanning for "other-branch" should only see T001
-    completed_other = scan_completed_tasks(tree, git_repo, branch="other-branch")
+    completed_other = scan_completed_tasks(tree, git_repo, spec_id="other-branch")
     assert "T001" in completed_other
     assert "T002" not in completed_other
