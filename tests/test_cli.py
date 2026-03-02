@@ -150,9 +150,9 @@ class TestBaseBranchDefault:
             ])
             assert result.exit_code == 0, result.output
             mock_gcb.assert_called_once()
-            # branch should be passed to garden_fn
+            # spec_id should be passed to garden_fn
             _, kwargs = mock_garden.call_args
-            assert kwargs["branch"] == "my-feature"
+            assert kwargs["spec_id"] == "my-feature"
 
     def test_garden_explicit_base_branch_skips_detection(self, tmp_path):
         """When --base-branch is given explicitly, git_current_branch is NOT called."""

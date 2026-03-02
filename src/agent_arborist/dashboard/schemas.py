@@ -37,7 +37,7 @@ class TaskStateData(BaseModel):
 
 class StatusOutput(BaseModel):
     tree: dict
-    branch: str
+    spec_id: str
     completed: List[str]
     tasks: Dict[str, TaskStateData]
     generated_at: str

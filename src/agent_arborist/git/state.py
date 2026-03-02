@@ -33,9 +33,9 @@ from agent_arborist.constants import (
 from agent_arborist.git.repo import git_log, git_commit, GitError
 
 
-def get_run_start_sha(cwd: Path, *, branch: str, create: bool = True) -> str | None:
-    """Find or create a run-start marker commit on the current branch."""
-    grep_pattern = f"task({branch}@@run-start)"
+def get_run_start_sha(cwd: Path, *, spec_id: str, create: bool = True) -> str | None:
+    """Find or create a run-start marker commit for this spec_id."""
+    grep_pattern = f"task({spec_id}@@run-start)"
     try:
         sha = git_log(
             "HEAD", "%H", cwd,
@@ -51,7 +51,7 @@ def get_run_start_sha(cwd: Path, *, branch: str, create: bool = True) -> str | N
         return None
 
     msg = (
-        f"task({branch}@@run-start): run started\n\n"
+        f"task({spec_id}@@run-start): run started\n\n"
         f"Arborist-Step: run-start"
     )
     sha = git_commit(msg, cwd, allow_empty=True)
@@ -68,13 +68,13 @@ class TaskState(Enum):
     FAILED = "failed"
 
 
-def get_task_trailers(rev: str, task_id: str, cwd: Path, *, current_branch: str) -> dict[str, str]:
-    """Get the most recent trailers for a task on a branch.
+def get_task_trailers(rev: str, task_id: str, cwd: Path, *, spec_id: str) -> dict[str, str]:
+    """Get the most recent trailers for a task on a spec_id.
 
-    Greps for ``task({current_branch}@{task_id}`` so commits on other branches
+    Greps for ``task({spec_id}@{task_id}`` so commits for other specs
     are invisible.
     """
-    grep_pattern = f"task({current_branch}@{task_id}"
+    grep_pattern = f"task({spec_id}@{task_id}"
     try:
         out = git_log(
             rev,
@@ -90,7 +90,7 @@ def get_task_trailers(rev: str, task_id: str, cwd: Path, *, current_branch: str)
     if not out.strip():
         return {}
 
-    logger.debug("Parsing trailers for %s on %s", task_id, current_branch)
+    logger.debug("Parsing trailers for %s on %s", task_id, spec_id)
     # Parse trailers from the most recent matching commit
     trailers: dict[str, str] = {}
     for line in out.split("\n"):
@@ -118,15 +118,15 @@ def task_state_from_trailers(trailers: dict[str, str]) -> TaskState:
     return TaskState.PENDING
 
 
-def is_task_complete(task_id: str, cwd: Path, *, current_branch: str) -> bool:
-    trailers = get_task_trailers("HEAD", task_id, cwd, current_branch=current_branch)
+def is_task_complete(task_id: str, cwd: Path, *, spec_id: str) -> bool:
+    trailers = get_task_trailers("HEAD", task_id, cwd, spec_id=spec_id)
     state = task_state_from_trailers(trailers)
     return state == TaskState.COMPLETE
 
 
-def get_task_commit_history(task_id: str, cwd: Path, *, current_branch: str) -> list[dict[str, str]]:
+def get_task_commit_history(task_id: str, cwd: Path, *, spec_id: str) -> list[dict[str, str]]:
     """Get all commits for a task, each as a dict of trailers + commit metadata."""
-    grep_pattern = f"task({current_branch}@{task_id}"
+    grep_pattern = f"task({spec_id}@{task_id}"
     try:
         raw = git_log(
             "HEAD",
@@ -166,16 +166,16 @@ def get_task_commit_history(task_id: str, cwd: Path, *, current_branch: str) -> 
     return commits
 
 
-def scan_completed_tasks(tree, cwd: Path, *, branch: str) -> set[str]:
+def scan_completed_tasks(tree, cwd: Path, *, spec_id: str) -> set[str]:
     """Scan all leaf tasks on HEAD and return IDs of completed ones.
 
-    Commits are scoped by *branch* name embedded in the commit prefix,
-    so only commits for the current branch are considered.
+    Commits are scoped by *spec_id* embedded in the commit prefix,
+    so only commits for the current spec are considered.
     """
     completed = set()
     for node in tree.leaves():
         try:
-            if is_task_complete(node.id, cwd, current_branch=branch):
+            if is_task_complete(node.id, cwd, spec_id=spec_id):
                 completed.add(node.id)
         except GitError:
             pass

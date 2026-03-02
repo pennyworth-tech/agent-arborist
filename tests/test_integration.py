@@ -95,7 +95,7 @@ class TestGardenCommitHistory:
         tree = _small_tree()
         runner = _MockRunner(implement_ok=True, review_ok=True)
 
-        garden_fn(tree, git_repo, runner, branch="main")
+        garden_fn(tree, git_repo, runner, spec_id="main")
 
         # Check commit history on HEAD (all commits land on current branch)
         log = git_log("HEAD", "%s", git_repo, n=10)
@@ -111,10 +111,10 @@ class TestGardenCommitHistory:
         runner = _MockRunner(implement_ok=True, review_ok=True)
         report_dir = tmp_path / "reports"
 
-        garden_fn(tree, git_repo, runner, report_dir=report_dir, branch="main")
+        garden_fn(tree, git_repo, runner, report_dir=report_dir, spec_id="main")
 
         # The most recent task(main@T001) commit should be the "complete" one
-        trailers = get_task_trailers("HEAD", "T001", git_repo, current_branch="main")
+        trailers = get_task_trailers("HEAD", "T001", git_repo, spec_id="main")
         assert trailers["Arborist-Step"] == "complete"
         assert trailers["Arborist-Result"] == "pass"
         assert "Arborist-Report" in trailers
@@ -124,7 +124,7 @@ class TestGardenCommitHistory:
         runner = _MockRunner(implement_ok=True, review_ok=True)
         report_dir = tmp_path / "reports"
 
-        garden_fn(tree, git_repo, runner, report_dir=report_dir, branch="main")
+        garden_fn(tree, git_repo, runner, report_dir=report_dir, spec_id="main")
 
         reports = list(report_dir.glob("T001_run_*.json"))
         assert len(reports) == 1
@@ -136,7 +136,7 @@ class TestGardenCommitHistory:
         tree = _small_tree()
         runner = _MockRunner(implement_ok=True, review_ok=True)
 
-        garden_fn(tree, git_repo, runner, branch="main")
+        garden_fn(tree, git_repo, runner, spec_id="main")
         assert git_current_branch(git_repo) == "main"
 
 
@@ -152,7 +152,7 @@ class TestGardenerFullLoop:
         tree = _two_task_tree()
         runner = _MockRunner(implement_ok=True, review_ok=True)
 
-        result = gardener(tree, git_repo, runner, branch="main")
+        result = gardener(tree, git_repo, runner, spec_id="main")
 
         assert result.success
         assert result.tasks_completed == 2
@@ -178,7 +178,7 @@ class TestGardenerFullLoop:
         tree.compute_execution_order()
 
         runner = _MockRunner(implement_ok=True, review_ok=True)
-        result = gardener(tree, git_repo, runner, branch="main")
+        result = gardener(tree, git_repo, runner, spec_id="main")
 
         assert result.success
         assert result.tasks_completed == 2
@@ -191,7 +191,7 @@ class TestGardenerFullLoop:
         tree = _two_task_tree()
         runner = _MockRunner(implement_ok=True, review_ok=True)
 
-        gardener(tree, git_repo, runner, branch="main")
+        gardener(tree, git_repo, runner, spec_id="main")
 
         # Get all commits on main, oldest first
         log = git_log("main", "%s", git_repo, n=20)
@@ -208,9 +208,9 @@ class TestGardenerFullLoop:
         tree = _two_task_tree()
         runner = _MockRunner(implement_ok=True, review_ok=True)
 
-        gardener(tree, git_repo, runner, branch="main")
+        gardener(tree, git_repo, runner, spec_id="main")
 
-        completed = scan_completed_tasks(tree, git_repo, branch="main")
+        completed = scan_completed_tasks(tree, git_repo, spec_id="main")
         assert completed == {"T001", "T002"}
 
     def test_gardener_with_non_main_base_branch(self, git_repo):
@@ -226,7 +226,7 @@ class TestGardenerFullLoop:
         tree = _two_task_tree()
         runner = _MockRunner(implement_ok=True, review_ok=True)
 
-        result = gardener(tree, git_repo, runner, branch="develop")
+        result = gardener(tree, git_repo, runner, spec_id="develop")
 
         assert result.success
         assert result.tasks_completed == 2
@@ -259,16 +259,16 @@ class TestGardenRepeatedEquivalence:
         tree = _two_task_tree()
         runner = _MockRunner(implement_ok=True, review_ok=True)
 
-        r1 = garden_fn(tree, git_repo, runner, branch="main")
+        r1 = garden_fn(tree, git_repo, runner, spec_id="main")
         assert r1.success
         assert r1.task_id == "T001"
 
-        r2 = garden_fn(tree, git_repo, runner, branch="main")
+        r2 = garden_fn(tree, git_repo, runner, spec_id="main")
         assert r2.success
         assert r2.task_id == "T002"
 
         # Both tasks complete
-        completed = scan_completed_tasks(tree, git_repo, branch="main")
+        completed = scan_completed_tasks(tree, git_repo, spec_id="main")
         assert completed == {"T001", "T002"}
 
     def test_repeated_garden_no_phase_marker(self, git_repo):
@@ -276,8 +276,8 @@ class TestGardenRepeatedEquivalence:
         tree = _two_task_tree()
         runner = _MockRunner(implement_ok=True, review_ok=True)
 
-        garden_fn(tree, git_repo, runner, branch="main")
-        garden_fn(tree, git_repo, runner, branch="main")
+        garden_fn(tree, git_repo, runner, spec_id="main")
+        garden_fn(tree, git_repo, runner, spec_id="main")
 
         main_log = git_log("main", "%s", git_repo, n=15)
         assert "phase(" not in main_log
@@ -287,10 +287,10 @@ class TestGardenRepeatedEquivalence:
         tree = _two_task_tree()
         runner = _MockRunner(implement_ok=True, review_ok=True)
 
-        garden_fn(tree, git_repo, runner, branch="main")
+        garden_fn(tree, git_repo, runner, spec_id="main")
         assert git_current_branch(git_repo) == "main"
 
-        garden_fn(tree, git_repo, runner, branch="main")
+        garden_fn(tree, git_repo, runner, spec_id="main")
         assert git_current_branch(git_repo) == "main"
 
     def test_repeated_garden_no_task_returns_gracefully(self, git_repo):
@@ -298,10 +298,10 @@ class TestGardenRepeatedEquivalence:
         tree = _two_task_tree()
         runner = _MockRunner(implement_ok=True, review_ok=True)
 
-        garden_fn(tree, git_repo, runner, branch="main")
-        garden_fn(tree, git_repo, runner, branch="main")
+        garden_fn(tree, git_repo, runner, spec_id="main")
+        garden_fn(tree, git_repo, runner, spec_id="main")
 
-        r3 = garden_fn(tree, git_repo, runner, branch="main")
+        r3 = garden_fn(tree, git_repo, runner, spec_id="main")
         assert not r3.success
         assert "no ready task" in r3.error
 
@@ -316,8 +316,8 @@ class TestGardenRepeatedEquivalence:
         tree.compute_execution_order()
 
         runner = _MockRunner(implement_ok=True, review_ok=True)
-        garden_fn(tree, git_repo, runner, branch="main")
-        garden_fn(tree, git_repo, runner, branch="main")
+        garden_fn(tree, git_repo, runner, spec_id="main")
+        garden_fn(tree, git_repo, runner, spec_id="main")
 
         assert git_current_branch(git_repo) == "main"
         main_log = git_log("main", "%s", git_repo, n=15)
@@ -343,11 +343,11 @@ class TestDeepTreeIntegration:
         tree.compute_execution_order()
 
         runner = _MockRunner(implement_ok=True, review_ok=True)
-        result = gardener(tree, git_repo, runner, branch="main")
+        result = gardener(tree, git_repo, runner, spec_id="main")
 
         assert result.success
         assert result.tasks_completed == 3
-        completed = scan_completed_tasks(tree, git_repo, branch="main")
+        completed = scan_completed_tasks(tree, git_repo, spec_id="main")
         assert completed == {"T001", "T002", "T003"}
 
         # No phase markers
@@ -385,7 +385,7 @@ class TestBaseBranchAutoDetect:
         runner = _MockRunner(implement_ok=True, review_ok=True)
 
         # garden() commits to whatever branch HEAD is on
-        result = garden_fn(tree, git_repo, runner, branch="my-feature")
+        result = garden_fn(tree, git_repo, runner, spec_id="my-feature")
 
         assert result.success
         assert result.task_id == "T001"
@@ -417,7 +417,7 @@ class TestSeparateRunnerDispatch:
             tree, git_repo,
             implement_runner=impl_runner,
             review_runner=rev_runner,
-            branch="main",
+            spec_id="main",
         )
 
         assert result.success
@@ -438,7 +438,7 @@ class TestSeparateRunnerDispatch:
             tree, git_repo,
             implement_runner=impl_runner,
             review_runner=rev_runner,
-            branch="main",
+            spec_id="main",
         )
 
         assert result.success
@@ -498,7 +498,7 @@ class TestTestCommandsE2E:
         tree.compute_execution_order()
 
         runner = _MockRunner(implement_ok=True, review_ok=True)
-        result = garden_fn(tree, git_repo, runner, branch="main")
+        result = garden_fn(tree, git_repo, runner, spec_id="main")
         assert result.success
 
         # Check trailers on test commit
@@ -522,7 +522,7 @@ class TestTestCommandsE2E:
         result = garden_fn(
             tree, git_repo, runner,
             test_command="true",
-            branch="main",
+            spec_id="main",
         )
         assert result.success
 
@@ -544,7 +544,7 @@ class TestTestCommandsE2E:
         tree.compute_execution_order()
 
         runner = _MockRunner(implement_ok=True, review_ok=True)
-        result = garden_fn(tree, git_repo, runner, max_retries=3, branch="main")
+        result = garden_fn(tree, git_repo, runner, max_retries=3, spec_id="main")
         assert result.success
 
         # Should have at least 2 implement commits (initial + retry)
@@ -568,7 +568,7 @@ class TestTestCommandsE2E:
         tree.compute_execution_order()
 
         runner = _MockRunner(implement_ok=True, review_ok=True)
-        result = garden_fn(tree, git_repo, runner, branch="main")
+        result = garden_fn(tree, git_repo, runner, spec_id="main")
         assert result.success
 
     def test_multiple_test_commands_one_fails(self, git_repo):
@@ -586,7 +586,7 @@ class TestTestCommandsE2E:
         tree.compute_execution_order()
 
         runner = _MockRunner(implement_ok=True, review_ok=True)
-        result = garden_fn(tree, git_repo, runner, max_retries=1, branch="main")
+        result = garden_fn(tree, git_repo, runner, max_retries=1, spec_id="main")
         assert not result.success
         assert "failed after 1 retries" in result.error
 
@@ -640,7 +640,7 @@ class TestTestCommandsE2E:
             tree, git_repo, runner,
             max_retries=1,
             test_timeout=1,  # 1 second timeout
-            branch="main",
+            spec_id="main",
         )
         assert not result.success  # sleep 10 > 1s timeout
 
@@ -672,14 +672,14 @@ class TestTestCommandsE2E:
         tree.compute_execution_order()
 
         runner = _MockRunner(implement_ok=True, review_ok=True)
-        result = gardener(tree, git_repo, runner, branch="main")
+        result = gardener(tree, git_repo, runner, spec_id="main")
 
         assert result.success
         assert result.tasks_completed == 2
         assert result.order == ["T001", "T002"]
 
         # Both tasks complete
-        completed = scan_completed_tasks(tree, git_repo, branch="main")
+        completed = scan_completed_tasks(tree, git_repo, spec_id="main")
         assert completed == {"T001", "T002"}
 
         # Verify test trailers

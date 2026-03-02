@@ -221,7 +221,7 @@ def build(spec_dir, output, no_ai, runner, model, container_mode):
 @click.option("--model", default=None, help="Model name (default: from config or 'sonnet')")
 @click.option("--max-retries", default=None, type=int, help="Max retries per task (default: from config or 5)")
 @click.option("--target-repo", type=click.Path(path_type=Path), default=None)
-@click.option("--base-branch", default=None, help="Base branch (default: current branch)")
+@click.option("--base-branch", default=None, help="Git branch to derive spec_id from (default: current branch)")
 @click.option("--report-dir", type=click.Path(path_type=Path), default=None,
               help="Directory for report JSON files (default: next to task tree)")
 @click.option("--log-dir", type=click.Path(path_type=Path), default=None,
@@ -269,7 +269,7 @@ def garden(tree_path, runner, model, max_retries, target_repo, base_branch, repo
         container_workspace=container_ws,
         container_up_timeout=cfg.timeouts.container_up,
         container_check_timeout=cfg.timeouts.container_check,
-        branch=spec_id,
+        spec_id=spec_id,
     )
 
     if result.success:
@@ -286,7 +286,7 @@ def garden(tree_path, runner, model, max_retries, target_repo, base_branch, repo
 @click.option("--model", default=None, help="Model name (default: from config or 'sonnet')")
 @click.option("--max-retries", default=None, type=int, help="Max retries per task (default: from config or 5)")
 @click.option("--target-repo", type=click.Path(path_type=Path), default=None)
-@click.option("--base-branch", default=None, help="Base branch (default: current branch)")
+@click.option("--base-branch", default=None, help="Git branch to derive spec_id from (default: current branch)")
 @click.option("--report-dir", type=click.Path(path_type=Path), default=None,
               help="Directory for report JSON files (default: next to task tree)")
 @click.option("--log-dir", type=click.Path(path_type=Path), default=None,
@@ -334,7 +334,7 @@ def gardener(tree_path, runner, model, max_retries, target_repo, base_branch, re
         container_workspace=container_ws,
         container_up_timeout=cfg.timeouts.container_up,
         container_check_timeout=cfg.timeouts.container_check,
-        branch=spec_id,
+        spec_id=spec_id,
     )
 
     if result.success:
@@ -363,7 +363,7 @@ def status(tree_path, target_repo, output_format):
         tree_path = Path("openspec") / "changes" / spec_id / "task-tree.json"
     tree = _load_tree(tree_path)
 
-    completed = scan_completed_tasks(tree, target, branch=spec_id)
+    completed = scan_completed_tasks(tree, target, spec_id=spec_id)
 
     if output_format == "json":
         status_data = {
@@ -375,7 +375,7 @@ def status(tree_path, target_repo, output_format):
 
         for node_id, node in tree.nodes.items():
             if node.is_leaf:
-                trailers = get_task_trailers("HEAD", node_id, target, current_branch=spec_id)
+                trailers = get_task_trailers("HEAD", node_id, target, spec_id=spec_id)
                 state = task_state_from_trailers(trailers)
                 status_data["tasks"][node_id] = {
                     "id": node.id,
@@ -391,7 +391,7 @@ def status(tree_path, target_repo, output_format):
         def _add_status_subtree(rich_node, node_id):
             node = tree.nodes[node_id]
             if node.is_leaf:
-                trailers = get_task_trailers("HEAD", node_id, target, current_branch=spec_id)
+                trailers = get_task_trailers("HEAD", node_id, target, spec_id=spec_id)
                 state = task_state_from_trailers(trailers)
                 icon = _status_icon(state)
                 rich_node.add(f"{icon} [dim]{node.id}[/dim] {node.name} ({state.value})")
@@ -448,7 +448,7 @@ def inspect(tree_path, task_id, target_repo, output_format):
             "trailers": {}
         }
 
-        trailers = get_task_trailers("HEAD", task_id, target, current_branch=spec_id)
+        trailers = get_task_trailers("HEAD", task_id, target, spec_id=spec_id)
         state = task_state_from_trailers(trailers)
         inspect_data["state"] = state.value
         inspect_data["trailers"] = trailers
@@ -493,7 +493,7 @@ def inspect(tree_path, task_id, target_repo, output_format):
 
         # Current state from most recent trailer
         grep_pattern = f"task({spec_id}@{task_id}"
-        trailers = get_task_trailers("HEAD", task_id, target, current_branch=spec_id)
+        trailers = get_task_trailers("HEAD", task_id, target, spec_id=spec_id)
         state = task_state_from_trailers(trailers)
         if not trailers:
             console.print("\n[dim]No commits found for this task (not started).[/dim]")
@@ -638,7 +638,7 @@ def logs(tree_path, log_dir, output_format, task_id, show_file):
         tid = node.id
         if task_id is not None and tid != task_id:
             continue
-        commits = get_task_commit_history(tid, target, current_branch=spec_id)
+        commits = get_task_commit_history(tid, target, spec_id=spec_id)
         if commits:
             commits_by_task[tid] = commits
 

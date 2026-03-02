@@ -45,7 +45,7 @@ def test_crash_mid_pipeline_recovers(git_repo):
     # CrashingRunner: succeeds on call 1 (implement), crashes on call 2 (review)
     crasher = CrashingRunner(crash_after=1)
     try:
-        garden(tree, git_repo, crasher, branch="main")
+        garden(tree, git_repo, crasher, spec_id="main")
     except RuntimeError:
         pass
 
@@ -53,11 +53,11 @@ def test_crash_mid_pipeline_recovers(git_repo):
     assert git_current_branch(git_repo) == "main"
 
     # Task should NOT be complete
-    assert not is_task_complete("T001", git_repo, current_branch="main")
+    assert not is_task_complete("T001", git_repo, spec_id="main")
 
     # Restart with a good runner — should pick up T001 again
     runner = MockRunner()
-    result = garden(tree, git_repo, runner, branch="main")
+    result = garden(tree, git_repo, runner, spec_id="main")
     assert result.success
     assert result.task_id == "T001"
 
@@ -73,7 +73,7 @@ def test_dirty_working_tree_recovers(git_repo):
 
     # garden() should handle gracefully
     runner = MockRunner()
-    result = garden(tree, git_repo, runner, branch="main")
+    result = garden(tree, git_repo, runner, spec_id="main")
     assert result.success
     assert result.task_id == "T001"
     assert git_current_branch(git_repo) == "main"
@@ -95,7 +95,7 @@ def test_crash_after_complete_commit(git_repo):
 
     # garden() should see T001 as done and pick up T002
     runner = MockRunner()
-    result = garden(tree, git_repo, runner, branch="main")
+    result = garden(tree, git_repo, runner, spec_id="main")
     assert result.success
     assert result.task_id == "T002"
 
@@ -120,12 +120,12 @@ def test_all_tasks_complete_no_phase_marker(git_repo):
 
     # Next garden() call should see no tasks left
     runner = MockRunner()
-    result = garden(tree, git_repo, runner, branch="main")
+    result = garden(tree, git_repo, runner, spec_id="main")
     assert not result.success
     assert result.error == "no ready task"
 
     # Verify the tasks ARE seen as complete
-    assert find_next_task(tree, git_repo, branch="main") is None
+    assert find_next_task(tree, git_repo, spec_id="main") is None
 
 
 # --- Scenario 5: Gardener crash between tasks ---
@@ -138,17 +138,17 @@ def test_gardener_crash_between_tasks(git_repo):
     # then T002 implement(3) crashes.
     crasher = CrashingRunner(crash_after=2)
     try:
-        gardener(tree, git_repo, crasher, branch="main")
+        gardener(tree, git_repo, crasher, spec_id="main")
     except RuntimeError:
         pass
 
     # T001 should be complete
-    assert is_task_complete("T001", git_repo, current_branch="main")
+    assert is_task_complete("T001", git_repo, spec_id="main")
     assert git_current_branch(git_repo) == "main"
 
     # Restart with a good runner — should pick up T002
     runner = MockRunner()
-    result = gardener(tree, git_repo, runner, branch="main")
+    result = gardener(tree, git_repo, runner, spec_id="main")
     assert result.success
     assert result.tasks_completed == 1
     assert result.order == ["T002"]

@@ -51,17 +51,17 @@ def gardener(
     container_workspace: Path | None = None,
     container_up_timeout: int | None = None,
     container_check_timeout: int | None = None,
-    branch: str,
+    spec_id: str,
 ) -> GardenerResult:
     """Run tasks in order until all complete or stalled."""
     result = GardenerResult(success=False)
     all_leaves = {n.id for n in tree.leaves()}
 
     # Create run-start marker once for the entire gardener run
-    run_start_sha = get_run_start_sha(cwd, branch=branch)
+    run_start_sha = get_run_start_sha(cwd, spec_id=spec_id)
 
     while True:
-        completed = scan_completed_tasks(tree, cwd, branch=branch)
+        completed = scan_completed_tasks(tree, cwd, spec_id=spec_id)
         logger.debug("Completed tasks: %s", completed)
 
         # All done?
@@ -70,7 +70,7 @@ def gardener(
             return result
 
         # Any ready task?
-        next_task = find_next_task(tree, cwd, branch=branch)
+        next_task = find_next_task(tree, cwd, spec_id=spec_id)
         if next_task is None:
             logger.info("Stalled: no ready tasks")
             result.error = "stalled: no ready tasks"
@@ -90,7 +90,7 @@ def gardener(
             container_workspace=container_workspace,
             container_up_timeout=container_up_timeout,
             container_check_timeout=container_check_timeout,
-            branch=branch,
+            spec_id=spec_id,
             run_start_sha=run_start_sha,
         )
 

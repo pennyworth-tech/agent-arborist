@@ -65,7 +65,7 @@ def test_dashboard_status_endpoint(tmp_path, minimal_tree):
 
     data = response.json()
     assert "tree" in data
-    assert "branch" in data
+    assert "spec_id" in data
     assert "completed" in data
     assert isinstance(data["tasks"], dict)
     for task_id, task_data in data["tasks"].items():

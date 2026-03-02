@@ -282,7 +282,7 @@ function render(status, reports) {
   const reportRetried = Object.values(reportMap).filter(r => r.retries > 0).length;
 
   document.getElementById('subtitle').textContent =
-    status.branch + ' \u2014 Generated ' + new Date(status.generated_at).toLocaleTimeString();
+    status.spec_id + ' \u2014 Generated ' + new Date(status.generated_at).toLocaleTimeString();
 
   document.getElementById('stats').innerHTML = [
     { value: `${completedTasks}/${totalTasks}`, label: 'Tasks Completed', color: 'var(--green)' },
