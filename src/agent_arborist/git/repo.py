@@ -132,6 +132,50 @@ def git_rev_parse(rev: str, cwd: Path) -> str:
     return _run(["rev-parse", rev], cwd)
 
 
+def git_merge_base(branch1: str, branch2: str, cwd: Path) -> str | None:
+    """Find the common ancestor of two refs.
+
+    Returns None if no common ancestor exists (e.g., unrelated histories).
+    Raises GitError if one of the refs doesn't exist.
+    """
+    try:
+        return _run(["merge-base", branch1, branch2], cwd)
+    except GitError:
+        return None
+
+
+def git_log_since(
+    rev: str,
+    since: str,
+    fmt: str,
+    cwd: Path,
+    *,
+    grep: str | None = None,
+    fixed_strings: bool = False,
+    n: int = 500,
+) -> str:
+    """Run git log for commits since branching point, returning formatted output.
+
+    Args:
+        rev: The revision to log (e.g., 'HEAD', branch name)
+        since: The branch/ref to find divergence from (e.g., 'main')
+        fmt: Format string for git log
+        cwd: Working directory
+        grep: Optional grep pattern
+        fixed_strings: Use fixed string matching for grep
+        n: Maximum number of commits to return
+    """
+    args = [
+        "log", f"{since}..{rev}", f"--format={fmt}%n---COMMIT_SEP---",
+        f"-n{n}",
+    ]
+    if grep:
+        args.extend(["--grep", grep])
+        if fixed_strings:
+            args.append("--fixed-strings")
+    return _run(args, cwd)
+
+
 def spec_id_from_branch(branch: str) -> str:
     """Extract spec ID from branch name.
 

@@ -30,7 +30,7 @@ from agent_arborist.constants import (
     TRAILER_RETRY,
     TRAILER_REPORT,
 )
-from agent_arborist.git.repo import git_log, git_commit, GitError
+from agent_arborist.git.repo import git_log, git_commit, git_merge_base, git_log_since, git_current_branch, GitError
 
 
 def get_run_start_sha(cwd: Path, *, spec_id: str, create: bool = True) -> str | None:
@@ -166,18 +166,115 @@ def get_task_commit_history(task_id: str, cwd: Path, *, spec_id: str) -> list[di
     return commits
 
 
-def scan_completed_tasks(tree, cwd: Path, *, spec_id: str) -> set[str]:
-    """Scan all leaf tasks on HEAD and return IDs of completed ones.
+def scan_task_states(
+    tree, cwd: Path, *, spec_id: str, base_branch: str = "main"
+) -> tuple[dict[str, TaskState], dict[str, dict[str, str]]]:
+    """Scan all leaf tasks on HEAD and return states and trailers for each.
+
+    Uses a single git log call to fetch all task commits since branching,
+    then parses to determine state.
+
+    Returns:
+        Tuple of (task_states, task_trailers) where:
+        - task_states: dict mapping task_id -> TaskState
+        - task_trailers: dict mapping task_id -> trailers dict
 
     Commits are scoped by *spec_id* embedded in the commit prefix,
     so only commits for the current spec are considered.
     """
-    completed = set()
-    for node in tree.leaves():
+    from agent_arborist.git.repo import GitError
+
+    merge_base = git_merge_base(base_branch, "HEAD", cwd)
+    if not merge_base:
+        raise GitError(
+            f"Cannot find merge-base between {base_branch} and HEAD. "
+            f"Are you on branch {base_branch}?"
+        )
+
+    branch_point = merge_base.strip()
+    if not branch_point:
+        raise GitError(f"Merge-base for {base_branch} is empty")
+
+    current_branch = git_current_branch(cwd)
+
+    is_on_base_branch = (current_branch == base_branch)
+
+    if is_on_base_branch:
+        logger.debug("On base branch %s, scanning all commits", base_branch)
+        range_spec = "HEAD"
+    else:
+        logger.debug("Scanning task status since branching from %s", base_branch)
+        range_spec = f"{base_branch}..HEAD"
+
+    try:
+        raw = git_log(
+            range_spec,
+            "%s%n%(trailers)%n---COMMIT_SEP---",
+            cwd,
+            n=500,
+            grep=f"task({spec_id}@",
+            fixed_strings=True,
+        )
+    except GitError:
+        logger.debug("No task commits found")
+        return {}, {}
+
+    task_states: dict[str, TaskState] = {}
+    task_trailers: dict[str, dict[str, str]] = {}
+
+    for block in raw.split("---COMMIT_SEP---"):
+        block = block.strip()
+        if not block:
+            continue
+        lines = block.split("\n")
+        if len(lines) < 2:
+            continue
+        subject = lines[0].strip()
+
+        if not subject.startswith(f"task({spec_id}@"):
+            continue
+
         try:
-            if is_task_complete(node.id, cwd, spec_id=spec_id):
-                completed.add(node.id)
-        except GitError:
-            pass
+            rest = subject[len(f"task({spec_id}@"):]
+            task_id, _, _ = rest.partition("@")
+        except Exception:
+            continue
+
+        if task_id in task_states:
+            continue
+
+        trailers: dict[str, str] = {}
+        for line in lines[1:]:
+            line = line.strip()
+            if ": " in line and line.startswith("Arborist-"):
+                key, _, val = line.partition(": ")
+                trailers[key] = val.strip()
+
+        state = task_state_from_trailers(trailers)
+        task_states[task_id] = state
+        task_trailers[task_id] = trailers
+
+    logger.debug("Scanned %d tasks", len(task_states))
+    return task_states, task_trailers
+
+
+def scan_completed_tasks(
+    tree, cwd: Path, *, spec_id: str, base_branch: str = "main"
+) -> set[str]:
+    """Scan all leaf tasks on HEAD and return IDs of completed ones.
+
+    Uses a single git log call to fetch all task commits since branching,
+    then parses to determine completion status.
+
+    Commits are scoped by *spec_id* embedded in the commit prefix,
+    so only commits for the current spec are considered.
+    """
+    task_states, _ = scan_task_states(tree, cwd, spec_id=spec_id, base_branch=base_branch)
+
+    completed = {
+        task_id for task_id, state in task_states.items()
+        if state == TaskState.COMPLETE
+    }
+
     logger.debug("Scan found %d completed tasks", len(completed))
     return completed
