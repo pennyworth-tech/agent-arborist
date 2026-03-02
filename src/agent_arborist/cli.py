@@ -354,7 +354,7 @@ def gardener(tree_path, runner, model, max_retries, target_repo, base_branch, re
               help="Output format (text or json)")
 def status(tree_path, target_repo, output_format):
     """Show current status of all tasks."""
-    from agent_arborist.git.state import scan_task_states
+    from agent_arborist.git.state import scan_task_states, task_state_from_trailers
 
     target = target_repo.resolve() if target_repo else Path(_default_repo()).resolve()
     branch = git_current_branch(target)
@@ -376,14 +376,13 @@ def status(tree_path, target_repo, output_format):
         for node_id, node in tree.nodes.items():
             if node.is_leaf:
                 trailers = task_trailers.get(node_id, {})
-                state = task_states.get(node_id)
-                if state:
-                    status_data["tasks"][node_id] = {
-                        "id": node.id,
-                        "name": node.name,
-                        "state": state.value,
-                        "trailers": trailers
-                    }
+                state = task_states.get(node_id) or task_state_from_trailers(trailers)
+                status_data["tasks"][node_id] = {
+                    "id": node.id,
+                    "name": node.name,
+                    "state": state.value,
+                    "trailers": trailers
+                }
 
         print(json.dumps(status_data, indent=2, ensure_ascii=False))
     else:
@@ -393,10 +392,9 @@ def status(tree_path, target_repo, output_format):
             node = tree.nodes[node_id]
             if node.is_leaf:
                 trailers = task_trailers.get(node_id, {})
-                state = task_states.get(node_id)
-                if state:
-                    icon = _status_icon(state)
-                    rich_node.add(f"{icon} [dim]{node.id}[/dim] {node.name} ({state.value})")
+                state = task_states.get(node_id) or task_state_from_trailers(trailers)
+                icon = _status_icon(state)
+                rich_node.add(f"{icon} [dim]{node.id}[/dim] {node.name} ({state.value})")
             else:
                 branch_node = rich_node.add(f"[cyan]{node.id}[/cyan] {node.name}")
                 for child_id in node.children:
