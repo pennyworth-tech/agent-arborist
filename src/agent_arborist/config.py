@@ -58,6 +58,7 @@ ENV_RUNNER_TIMEOUT = "ARBORIST_RUNNER_TIMEOUT"
 ENV_TIMEOUT_CONTAINER_UP = "ARBORIST_TIMEOUT_CONTAINER_UP"
 ENV_TIMEOUT_CONTAINER_CHECK = "ARBORIST_TIMEOUT_CONTAINER_CHECK"
 ENV_MAX_RETRIES = "ARBORIST_MAX_RETRIES"
+ENV_BASE_BRANCH = "ARBORIST_BASE_BRANCH"
 
 # Step-specific env var pattern
 ENV_STEP_RUNNER_TEMPLATE = "ARBORIST_STEP_{step}_RUNNER"
@@ -86,6 +87,7 @@ class DefaultsConfig:
     container_mode: str = "auto"
     quiet: bool = False
     max_retries: int = 5
+    base_branch: str = "main"
 
     def validate(self) -> None:
         """Validate configuration values."""
@@ -118,6 +120,7 @@ class DefaultsConfig:
             "container_mode": self.container_mode,
             "quiet": self.quiet,
             "max_retries": self.max_retries,
+            "base_branch": self.base_branch,
         }
         if exclude_none:
             return {k: v for k, v in result.items() if v is not None}
@@ -972,6 +975,9 @@ def apply_env_overrides(config: ArboristConfig) -> ArboristConfig:
             raise ConfigValidationError(
                 f"{ENV_MAX_RETRIES} must be an integer, got '{max_retries_str}'"
             )
+
+    if base_branch := os.environ.get(ENV_BASE_BRANCH):
+        result.defaults.base_branch = base_branch
 
     # Timeout overrides
     if task_run_str := os.environ.get(ENV_TIMEOUT_TASK_RUN):

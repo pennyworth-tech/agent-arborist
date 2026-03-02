@@ -25,8 +25,7 @@ import json
 from rich.console import Console
 
 from agent_arborist.git.state import (
-    scan_completed_tasks, get_task_trailers, task_state_from_trailers,
-    get_task_commit_history,
+    scan_task_states, get_task_commit_history,
 )
 from agent_arborist.tree.model import TaskTree
 from agent_arborist.git.repo import git_current_branch, spec_id_from_branch
@@ -80,12 +79,12 @@ def create_app(tree_path: Path, report_dir: Optional[Path], log_dir: Optional[Pa
     @app.get("/api/status", response_model=StatusOutput)
     async def get_status() -> StatusOutput:
         """Get task status data with per-task commit history."""
-        completed = scan_completed_tasks(tree, target, spec_id=spec_id)
+        task_states, task_trailers = scan_task_states(tree, target, spec_id=spec_id)
 
         tasks: Dict[str, TaskStateData] = {}
         for node_id, node in tree.nodes.items():
-            trailers = get_task_trailers("HEAD", node_id, target, spec_id=spec_id)
-            state = task_state_from_trailers(trailers)
+            trailers = task_trailers.get(node_id, {})
+            state = task_states.get(node_id)
 
             commits: List[TaskCommit] = []
             if node.is_leaf:
@@ -105,15 +104,17 @@ def create_app(tree_path: Path, report_dir: Optional[Path], log_dir: Optional[Pa
             tasks[node_id] = TaskStateData(
                 id=node_id,
                 name=node.name,
-                state=state.value,
+                state=state.value if state else "pending",
                 trailers=trailers,
                 commits=commits,
             )
 
+        completed = [tid for tid, state in task_states.items() if state.value == "complete"]
+
         return StatusOutput(
             tree=tree.to_dict(),
             spec_id=spec_id,
-            completed=list(completed),
+            completed=completed,
             tasks=tasks,
             generated_at=datetime.now().isoformat()
         )

@@ -393,10 +393,9 @@ class TestDefaultTreePath:
         runner = CliRunner()
         with patch("agent_arborist.cli.git_current_branch", return_value="spec/feat"), \
              patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)), \
-             patch("agent_arborist.git.state.get_task_trailers", return_value={}), \
-             patch("agent_arborist.git.state.task_state_from_trailers") as mock_state:
-            from agent_arborist.git.state import TaskState
-            mock_state.return_value = TaskState.PENDING
+             patch("agent_arborist.git.state.scan_task_states", return_value=({}, {})), \
+             patch("agent_arborist.git.repo.git_current_branch", return_value="spec/feat"), \
+             patch("agent_arborist.git.repo.git_merge_base", return_value="abc123"):
             result = runner.invoke(main, ["status"], catch_exceptions=False)
         assert result.exit_code == 0, result.output
         assert "Task Tree" in result.output
