@@ -419,10 +419,10 @@ class TestDefaultTreePath:
             result = runner.invoke(main, ["garden"])
         assert result.exit_code != 0
 
-    def test_build_with_slash_branch(self, tmp_path):
-        """build with a branch like feature/feat/sub extracts spec_id and creates openspec/changes/{spec_id}/."""
+    def test_build_with_dashdash_branch(self, tmp_path):
+        """build with a branch like feature/feat--v1 extracts spec_id and creates openspec/changes/{spec_id}/."""
         runner = CliRunner()
-        with patch("agent_arborist.cli.git_current_branch", return_value="feature/feat/sub"), \
+        with patch("agent_arborist.cli.git_current_branch", return_value="feature/feat--v1"), \
              patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)):
             result = runner.invoke(main, [
                 "build", "--no-ai",

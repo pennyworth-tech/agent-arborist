@@ -179,16 +179,20 @@ def git_log_since(
 def spec_id_from_branch(branch: str) -> str:
     """Extract spec ID from branch name.
 
-    Strips optional 'feature/' prefix and everything after the first '/'.
+    Strips optional 'feature/' prefix and everything after '--'.
+
+    Git branch refs are stored as files under .git/refs/heads/. Using '/'
+    as a terminator causes conflicts (can't have both a file and directory
+    at the same path). Using '--' avoids this issue.
 
     Examples:
         'bl-jjjj-blah-blah' -> 'bl-jjjj-blah-blah'
-        'bl-jjjj-blah-blah/ver2' -> 'bl-jjjj-blah-blah'
+        'bl-jjjj-blah-blah--v1' -> 'bl-jjjj-blah-blah'
         'feature/bl-jjjj-blah-blah' -> 'bl-jjjj-blah-blah'
-        'feature/bl-jjjj-blah-blah/ver2' -> 'bl-jjjj-blah-blah'
+        'feature/bl-jjjj-blah-blah--v2' -> 'bl-jjjj-blah-blah'
     """
     if branch.startswith("feature/"):
         branch = branch[8:]
-    if "/" in branch:
-        branch = branch.split("/")[0]
+    if "--" in branch:
+        branch = branch.split("--")[0]
     return branch

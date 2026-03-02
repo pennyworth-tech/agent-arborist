@@ -116,9 +116,9 @@ def test_git_log_with_grep(git_repo):
 
 def test_spec_id_from_branch():
     assert spec_id_from_branch("bl-jjjj-blah-blah") == "bl-jjjj-blah-blah"
-    assert spec_id_from_branch("bl-jjjj-blah-blah/ver2") == "bl-jjjj-blah-blah"
-    assert spec_id_from_branch("bl-jjjj-blah-blah/hithere/anotherone") == "bl-jjjj-blah-blah"
+    assert spec_id_from_branch("bl-jjjj-blah-blah--v1") == "bl-jjjj-blah-blah"
+    assert spec_id_from_branch("bl-jjjj-blah-blah--v2--extra") == "bl-jjjj-blah-blah"
     assert spec_id_from_branch("feature/bl-jjjj-blah-blah") == "bl-jjjj-blah-blah"
-    assert spec_id_from_branch("feature/bl-jjjj-blah-blah/ver2") == "bl-jjjj-blah-blah"
-    assert spec_id_from_branch("feature/bl-jjjj-blah-blah/ver200/blahblah") == "bl-jjjj-blah-blah"
-    assert spec_id_from_branch("feature/bl-jjj-blah-blah/anything-okeydokey") == "bl-jjj-blah-blah"
+    assert spec_id_from_branch("feature/bl-jjjj-blah-blah--v1") == "bl-jjjj-blah-blah"
+    assert spec_id_from_branch("feature/bl-jjjj-blah-blah--v200--extra") == "bl-jjjj-blah-blah"
+    assert spec_id_from_branch("feature/bl-jjj-blah-blah--anything") == "bl-jjj-blah-blah"
