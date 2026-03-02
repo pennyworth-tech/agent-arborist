@@ -332,6 +332,13 @@ def garden(
             logger.info("Task %s attempt %d/%d", task.id, attempt + 1, max_retries)
 
             # --- implement ---
+            test_cmd_info = ""
+            if task.test_commands:
+                cmds = [tc.command for tc in task.test_commands]
+                test_cmd_info = f"\n\nTest command(s) to validate: {cmds}"
+            elif test_command != "true":
+                test_cmd_info = f"\n\nTest command to validate: {test_command}"
+
             prompt = (
                 f"Implement task {task.id}: {task.name}\n\n"
                 f"Description: {task.description}\n\n"
@@ -340,6 +347,7 @@ def garden(
                 f"implemented (e.g. the files, variables, or state it requires already exist). "
                 f"If a previous step has deterministically verified the work is already done "
                 f"and shown its reasoning, you may confirm completion without making changes."
+                f"{test_cmd_info}"
             )
             if attempt > 0:
                 feedback = _collect_feedback_from_git(task.id, cwd, spec_id=spec_id)
