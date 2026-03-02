@@ -30,7 +30,7 @@ from agent_arborist.config import (
     VALID_RUNNERS, generate_config_template,
 )
 from agent_arborist.git.repo import (
-    git_current_branch, git_toplevel,
+    git_current_branch, git_toplevel, spec_id_from_branch,
 )
 
 
@@ -151,9 +151,9 @@ def init():
 
 
 @main.command()
-@click.option("--spec-dir", type=click.Path(exists=True, path_type=Path), default="spec")
+@click.option("--spec-dir", type=click.Path(exists=True, path_type=Path), default=None)
 @click.option("--output", "-o", type=click.Path(path_type=Path), default=None,
-              help="Output path (default: specs/{branch}/task-tree.json)")
+              help="Output path (default: openspec/changes/<spec_id>/task-tree.json)")
 @click.option("--no-ai", is_flag=True, help="Disable AI planning; use markdown parser instead")
 @click.option("--runner", default=None, help="Runner for AI planning (default: from config or 'claude')")
 @click.option("--model", default=None, help="Model for AI planning (default: from config or 'opus')")
@@ -162,9 +162,12 @@ def init():
               help="Container mode for AI planning (default: from config or 'auto')")
 def build(spec_dir, output, no_ai, runner, model, container_mode):
     """Build a task tree from a spec directory and write it to a JSON file."""
+    branch = git_current_branch(Path.cwd())
+    spec_id = spec_id_from_branch(branch)
+    if spec_dir is None:
+        spec_dir = Path("openspec") / "changes" / spec_id
     if output is None:
-        branch = git_current_branch(Path.cwd())
-        output = Path("specs") / branch / "task-tree.json"
+        output = Path("openspec") / "changes" / spec_id / "task-tree.json"
     if no_ai:
         from agent_arborist.tree.spec_parser import parse_spec
         spec_files = list(spec_dir.glob("tasks*.md")) + list(spec_dir.glob("*.md"))
@@ -213,7 +216,7 @@ def build(spec_dir, output, no_ai, runner, model, container_mode):
 
 @main.command()
 @click.option("--tree", "tree_path", type=click.Path(exists=True, path_type=Path), default=None,
-              help="Path to task-tree.json (default: specs/{branch}/task-tree.json)")
+              help="Path to task-tree.json (default: openspec/changes/<spec_id>/task-tree.json)")
 @click.option("--runner-type", "runner", default=None, help="Runner type (default: from config or 'claude')")
 @click.option("--model", default=None, help="Model name (default: from config or 'sonnet')")
 @click.option("--max-retries", default=None, type=int, help="Max retries per task (default: from config or 5)")
@@ -239,8 +242,9 @@ def garden(tree_path, runner, model, max_retries, target_repo, base_branch, repo
     target = target_repo.resolve() if target_repo else Path(_default_repo()).resolve()
     if base_branch is None:
         base_branch = git_current_branch(target)
+    spec_id = spec_id_from_branch(base_branch)
     if tree_path is None:
-        tree_path = Path("specs") / base_branch / "task-tree.json"
+        tree_path = Path("openspec") / "changes" / spec_id / "task-tree.json"
     tree = _load_tree(tree_path)
 
     if report_dir is None:
@@ -265,7 +269,7 @@ def garden(tree_path, runner, model, max_retries, target_repo, base_branch, repo
         container_workspace=container_ws,
         container_up_timeout=cfg.timeouts.container_up,
         container_check_timeout=cfg.timeouts.container_check,
-        branch=base_branch,
+        branch=spec_id,
     )
 
     if result.success:
@@ -277,7 +281,7 @@ def garden(tree_path, runner, model, max_retries, target_repo, base_branch, repo
 
 @main.command()
 @click.option("--tree", "tree_path", type=click.Path(exists=True, path_type=Path), default=None,
-              help="Path to task-tree.json (default: specs/{branch}/task-tree.json)")
+              help="Path to task-tree.json (default: openspec/changes/<spec_id>/task-tree.json)")
 @click.option("--runner-type", "runner", default=None, help="Runner type (default: from config or 'claude')")
 @click.option("--model", default=None, help="Model name (default: from config or 'sonnet')")
 @click.option("--max-retries", default=None, type=int, help="Max retries per task (default: from config or 5)")
@@ -303,8 +307,9 @@ def gardener(tree_path, runner, model, max_retries, target_repo, base_branch, re
     target = target_repo.resolve() if target_repo else Path(_default_repo()).resolve()
     if base_branch is None:
         base_branch = git_current_branch(target)
+    spec_id = spec_id_from_branch(base_branch)
     if tree_path is None:
-        tree_path = Path("specs") / base_branch / "task-tree.json"
+        tree_path = Path("openspec") / "changes" / spec_id / "task-tree.json"
     tree = _load_tree(tree_path)
 
     if report_dir is None:
@@ -329,7 +334,7 @@ def gardener(tree_path, runner, model, max_retries, target_repo, base_branch, re
         container_workspace=container_ws,
         container_up_timeout=cfg.timeouts.container_up,
         container_check_timeout=cfg.timeouts.container_check,
-        branch=base_branch,
+        branch=spec_id,
     )
 
     if result.success:
@@ -343,7 +348,7 @@ def gardener(tree_path, runner, model, max_retries, target_repo, base_branch, re
 
 @main.command()
 @click.option("--tree", "tree_path", type=click.Path(exists=True, path_type=Path), default=None,
-              help="Path to task-tree.json (default: specs/{branch}/task-tree.json)")
+              help="Path to task-tree.json (default: openspec/changes/<spec_id>/task-tree.json)")
 @click.option("--target-repo", type=click.Path(path_type=Path), default=None)
 @click.option("--format", "output_format", type=click.Choice(["text", "json"]), default="text",
               help="Output format (text or json)")
@@ -353,11 +358,12 @@ def status(tree_path, target_repo, output_format):
 
     target = target_repo.resolve() if target_repo else Path(_default_repo()).resolve()
     branch = git_current_branch(target)
+    spec_id = spec_id_from_branch(branch)
     if tree_path is None:
-        tree_path = Path("specs") / branch / "task-tree.json"
+        tree_path = Path("openspec") / "changes" / spec_id / "task-tree.json"
     tree = _load_tree(tree_path)
 
-    completed = scan_completed_tasks(tree, target, branch=branch)
+    completed = scan_completed_tasks(tree, target, branch=spec_id)
 
     if output_format == "json":
         status_data = {
@@ -369,7 +375,7 @@ def status(tree_path, target_repo, output_format):
 
         for node_id, node in tree.nodes.items():
             if node.is_leaf:
-                trailers = get_task_trailers("HEAD", node_id, target, current_branch=branch)
+                trailers = get_task_trailers("HEAD", node_id, target, current_branch=spec_id)
                 state = task_state_from_trailers(trailers)
                 status_data["tasks"][node_id] = {
                     "id": node.id,
@@ -385,7 +391,7 @@ def status(tree_path, target_repo, output_format):
         def _add_status_subtree(rich_node, node_id):
             node = tree.nodes[node_id]
             if node.is_leaf:
-                trailers = get_task_trailers("HEAD", node_id, target, current_branch=branch)
+                trailers = get_task_trailers("HEAD", node_id, target, current_branch=spec_id)
                 state = task_state_from_trailers(trailers)
                 icon = _status_icon(state)
                 rich_node.add(f"{icon} [dim]{node.id}[/dim] {node.name} ({state.value})")
@@ -402,7 +408,7 @@ def status(tree_path, target_repo, output_format):
 
 @main.command()
 @click.option("--tree", "tree_path", type=click.Path(exists=True, path_type=Path), default=None,
-              help="Path to task-tree.json (default: specs/{branch}/task-tree.json)")
+              help="Path to task-tree.json (default: openspec/changes/<spec_id>/task-tree.json)")
 @click.option("--task-id", required=True, help="Task ID to inspect (e.g. T003)")
 @click.option("--target-repo", type=click.Path(path_type=Path), default=None)
 @click.option("--format", "output_format", type=click.Choice(["text", "json"]), default="text",
@@ -414,8 +420,9 @@ def inspect(tree_path, task_id, target_repo, output_format):
 
     target = target_repo.resolve() if target_repo else Path(_default_repo()).resolve()
     branch = git_current_branch(target)
+    spec_id = spec_id_from_branch(branch)
     if tree_path is None:
-        tree_path = Path("specs") / branch / "task-tree.json"
+        tree_path = Path("openspec") / "changes" / spec_id / "task-tree.json"
     tree = _load_tree(tree_path)
 
     if task_id not in tree.nodes:
@@ -441,13 +448,13 @@ def inspect(tree_path, task_id, target_repo, output_format):
             "trailers": {}
         }
 
-        trailers = get_task_trailers("HEAD", task_id, target, current_branch=branch)
+        trailers = get_task_trailers("HEAD", task_id, target, current_branch=spec_id)
         state = task_state_from_trailers(trailers)
         inspect_data["state"] = state.value
         inspect_data["trailers"] = trailers
 
         if trailers:
-            grep_pattern = f"task({branch}@{task_id}"
+            grep_pattern = f"task({spec_id}@{task_id}"
             try:
                 log_output = git_log(
                     "HEAD",
@@ -485,8 +492,8 @@ def inspect(tree_path, task_id, target_repo, output_format):
                 console.print(f"    [{tc.type.value}] {tc.command}{fw}{to}")
 
         # Current state from most recent trailer
-        grep_pattern = f"task({branch}@{task_id}"
-        trailers = get_task_trailers("HEAD", task_id, target, current_branch=branch)
+        grep_pattern = f"task({spec_id}@{task_id}"
+        trailers = get_task_trailers("HEAD", task_id, target, current_branch=spec_id)
         state = task_state_from_trailers(trailers)
         if not trailers:
             console.print("\n[dim]No commits found for this task (not started).[/dim]")
@@ -528,7 +535,7 @@ def inspect(tree_path, task_id, target_repo, output_format):
 
 @main.command()
 @click.option("--tree", "tree_path", type=click.Path(exists=True, path_type=Path), default=None,
-              help="Path to task-tree.json (default: specs/{branch}/task-tree.json)")
+              help="Path to task-tree.json (default: openspec/changes/<spec_id>/task-tree.json)")
 @click.option("--report-dir", type=click.Path(path_type=Path), default=None,
               help="Directory for reports (default: next to task tree)")
 @click.option("--format", "output_format", type=click.Choice(["text", "json"]), default="text",
@@ -538,9 +545,10 @@ def reports(tree_path, report_dir, output_format, task_id):
     """List task execution reports."""
     target = Path(_default_repo()).resolve()
     branch = git_current_branch(target)
+    spec_id = spec_id_from_branch(branch)
 
     if tree_path is None:
-        tree_path = Path("specs") / branch / "task-tree.json"
+        tree_path = Path("openspec") / "changes" / spec_id / "task-tree.json"
 
     tree_path = Path(tree_path).resolve()
     if report_dir is None:
@@ -585,7 +593,7 @@ def reports(tree_path, report_dir, output_format, task_id):
 
 @main.command()
 @click.option("--tree", "tree_path", type=click.Path(exists=True, path_type=Path), default=None,
-              help="Path to task-tree.json (default: specs/{branch}/task-tree.json)")
+              help="Path to task-tree.json (default: openspec/changes/<spec_id>/task-tree.json)")
 @click.option("--log-dir", type=click.Path(path_type=Path), default=None,
               help="Directory for logs (default: next to task tree)")
 @click.option("--format", "output_format", type=click.Choice(["text", "json"]), default="text",
@@ -599,9 +607,10 @@ def logs(tree_path, log_dir, output_format, task_id, show_file):
 
     target = Path(_default_repo()).resolve()
     branch = git_current_branch(target)
+    spec_id = spec_id_from_branch(branch)
 
     if tree_path is None:
-        tree_path = Path("specs") / branch / "task-tree.json"
+        tree_path = Path("openspec") / "changes" / spec_id / "task-tree.json"
 
     tree_path = Path(tree_path).resolve()
 
@@ -629,7 +638,7 @@ def logs(tree_path, log_dir, output_format, task_id, show_file):
         tid = node.id
         if task_id is not None and tid != task_id:
             continue
-        commits = get_task_commit_history(tid, target, current_branch=branch)
+        commits = get_task_commit_history(tid, target, current_branch=spec_id)
         if commits:
             commits_by_task[tid] = commits
 
@@ -716,9 +725,10 @@ def dashboard(tree_path, port, report_dir, log_dir):
 
     target = Path(_default_repo()).resolve()
     branch = git_current_branch(target)
+    spec_id = spec_id_from_branch(branch)
 
     if tree_path is None:
-        tree_path = Path("specs") / branch / "task-tree.json"
+        tree_path = Path("openspec") / "changes" / spec_id / "task-tree.json"
 
     tree_path = Path(tree_path).resolve()
     if not tree_path.exists():

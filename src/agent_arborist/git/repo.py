@@ -130,3 +130,21 @@ def git_branch_list(cwd: Path, pattern: str | None = None) -> list[str]:
 def git_rev_parse(rev: str, cwd: Path) -> str:
     """Resolve a revision to its full SHA."""
     return _run(["rev-parse", rev], cwd)
+
+
+def spec_id_from_branch(branch: str) -> str:
+    """Extract spec ID from branch name.
+
+    Strips optional 'feature/' prefix and everything after the first '/'.
+
+    Examples:
+        'bl-jjjj-blah-blah' -> 'bl-jjjj-blah-blah'
+        'bl-jjjj-blah-blah/ver2' -> 'bl-jjjj-blah-blah'
+        'feature/bl-jjjj-blah-blah' -> 'bl-jjjj-blah-blah'
+        'feature/bl-jjjj-blah-blah/ver2' -> 'bl-jjjj-blah-blah'
+    """
+    if branch.startswith("feature/"):
+        branch = branch[8:]
+    if "/" in branch:
+        branch = branch.split("/")[0]
+    return branch

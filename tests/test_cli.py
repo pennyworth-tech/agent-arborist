@@ -31,8 +31,10 @@ FIXTURES = Path(__file__).parent / "fixtures"
 # ---------------------------------------------------------------------------
 
 def _make_tree_at(base_dir, branch="my-branch"):
-    """Write a minimal task tree at specs/{branch}/task-tree.json and return the path."""
-    tree_path = base_dir / "specs" / branch / "task-tree.json"
+    """Write a minimal task tree at openspec/changes/{spec_id}/task-tree.json and return the path."""
+    from agent_arborist.git.repo import spec_id_from_branch
+    spec_id = spec_id_from_branch(branch)
+    tree_path = base_dir / "openspec" / "changes" / spec_id / "task-tree.json"
     tree_path.parent.mkdir(parents=True, exist_ok=True)
     tree_path.write_text(json.dumps({
         "nodes": {
@@ -47,12 +49,14 @@ def _make_tree_at(base_dir, branch="my-branch"):
 def test_build_no_ai_produces_valid_json(tmp_path):
     output = tmp_path / "tree.json"
     runner = CliRunner()
-    result = runner.invoke(main, [
-        "build",
-        "--no-ai",
-        "--spec-dir", str(FIXTURES),
-        "--output", str(output),
-    ])
+    with patch("agent_arborist.cli.git_current_branch", return_value="my-branch"), \
+         patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)):
+        result = runner.invoke(main, [
+            "build",
+            "--no-ai",
+            "--spec-dir", str(FIXTURES),
+            "--output", str(output),
+        ])
     assert result.exit_code == 0, result.output
     data = json.loads(output.read_text())
     assert "nodes" in data
@@ -63,7 +67,9 @@ def test_build_no_ai_uses_markdown_parser(tmp_path):
     """--no-ai path should use spec_parser, not ai_planner."""
     output = tmp_path / "tree.json"
     runner = CliRunner()
-    with patch("agent_arborist.tree.ai_planner.plan_tree") as mock_plan:
+    with patch("agent_arborist.cli.git_current_branch", return_value="my-branch"), \
+         patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)), \
+         patch("agent_arborist.tree.ai_planner.plan_tree") as mock_plan:
         result = runner.invoke(main, [
             "build",
             "--no-ai",
@@ -90,16 +96,17 @@ def test_build_default_uses_ai_planner(tmp_path):
     mock_result.success = True
     mock_result.tree = mock_tree
 
-    with patch("agent_arborist.cli.plan_tree", mock_result, create=True):
-        # We patch at the import location inside cli.build
-        with patch("agent_arborist.tree.ai_planner.plan_tree", return_value=mock_result) as mock_plan:
-            result = runner.invoke(main, [
-                "build",
-                "--spec-dir", str(FIXTURES),
-                "--output", str(output),
-            ])
-            assert result.exit_code == 0, result.output
-            mock_plan.assert_called_once()
+    with patch("agent_arborist.cli.git_current_branch", return_value="my-branch"), \
+         patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)), \
+         patch("agent_arborist.cli.plan_tree", mock_result, create=True), \
+         patch("agent_arborist.tree.ai_planner.plan_tree", return_value=mock_result) as mock_plan:
+        result = runner.invoke(main, [
+            "build",
+            "--spec-dir", str(FIXTURES),
+            "--output", str(output),
+        ])
+        assert result.exit_code == 0, result.output
+        mock_plan.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -308,27 +315,29 @@ class TestDefaultTreePath:
     """When --tree is omitted, CLI derives path from current/base branch."""
 
     def test_build_default_output_uses_branch(self, tmp_path):
-        """build without -o writes to specs/{branch}/task-tree.json."""
+        """build without -o writes to openspec/changes/{spec_id}/task-tree.json."""
         runner = CliRunner()
-        with patch("agent_arborist.cli.git_current_branch", return_value="spec/my-feature"), \
+        with patch("agent_arborist.cli.git_current_branch", return_value="my-feature"), \
              patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)):
             result = runner.invoke(main, [
                 "build", "--no-ai",
                 "--spec-dir", str(FIXTURES),
             ])
         assert result.exit_code == 0, result.output
-        expected = Path("specs/spec/my-feature/task-tree.json")
+        expected = Path("openspec/changes/my-feature/task-tree.json")
         assert expected.exists()
 
     def test_build_explicit_output_overrides_default(self, tmp_path):
         """build with -o ignores the branch-based default."""
         output = tmp_path / "custom.json"
         runner = CliRunner()
-        result = runner.invoke(main, [
-            "build", "--no-ai",
-            "--spec-dir", str(FIXTURES),
-            "--output", str(output),
-        ])
+        with patch("agent_arborist.cli.git_current_branch", return_value="my-branch"), \
+             patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)):
+            result = runner.invoke(main, [
+                "build", "--no-ai",
+                "--spec-dir", str(FIXTURES),
+                "--output", str(output),
+            ])
         assert result.exit_code == 0, result.output
         assert output.exists()
 
@@ -412,16 +421,16 @@ class TestDefaultTreePath:
         assert result.exit_code != 0
 
     def test_build_with_slash_branch(self, tmp_path):
-        """build with a branch like spec/feat/sub creates nested dirs."""
+        """build with a branch like feature/feat/sub extracts spec_id and creates openspec/changes/{spec_id}/."""
         runner = CliRunner()
-        with patch("agent_arborist.cli.git_current_branch", return_value="spec/feat/sub"), \
+        with patch("agent_arborist.cli.git_current_branch", return_value="feature/feat/sub"), \
              patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)):
             result = runner.invoke(main, [
                 "build", "--no-ai",
                 "--spec-dir", str(FIXTURES),
             ])
         assert result.exit_code == 0, result.output
-        assert Path("specs/spec/feat/sub/task-tree.json").exists()
+        assert Path("openspec/changes/feat/task-tree.json").exists()
 
 
 # ---------------------------------------------------------------------------

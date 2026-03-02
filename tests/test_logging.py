@@ -17,7 +17,9 @@
 import json
 import logging
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from click.testing import CliRunner
 
@@ -34,13 +36,15 @@ def test_cli_log_level_option_configures_logging(tmp_path):
     """--log-level INFO should cause INFO messages to appear."""
     output = tmp_path / "tree.json"
     runner = CliRunner()
-    result = runner.invoke(main, [
-        "--log-level", "INFO",
-        "build",
-        "--no-ai",
-        "--spec-dir", str(FIXTURES),
-        "--output", str(output),
-    ])
+    with patch("agent_arborist.cli.git_current_branch", return_value="my-branch"), \
+         patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)):
+        result = runner.invoke(main, [
+            "--log-level", "INFO",
+            "build",
+            "--no-ai",
+            "--spec-dir", str(FIXTURES),
+            "--output", str(output),
+        ])
     assert result.exit_code == 0, result.output
 
 
@@ -48,12 +52,14 @@ def test_cli_log_level_default_is_warning(tmp_path):
     """Default log level should be WARNING — no INFO in output."""
     output = tmp_path / "tree.json"
     runner = CliRunner()
-    result = runner.invoke(main, [
-        "build",
-        "--no-ai",
-        "--spec-dir", str(FIXTURES),
-        "--output", str(output),
-    ])
+    with patch("agent_arborist.cli.git_current_branch", return_value="my-branch"), \
+         patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)):
+        result = runner.invoke(main, [
+            "build",
+            "--no-ai",
+            "--spec-dir", str(FIXTURES),
+            "--output", str(output),
+        ])
     assert result.exit_code == 0
     # INFO-level messages should not appear with default WARNING level
     assert "Parsed spec:" not in result.output
@@ -63,13 +69,15 @@ def test_cli_log_level_case_insensitive(tmp_path):
     """--log-level should accept lowercase."""
     output = tmp_path / "tree.json"
     runner = CliRunner()
-    result = runner.invoke(main, [
-        "--log-level", "debug",
-        "build",
-        "--no-ai",
-        "--spec-dir", str(FIXTURES),
-        "--output", str(output),
-    ])
+    with patch("agent_arborist.cli.git_current_branch", return_value="my-branch"), \
+         patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)):
+        result = runner.invoke(main, [
+            "--log-level", "debug",
+            "build",
+            "--no-ai",
+            "--spec-dir", str(FIXTURES),
+            "--output", str(output),
+        ])
     assert result.exit_code == 0
 
 
