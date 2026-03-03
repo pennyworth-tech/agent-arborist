@@ -206,12 +206,17 @@ def scan_task_states(
         logger.debug("Scanning task status since branching from %s", base_branch)
         range_spec = f"{base_branch}..HEAD"
 
+    # When on a feature branch, range_spec already bounds the scan to
+    # commits since branching — no need for an arbitrary cap.  On the base
+    # branch we keep a safety limit to avoid scanning the entire history.
+    max_commits: int | None = 500 if is_on_base_branch else None
+
     try:
         raw = git_log(
             range_spec,
             "%s%n%(trailers)%n---COMMIT_SEP---",
             cwd,
-            n=500,
+            n=max_commits,
             grep=f"task({spec_id}@",
             fixed_strings=True,
         )
