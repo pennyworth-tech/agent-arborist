@@ -419,6 +419,24 @@ class TestDefaultTreePath:
             result = runner.invoke(main, ["garden"])
         assert result.exit_code != 0
 
+    def test_build_output_directory_appends_filename(self, tmp_path):
+        """build with --output pointing to a directory appends task-tree.json."""
+        out_dir = tmp_path / "spec"
+        out_dir.mkdir()
+        runner = CliRunner()
+        with patch("agent_arborist.cli.git_current_branch", return_value="my-branch"), \
+             patch("agent_arborist.cli.git_toplevel", return_value=str(tmp_path)):
+            result = runner.invoke(main, [
+                "build", "--no-ai",
+                "--spec-dir", str(FIXTURES),
+                "--output", str(out_dir),
+            ])
+        assert result.exit_code == 0, result.output
+        expected = out_dir / "task-tree.json"
+        assert expected.exists()
+        data = json.loads(expected.read_text())
+        assert "nodes" in data
+
     def test_build_with_dashdash_branch(self, tmp_path):
         """build with a branch like feature/feat--v1 extracts spec_id and creates openspec/changes/{spec_id}/."""
         runner = CliRunner()
