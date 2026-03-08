@@ -203,6 +203,8 @@ def build(spec_dir, output, no_ai, runner, model, container_mode):
 
     # Write task tree JSON
     tree_path = Path(output).resolve()
+    if tree_path.is_dir():
+        tree_path = tree_path / "task-tree.json"
     tree_path.parent.mkdir(parents=True, exist_ok=True)
     tree_path.write_text(json.dumps(tree.to_dict(), indent=2) + "\n")
 
