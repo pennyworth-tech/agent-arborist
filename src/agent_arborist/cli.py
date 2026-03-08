@@ -162,12 +162,13 @@ def init():
               help="Container mode for AI planning (default: from config or 'auto')")
 def build(spec_dir, output, no_ai, runner, model, container_mode):
     """Build a task tree from a spec directory and write it to a JSON file."""
-    branch = git_current_branch(Path.cwd())
-    spec_id = spec_id_from_branch(branch)
-    if spec_dir is None:
-        spec_dir = Path("openspec") / "changes" / spec_id
-    if output is None:
-        output = Path("openspec") / "changes" / spec_id / "task-tree.json"
+    if spec_dir is None or output is None:
+        branch = git_current_branch(Path.cwd())
+        spec_id = spec_id_from_branch(branch)
+        if spec_dir is None:
+            spec_dir = Path("openspec") / "changes" / spec_id
+        if output is None:
+            output = Path("openspec") / "changes" / spec_id / "task-tree.json"
     if no_ai:
         from agent_arborist.tree.spec_parser import parse_spec
         spec_files = list(spec_dir.glob("tasks*.md")) + list(spec_dir.glob("*.md"))
