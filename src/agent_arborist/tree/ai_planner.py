@@ -109,6 +109,8 @@ EXTRACTION RULES:
 TEST COMMANDS:
 For each leaf task, include a "test_commands" array. Each entry:
 {{
+  "test_id": "T-001",
+  "name": "human-readable description of what the test verifies",
   "type": "unit" | "integration" | "e2e",
   "command": "shell command to run tests",
   "framework": "pytest" | "jest" | "vitest" | "go" | null,
@@ -118,10 +120,16 @@ For each leaf task, include a "test_commands" array. Each entry:
 IMPORTANT - test-plan.json as authoritative source:
 If a file named test-plan.json exists in the spec directory (or any subdirectory),
 it is the AUTHORITATIVE source for test commands. Use it as follows:
-1. Read the test-plan.json "tests" array — each test has "test_id", "requirement_ids",
-   "test_type", "command", "framework", and "timeout_s"
+1. Read the test-plan.json "tests" array — each test has "test_id", "name",
+   "requirement_ids", "test_type", "command", "framework", and "timeout_s"
 2. Map tests to leaf tasks by matching requirement_ids to the task's requirements
-3. Use the exact "command", "framework", "timeout_s", and "test_type" from test-plan.json
+3. Copy these fields exactly from test-plan.json into each test_command entry:
+   - "test_id" → "test_id"
+   - "name" → "name" (human-readable test description)
+   - "test_type" → "type"
+   - "command" → "command"
+   - "framework" → "framework"
+   - "timeout_s" → "timeout"
 4. Do NOT invent or generate test commands when test-plan.json provides them
 5. A leaf task's test_commands should include ALL tests from test-plan.json whose
    requirement_ids overlap with the requirements that task implements
@@ -140,7 +148,12 @@ Framework template examples (fallback only):
 - go: {{"type": "unit", "command": "go test ./...", "framework": "go"}}
 - cargo: {{"type": "unit", "command": "cargo test", "framework": "cargo"}}
 
-OUTPUT ONLY valid JSON. Start with {{ on line 1. No markdown fences.
+CRITICAL OUTPUT RULES:
+- Output ONLY valid JSON. Start with {{ on line 1. No markdown fences.
+- Do NOT summarize, abbreviate, or truncate the output. Output the COMPLETE JSON no matter how large.
+- Do NOT say "the file is too large" or provide pseudo-structures. Output every single task and every single test_command.
+- If the test-plan.json has many tests, the output WILL be large. That is expected and required.
+- No explanatory text before or after the JSON. ONLY the JSON object.
 '''
 
 
@@ -175,6 +188,7 @@ def plan_tree(
             raw_output=result.output,
         )
 
+    logger.debug("Raw AI output:\n%s", result.output)
     logger.debug("Extracting JSON from output")
     task_json = _extract_json(result.output)
     if not task_json:
