@@ -107,7 +107,7 @@ EXTRACTION RULES:
    - Section boundaries
 
 TEST COMMANDS:
-For each task, optionally generate a "test_commands" array. Each entry:
+For each leaf task, include a "test_commands" array. Each entry:
 {{
   "type": "unit" | "integration" | "e2e",
   "command": "shell command to run tests",
@@ -115,14 +115,25 @@ For each task, optionally generate a "test_commands" array. Each entry:
   "timeout": <seconds or null>
 }}
 
-Rules:
+IMPORTANT - test-plan.json as authoritative source:
+If a file named test-plan.json exists in the spec directory (or any subdirectory),
+it is the AUTHORITATIVE source for test commands. Use it as follows:
+1. Read the test-plan.json "tests" array — each test has "test_id", "requirement_ids",
+   "test_type", "command", "framework", and "timeout_s"
+2. Map tests to leaf tasks by matching requirement_ids to the task's requirements
+3. Use the exact "command", "framework", "timeout_s", and "test_type" from test-plan.json
+4. Do NOT invent or generate test commands when test-plan.json provides them
+5. A leaf task's test_commands should include ALL tests from test-plan.json whose
+   requirement_ids overlap with the requirements that task implements
+
+Fallback rules (only when NO test-plan.json exists):
 - Leaf tasks typically get "type": "unit" tests
 - Parent/group tasks may get "type": "integration" or "type": "e2e" tests
 - Integration/e2e tests on parent nodes run after all child tasks complete
 - Infer the framework from project context (package.json → jest/vitest, pyproject.toml → pytest, go.mod → go)
 - If you cannot determine a test command, omit test_commands (it defaults to empty)
 
-Framework template examples:
+Framework template examples (fallback only):
 - pytest: {{"type": "unit", "command": "python -m pytest tests/ -x", "framework": "pytest"}}
 - jest: {{"type": "unit", "command": "npx jest --passWithNoTests", "framework": "jest"}}
 - vitest: {{"type": "unit", "command": "npx vitest run", "framework": "vitest"}}
