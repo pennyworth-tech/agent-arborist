@@ -71,6 +71,7 @@ class TaskNode:
     source_file: str | None = None
     source_line: int | None = None
     test_commands: list[TestCommand] = field(default_factory=list)
+    requirement_ids: list[str] = field(default_factory=list)
 
     @property
     def is_leaf(self) -> bool:
@@ -202,6 +203,7 @@ class TaskTree:
                     "source_line": n.source_line,
                     "is_leaf": n.is_leaf,
                     "test_commands": [tc.to_dict() for tc in n.test_commands],
+                    "requirement_ids": n.requirement_ids,
                 }
                 for nid, n in self.nodes.items()
             },
@@ -230,5 +232,6 @@ class TaskTree:
                     TestCommand.from_dict(tc)
                     for tc in nd.get("test_commands", [])
                 ],
+                requirement_ids=nd.get("requirement_ids", []),
             )
         return tree
