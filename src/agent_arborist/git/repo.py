@@ -181,20 +181,27 @@ def git_log_since(
 def spec_id_from_branch(branch: str) -> str:
     """Extract spec ID from branch name.
 
-    Strips optional 'feature/' prefix and everything after '--'.
+    Strips optional 'feature/' prefix, everything after '--', and everything
+    after the first two hyphen-separated fields.
 
-    Git branch refs are stored as files under .git/refs/heads/. Using '/'
-    as a terminator causes conflicts (can't have both a file and directory
-    at the same path). Using '--' avoids this issue.
+    Per OS-47 on Linear, the branch naming convention is:
+        team-NN-<<<slug>>>--<<timeline>>
+
+    The spec_id is the 'team-NN' portion (e.g., 'os-47').
 
     Examples:
-        'bl-jjjj-blah-blah' -> 'bl-jjjj-blah-blah'
-        'bl-jjjj-blah-blah--v1' -> 'bl-jjjj-blah-blah'
-        'feature/bl-jjjj-blah-blah' -> 'bl-jjjj-blah-blah'
-        'feature/bl-jjjj-blah-blah--v2' -> 'bl-jjjj-blah-blah'
+        'os-47-split-spec-branch-timeline--v1' -> 'os-47'
+        'bltest-123-another-slug--v2' -> 'bltest-123'
+        'feature/os-47-slug--v3' -> 'os-47'
+        'bl-jjjj-blah-blah' -> 'bl-jjjj'
     """
     if branch.startswith("feature/"):
         branch = branch[8:]
     if "--" in branch:
         branch = branch.split("--")[0]
+
+    # Extract first two hyphen-separated fields (e.g., team-NN)
+    parts = branch.split("-")
+    if len(parts) >= 2:
+        return "-".join(parts[:2])
     return branch
