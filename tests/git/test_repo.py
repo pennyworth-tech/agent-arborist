@@ -115,10 +115,18 @@ def test_git_log_with_grep(git_repo):
 
 
 def test_spec_id_from_branch():
-    assert spec_id_from_branch("bl-jjjj-blah-blah") == "bl-jjjj-blah-blah"
-    assert spec_id_from_branch("bl-jjjj-blah-blah--v1") == "bl-jjjj-blah-blah"
-    assert spec_id_from_branch("bl-jjjj-blah-blah--v2--extra") == "bl-jjjj-blah-blah"
-    assert spec_id_from_branch("feature/bl-jjjj-blah-blah") == "bl-jjjj-blah-blah"
-    assert spec_id_from_branch("feature/bl-jjjj-blah-blah--v1") == "bl-jjjj-blah-blah"
-    assert spec_id_from_branch("feature/bl-jjjj-blah-blah--v200--extra") == "bl-jjjj-blah-blah"
-    assert spec_id_from_branch("feature/bl-jjj-blah-blah--anything") == "bl-jjj-blah-blah"
+    # New logic: Extracts team-NN (first two fields)
+    assert spec_id_from_branch("os-47-split-spec-branch-timeline--v1") == "os-47"
+    assert spec_id_from_branch("bltest-123-another-slug--v2") == "bltest-123"
+    assert spec_id_from_branch("feature/os-47-slug--v3") == "os-47"
+
+    # Multiple hyphens in slug
+    assert spec_id_from_branch("bl-jjjj-blah-blah") == "bl-jjjj"
+    assert spec_id_from_branch("bl-jjjj-blah-blah--v1") == "bl-jjjj"
+
+    # Edge cases
+    assert spec_id_from_branch("onlyone") == "onlyone"
+    assert spec_id_from_branch("feature/onlyone") == "onlyone"
+    assert spec_id_from_branch("one-two") == "one-two"
+    assert spec_id_from_branch("one-two-three") == "one-two"
+    assert spec_id_from_branch("one-two--v1") == "one-two"
