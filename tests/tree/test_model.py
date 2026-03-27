@@ -305,3 +305,26 @@ def test_from_dict_missing_test_commands_defaults_empty():
     }
     tree = TaskTree.from_dict(data)
     assert tree.nodes["T001"].test_commands == []
+
+
+def test_requirement_ids_roundtrip():
+    tree = TaskTree()
+    tree.nodes["T001"] = TaskNode(
+        id="T001", name="Task",
+        requirement_ids=["REQ-001", "REQ-002"],
+    )
+    data = tree.to_dict()
+    assert data["nodes"]["T001"]["requirement_ids"] == ["REQ-001", "REQ-002"]
+
+    restored = TaskTree.from_dict(data)
+    assert restored.nodes["T001"].requirement_ids == ["REQ-001", "REQ-002"]
+
+
+def test_from_dict_missing_requirement_ids_defaults_empty():
+    data = {
+        "nodes": {
+            "T001": {"id": "T001", "name": "Old task"},
+        },
+    }
+    tree = TaskTree.from_dict(data)
+    assert tree.nodes["T001"].requirement_ids == []

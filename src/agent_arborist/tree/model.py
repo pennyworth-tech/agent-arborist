@@ -35,9 +35,15 @@ class TestCommand:
     command: str
     framework: str | None = None  # "pytest", "jest", "vitest", "go", etc.
     timeout: int | None = None
+    test_id: str | None = None  # Traceable ID from test-plan.json (e.g. "T-001")
+    name: str | None = None  # Human-readable description of what the test verifies
 
     def to_dict(self) -> dict:
         result = {"type": self.type.value, "command": self.command}
+        if self.test_id is not None:
+            result["test_id"] = self.test_id
+        if self.name is not None:
+            result["name"] = self.name
         if self.framework is not None:
             result["framework"] = self.framework
         if self.timeout is not None:
@@ -51,6 +57,8 @@ class TestCommand:
             command=data["command"],
             framework=data.get("framework"),
             timeout=data.get("timeout"),
+            test_id=data.get("test_id"),
+            name=data.get("name"),
         )
 
 
@@ -65,6 +73,7 @@ class TaskNode:
     source_file: str | None = None
     source_line: int | None = None
     test_commands: list[TestCommand] = field(default_factory=list)
+    requirement_ids: list[str] = field(default_factory=list)
 
     @property
     def is_leaf(self) -> bool:
@@ -196,6 +205,7 @@ class TaskTree:
                     "source_line": n.source_line,
                     "is_leaf": n.is_leaf,
                     "test_commands": [tc.to_dict() for tc in n.test_commands],
+                    "requirement_ids": n.requirement_ids,
                 }
                 for nid, n in self.nodes.items()
             },
@@ -224,5 +234,6 @@ class TaskTree:
                     TestCommand.from_dict(tc)
                     for tc in nd.get("test_commands", [])
                 ],
+                requirement_ids=nd.get("requirement_ids", []),
             )
         return tree
